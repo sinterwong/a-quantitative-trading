@@ -1,0 +1,41 @@
+# OpenClaw workspace (private — do NOT commit)
+AGENTS.md
+HEARTBEAT.md
+MEMORY.md
+IDENTITY.md
+USER.md
+TOOLS.md
+SOUL.md
+heartbeat-state.json
+*.json
+
+# Personal data
+investments.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Jupyter
+*.ipynb
+.ipynb_checkpoints/
+
+# Quant data cache (too large for repo)
+scripts/cache/
+scripts/quant/cache/
+scripts/quant/journal/
+
+# Skills (OpenClaw-specific)
+skills/
+
+# Temporary
+*.tmp
+*.bak

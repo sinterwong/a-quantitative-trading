@@ -1,0 +1,4 @@
+# Core dependencies — all standard library + minimal extras
+pandas
+numpy
+requests
