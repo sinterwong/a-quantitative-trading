@@ -7,7 +7,10 @@ on:
     branches: [master, main]
 
 jobs:
-  test:
+  # ---------------------------------------------------------------
+  # Job 1: Linux - syntax check + portable test runner
+  # ---------------------------------------------------------------
+  test-linux:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -22,7 +25,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install --upgrade pip pytest pandas numpy requests
+        run: pip install --upgrade pip pandas numpy requests
 
       - name: Syntax check
         run: |
@@ -32,8 +35,61 @@ jobs:
           python -m py_compile scripts/quant/signal_generator.py
           python -m py_compile scripts/quant/backtest.py
           python -m py_compile scripts/quant/portfolio_engine_v3.py
+          python -m py_compile scripts/quant/paper_executor.py
 
-      - name: Run unit tests
+      - name: Run unit tests (portable, no pytest required)
+        run: python tests/run_tests.py
+
+  # ---------------------------------------------------------------
+  # Job 2: Linux - pytest (optional, for pytest-format output)
+  # ---------------------------------------------------------------
+  test-pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install pytest
+        run: pip install --upgrade pip pytest pandas numpy requests
+
+      - name: Run pytest
+        run: python -m pytest tests/test_signal_generator.py -v --tb=short
+
+  # ---------------------------------------------------------------
+  # Job 3: Windows CI (scripts use Windows path handling)
+  # ---------------------------------------------------------------
+  test-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install --upgrade pip pandas numpy requests
+
+      - name: Syntax check (Windows)
+        shell: bash
         run: |
-          python tests/run_tests.py
-          python -m pytest tests/ -v || true
+          python -m py_compile scripts/dynamic_selector.py
+          python -m py_compile scripts/stock_data_only.py
+          python -m py_compile scripts/quant/signal_generator.py
+
+      - name: Run unit tests (Windows)
+        shell: bash
+        run: python tests/run_tests.py
