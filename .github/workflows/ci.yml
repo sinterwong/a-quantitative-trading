@@ -116,4 +116,5 @@ jobs:
 
       - name: Run unit tests (Windows)
         shell: pwsh
-        run: python tests/run_tests.py
+        run: |
+          python3 tests/run_tests.py 2>&1
