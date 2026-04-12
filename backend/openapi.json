@@ -1,0 +1,195 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "A-Share Portfolio Backend API",
+    "version": "1.0.0",
+    "description": "Portfolio management API for A-share quantitative trading system."
+  },
+  "servers": [{ "url": "http://127.0.0.1:5555" }],
+  "paths": {
+
+    "/health": {
+      "get": {
+        "summary": "Health check",
+        "responses": { "200": { "description": "Service is healthy" }}
+      }
+    },
+
+    "/cash": {
+      "get": {
+        "summary": "Available cash",
+        "responses": { "200": { "description": "Cash balance", "content": {
+          "application/json": { "example": { "status": "ok", "data": { "cash": 25000.0 }}}
+        }}
+      }
+    },
+
+    "/positions": {
+      "get": {
+        "summary": "Current positions with unrealized P&L",
+        "parameters": [
+          { "name": "refresh", "in": "query", "schema": { "type": "string" }, "description": "Set refresh=1 to fetch latest prices" }
+        ],
+        "responses": { "200": { "description": "Positions array" }}
+      }
+    },
+
+    "/trades": {
+      "get": {
+        "summary": "Recent trades",
+        "parameters": [
+          { "name": "symbol", "in": "query", "schema": { "type": "string" }},
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 }}
+        ],
+        "responses": { "200": { "description": "Trades list" }}
+      },
+      "post": {
+        "summary": "Record a completed trade",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": {
+            "example": { "symbol": "600900.SH", "direction": "BUY", "shares": 200, "price": 23.50, "pnl": null }
+          }
+        }},
+        "responses": { "200": { "description": "Trade recorded" }}
+      }
+    },
+
+    "/signals": {
+      "get": {
+        "summary": "Recent signals",
+        "parameters": [
+          { "name": "symbol", "in": "query", "schema": { "type": "string" }},
+          { "name": "since", "in": "query", "schema": { "type": "string" }},
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 }}
+        ],
+        "responses": { "200": { "description": "Signals array" }}
+      },
+      "post": {
+        "summary": "Record a signal",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": {
+            "example": { "symbol": "600900.SH", "signal": "BUY", "strength": 0.85, "reason": "RSI oversold" }
+          }
+        }},
+        "responses": { "200": { "description": "Signal recorded" }}
+      }
+    },
+
+    "/portfolio/summary": {
+      "get": {
+        "summary": "Full portfolio snapshot with P&L",
+        "parameters": [
+          { "name": "refresh", "in": "query", "schema": { "type": "string" }, "description": "Set refresh=1 to fetch latest prices" }
+        ],
+        "responses": { "200": { "description": "Portfolio summary" }}
+      }
+    },
+
+    "/portfolio/positions": {
+      "post": {
+        "summary": "Upsert a position",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": {
+            "example": { "symbol": "600900.SH", "shares": 200, "entry_price": 23.50 }
+          }
+        }},
+        "responses": { "200": { "description": "Position updated" }}
+      }
+    },
+
+    "/portfolio/cash": {
+      "post": {
+        "summary": "Set cash balance",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "example": { "amount": 25000.0 }}}
+        },
+        "responses": { "200": { "description": "Cash updated" }}
+      }
+    },
+
+    "/portfolio/daily": {
+      "get": {
+        "summary": "Recent daily summaries",
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 30 }}
+        ],
+        "responses": { "200": { "description": "Daily summaries" }}
+      }
+    },
+
+    "/orders/submit": {
+      "post": {
+        "summary": "Submit a BUY or SELL order (PaperBroker fills immediately)",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": {
+            "example": { "symbol": "600900.SH", "direction": "BUY", "shares": 200, "price": 23.50, "price_type": "limit" }
+          }
+        }},
+        "responses": {
+          "200": { "description": "Order result", "content": {
+            "application/json": { "example": { "status": "filled", "filled_shares": 200, "avg_fill_price": 23.50 }}
+          }},
+          "400": { "description": "Validation error or insufficient funds" }
+        }
+      }
+    },
+
+    "/orders": {
+      "get": {
+        "summary": "List orders",
+        "parameters": [
+          { "name": "symbol", "in": "query", "schema": { "type": "string" }},
+          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["submitted", "filled", "cancelled", "rejected"] }},
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 }}
+        ],
+        "responses": { "200": { "description": "Orders list" }}
+      }
+    },
+
+    "/orders/{order_id}": {
+      "get": {
+        "summary": "Get single order by ID",
+        "parameters": [
+          { "name": "order_id", "in": "path", "required": true, "schema": { "type": "string" }}
+        ],
+        "responses": {
+          "200": { "description": "Order detail" },
+          "404": { "description": "Order not found" }
+        }
+      }
+    },
+
+    "/orders/{order_id}/cancel": {
+      "post": {
+        "summary": "Cancel a pending order",
+        "parameters": [
+          { "name": "order_id", "in": "path", "required": true, "schema": { "type": "string" }}
+        ],
+        "responses": {
+          "200": { "description": "Cancelled" },
+          "404": { "description": "Order not found" },
+          "409": { "description": "Cannot cancel (not in submitted state)" }
+        }
+      }
+    },
+
+    "/analysis/run": {
+      "post": {
+        "summary": "Trigger daily analysis (refreshes signals and sector data)",
+        "responses": { "200": { "description": "Analysis result" }}
+      }
+    },
+
+    "/analysis/status": {
+      "get": {
+        "summary": "Last analysis run status",
+        "responses": { "200": { "description": "Last analysis" }}
+      }
+    }
+  }
+}

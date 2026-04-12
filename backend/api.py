@@ -79,6 +79,27 @@ def require_json():
     return None
 
 
+def validate_fields(required: dict) -> callable:
+    """Decorator: validate required JSON fields with type checking."""
+    def decorator(fn):
+        def wrapper(*args, **kwargs):
+            if (e := require_json()):
+                return e
+            body = request.json or {}
+            for field, field_type in required.items():
+                if field not in body:
+                    return err(f'missing required field: {field}', 422)
+                try:
+                    field_type(body[field])
+                except (ValueError, TypeError):
+                    return err(f'field "{field}" must be {field_type.__name__}', 422)
+            return fn(*args, **kwargs)
+        wrapper.__name__ = fn.__name__
+        wrapper.__doc__ = getattr(fn, '__doc__', '')
+        return wrapper
+    return decorator
+
+
 # ============================================================
 # Health
 # ============================================================
@@ -92,6 +113,19 @@ def health():
         return ok(cash=cash, message='healthy')
     except Exception as e:
         return err(str(e), 500)
+
+
+@app.route('/docs', methods=['GET'])
+def docs():
+    """OpenAPI spec at /docs."""
+    import json
+    spec_path = os.path.join(os.path.dirname(__file__), 'openapi.json')
+    try:
+        with open(spec_path, 'r', encoding='utf-8') as f:
+            spec = json.load(f)
+        return jsonify(spec)
+    except Exception as e:
+        return err('OpenAPI spec not found: ' + str(e), 500)
 
 
 # ============================================================
