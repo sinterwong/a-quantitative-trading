@@ -83,7 +83,7 @@
   - `backend/services/strategy_loader.py` — 从 `params.json` 动态加载
   - `params.json` — 策略配置（symbols + params）
 - [ ] **PostgreSQL** — upgrade from SQLite for multi-user
-- [ ] **Changelog + License**
+- [x] **Changelog + License**
 
 ---
 
