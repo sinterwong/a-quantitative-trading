@@ -71,8 +71,9 @@
 
 ## Phase 5: Productization
 
-- [x] **Web UI** — Streamlit dashboard (streamlit_app.py, 6 pages: 组合概览/实时信号/动态选股/回测分析/持仓详情/历史交易)
-- [ ] **Scheduled reports** — 9:00 早报 + 15:30 晚报推送（飞书）
+- [x] **Web UI** — Streamlit dashboard (streamlit_app.py, 6 pages)
+- [x] **Scheduled reports** — `report_sender.py`: 9:00 早报 + 15:30 晚报（已测试推送成功）
+  - OpenClaw cron 已配置：Morning Report (0 9 * * 1-5) + Closing Report (30 15 * * 1-5)
 - [ ] **Strategy plugins** — drop-in `strategies/strategy_xxx.py`
 - [ ] **PostgreSQL** — upgrade from SQLite for multi-user
 - [ ] **Changelog + License**
