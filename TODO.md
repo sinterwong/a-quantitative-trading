@@ -5,7 +5,7 @@
 ### P0 — Must Fix Before Production
 - [ ] **Verify THS sector fallback** — replace broken `d.10jqka.com.cn` URL with working Sina Finance sector API (`vip.stock.finance.sina.com.cn`)
 - [ ] **Monday open validation** — observe if Eastmoney push API recovers after weekend cooldown; confirm cron delivers to Feishu
-- [ ] **Expand test coverage** — add tests for `signal_generator.py`, `portfolio_engine_v3.py`, `paper_executor.py`
+- [x] **Expand test coverage** — added `tests/test_signal_generator.py` (20 tests: RSISignalSource, MarketRegimeSource, SignalGenerator, BlackListFilter) + `tests/run_tests.py` (88 tests total, no external deps). For GitHub Actions use `python -m pytest tests/ -v`.
 - [ ] **Error handling audit** — every API call should have a clear fallback path; empty data must not crash the report
 
 ### P1 — Improve Reliability
