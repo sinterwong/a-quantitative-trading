@@ -115,5 +115,4 @@ jobs:
           python -m py_compile streamlit_app.py
 
       - name: Run unit tests (Windows)
-        shell: bash
         run: python tests/run_tests.py
