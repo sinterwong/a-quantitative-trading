@@ -6,15 +6,15 @@
 > Agent (小黑) communicates via HTTP — not one-shot scripts.
 
 ### P0 — Core Backend
-- [ ] **Backend skeleton** — `backend/main.py` with HTTP server (`wsgiserver` or stdlib), starts as persistent process
-- [ ] **Portfolio Service** — `backend/services/portfolio.py` with SQLite persistence (positions, trades, cash)
-- [ ] **HTTP API endpoints** — `GET /positions`, `GET /trades`, `GET /cash`, `POST /orders`, `GET /health`
-- [ ] **OpenClaw tool integration** — register backend as an MCP tool so 小黑 can query positions at any time
+- [x] **Backend skeleton** — `backend/main.py` with HTTP server (werkzeug), starts as persistent process
+- [x] **Portfolio Service** — `backend/services/portfolio.py` with SQLite persistence (positions, trades, cash)
+- [x] **HTTP API endpoints** — `GET /positions`, `GET /trades`, `GET /cash`, `POST /orders`, `GET /health`
+- [x] **OpenClaw tool integration** — `skills/portfolio-api/SKILL.md` wrapper for agent to call backend API
 
 ### P1 — Scheduling & Automation
-- [ ] **Background scheduler** — `backend/scheduler.py` runs every day at 15:10 CST, triggers `daily_engine`
-- [ ] **Service lifecycle** — `backend/start.sh` / `backend/stop.sh` for systemd service management
-- [ ] **Self-healing** — process auto-restarts on crash with log rotation
+- [x] **Background scheduler** — `main.py` runs scheduler thread at 15:10 CST, triggers `/analysis/run`
+- [ ] **Service lifecycle** — `backend/start.sh` / `backend/stop.sh` / Windows `.bat` for startup management
+- [x] **Self-healing** — log rotation (logging.FileHandler) + restart on crash in scheduler
 
 ### P2 — API Quality
 - [ ] **Swagger/OpenAPI docs** — auto-generated docs at `GET /docs`
