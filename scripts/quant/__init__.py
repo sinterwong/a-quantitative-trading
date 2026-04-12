@@ -1,1 +1,1 @@
-# Quant System
+# scripts.quant package
