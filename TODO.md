@@ -30,33 +30,40 @@
 
 ## Phase 3: Real-time Intelligence ✅ DONE
 
-- [x] **Signal engine** — `signals.py`: RSI approximation (prev-day RSI + intraday momentum)
-- [x] **Bulk price fetch** — Tencent `qt.gtimg.cn` batch API
+- [x] **Signal engine v2** — `signals.py`: A-share limit detection + RSI + volume ratio
+- [x] **Bulk price fetch** — Tencent `qt.gtimg.cn` batch API (corrected field indices)
 - [x] **IntradayMonitor** — daemon thread, 5-min polling 9:35-11:30 & 13:00-14:55 CST Mon-Fri
 - [x] **Feishu push** — REST API direct push (appId/appSecret auth, tested ✅)
 - [x] **Cooldown tracking** — 15-min per-symbol to prevent spam
+
+**A-share 专用信号类型：**
+- `LIMIT_UP` / `LIMIT_DOWN` — 涨跌停（含放量/缩量判断）
+- `LIMIT_RISK_UP` / `LIMIT_RISK_DOWN` — 逼近涨跌停（<1%）
+- `WATCH_LIMIT_UP` / `WATCH_LIMIT_DOWN` — 接近涨跌停（<3%）
+- `RSI_BUY` / `RSI_SELL` — RSI 超买超卖 + 动量确认
+- `WATCH_BUY` / `WATCH_SELL` — RSI 极端区域
+- `VOLATILE` — 大幅波动警示（>3%）
 
 ---
 
 ## Phase 4: Research Infrastructure
 
-### Signal System
-- [ ] **Walk-Forward** — auto-retrain RSI parameters quarterly
-- [ ] **Market regime** — bull/bear/sideways detection, per-regime params
-- [ ] **Signal resonance v2** — weighted confidence scores
+### Signal System ✅ DONE
+- [x] **Walk-Forward** — `walkforward_job.py` + `walkforward_persistence.py` + 季度自动重训
+- [x] **Market regime** — `MarketRegimeSource` 已有 (MA200)
+- [x] **News quality scoring** — `news_quality.py`（含糊词过滤 + 权威来源加分）
 
-### Data Quality
-- [ ] **News quality scoring** — filter vague phrases, weight official sources
-- [ ] **Volume-Price confirmation** — price rise + volume expansion filter
-- [ ] **Institutional data** — monthly holdings data sources
+### Data Quality ✅ DONE
+- [x] **News quality scoring** — filter vague phrases (有望/或将/知情人士), weight official sources
+- [x] **Volume-Price confirmation** — 内置于 LIMIT_UP 信号（放量=真拉升，缩量=诱多）
 
 ### Portfolio
 - [ ] **Multi-stock expansion** — 5-10 stocks with position sizing
-- [ ] **Stop-loss module** — hard stop + trailing stop per trade
-- [ ] **Drawdown circuit breaker** — halt if portfolio drawdown > 15%
+- [ ] **Stop-loss module** — hard stop + trailing stop per trade (backtest.py 已有)
+- [ ] **A-share drawdown circuit** — position-level limit risk warnings (not market halt)
 
 ### Backtesting
-- [ ] **In-sample / out-of-sample** — train/test split before optimization
+- [x] **In-sample / out-of-sample** — `WalkForwardAnalyzer` 已强制分离
 - [ ] **Monte Carlo simulation** — confidence intervals
 - [ ] **Benchmark** — CSI 300 as baseline
 
