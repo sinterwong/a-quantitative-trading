@@ -22,28 +22,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest pandas numpy requests
+        run: pip install --upgrade pip pytest pandas numpy requests
 
-      - name: Syntax check (py_compile)
+      - name: Syntax check
         run: |
           python -m py_compile scripts/dynamic_selector.py
           python -m py_compile scripts/stock_data_only.py
           python -m py_compile scripts/quant/data_loader.py
           python -m py_compile scripts/quant/signal_generator.py
+          python -m py_compile scripts/quant/backtest.py
+          python -m py_compile scripts/quant/portfolio_engine_v3.py
 
       - name: Run unit tests
-        run: |
-          pip install pytest
-          python -m pytest tests/ -v || true
-          # Run tests manually if pytest unavailable
-          python tests/test_dynamic_selector.py 2>/dev/null || \
-            python -c "
-            import sys, os
-            sys.path.insert(0, 'scripts')
-            from dynamic_selector import safe_float, safe_int, DynamicStockSelectorV2
-            s = DynamicStockSelectorV2()
-            total = s.WEIGHT_NEWS + s.WEIGHT_SECTOR + s.WEIGHT_FLOW + s.WEIGHT_TECH + s.WEIGHT_CONSISTENCY
-            assert abs(total - 1.0) < 0.001, f'Weights sum to {total}'
-            print('All assertions passed')
+        run: python -m pytest tests/ -v
