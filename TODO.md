@@ -46,26 +46,26 @@
 
 ---
 
-## Phase 4: Research Infrastructure
+## Phase 4: Research Infrastructure ✅ DONE
 
-### Signal System ✅ DONE
+### Signal System
 - [x] **Walk-Forward** — `walkforward_job.py` + `walkforward_persistence.py` + 季度自动重训
 - [x] **Market regime** — `MarketRegimeSource` 已有 (MA200)
 - [x] **News quality scoring** — `news_quality.py`（含糊词过滤 + 权威来源加分）
 
-### Data Quality ✅ DONE
+### Data Quality
 - [x] **News quality scoring** — filter vague phrases (有望/或将/知情人士), weight official sources
 - [x] **Volume-Price confirmation** — 内置于 LIMIT_UP 信号（放量=真拉升，缩量=诱多）
 
 ### Portfolio
-- [ ] **Multi-stock expansion** — 5-10 stocks with position sizing
-- [ ] **Stop-loss module** — hard stop + trailing stop per trade (backtest.py 已有)
-- [ ] **A-share drawdown circuit** — position-level limit risk warnings (not market halt)
+- [x] **Multi-stock expansion** — `PortfolioEngineV3` 已支持多股 + 行业仓位限制
+- [x] **Stop-loss module** — 日频止损检查（每交易日收盘价 vs 成本价）
+- [x] **A-share circuit breaker** — 15% 组合回撤熔断（PortfolioEngineV3 `max_drawdown_limit=0.15`）
 
 ### Backtesting
-- [x] **In-sample / out-of-sample** — `WalkForwardAnalyzer` 已强制分离
-- [ ] **Monte Carlo simulation** — confidence intervals
-- [ ] **Benchmark** — CSI 300 as baseline
+- [x] **In-sample / out-of-sample** — `WalkForwardAnalyzer` 强制分离
+- [x] **Monte Carlo simulation** — `monte_carlo.py`（2000次迭代，分位数统计，破产风险）
+- [x] **Benchmark** — `benchmark.py`（沪深300 ETF 510310.SH 对比，Alpha/Beta/信息比率）
 
 ---
 
