@@ -115,4 +115,5 @@ jobs:
           python -m py_compile streamlit_app.py
 
       - name: Run unit tests (Windows)
-        run: py tests/run_tests.py
+        shell: pwsh
+        run: python tests/run_tests.py
