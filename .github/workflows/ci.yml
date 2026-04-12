@@ -25,17 +25,34 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install --upgrade pip pandas numpy requests
+        run: pip install --upgrade pip pandas numpy requests flask werkzeug
 
       - name: Syntax check
         run: |
           python -m py_compile scripts/dynamic_selector.py
           python -m py_compile scripts/stock_data_only.py
+          python -m py_compile scripts/walkforward_job.py
           python -m py_compile scripts/quant/data_loader.py
           python -m py_compile scripts/quant/signal_generator.py
           python -m py_compile scripts/quant/backtest.py
           python -m py_compile scripts/quant/portfolio_engine_v3.py
-          python -m py_compile scripts/quant/paper_executor.py
+          python -m py_compile scripts/quant/walkforward.py
+          python -m py_compile scripts/quant/news_quality.py
+          python -m py_compile scripts/quant/monte_carlo.py
+          python -m py_compile scripts/quant/benchmark.py
+          python -m py_compile backend/services/portfolio.py
+          python -m py_compile backend/services/broker.py
+          python -m py_compile backend/services/signals.py
+          python -m py_compile backend/services/intraday_monitor.py
+          python -m py_compile backend/services/report_sender.py
+          python -m py_compile backend/services/strategy_loader.py
+          python -m py_compile backend/services/walkforward_persistence.py
+          python -m py_compile strategies/__init__.py
+          python -m py_compile strategies/base.py
+          python -m py_compile strategies/rsi_strategy.py
+          python -m py_compile strategies/macd_strategy.py
+          python -m py_compile strategies/bollinger_strategy.py
+          python -m py_compile streamlit_app.py
 
       - name: Run unit tests (portable, no pytest required)
         run: python tests/run_tests.py
@@ -58,7 +75,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install pytest
-        run: pip install --upgrade pip pytest pandas numpy requests
+        run: pip install --upgrade pip pytest pandas numpy requests flask werkzeug
 
       - name: Run pytest
         run: python -m pytest tests/test_signal_generator.py -v --tb=short
@@ -81,7 +98,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install --upgrade pip pandas numpy requests
+        run: pip install --upgrade pip pandas numpy requests flask werkzeug
 
       - name: Syntax check (Windows)
         shell: bash
@@ -89,6 +106,13 @@ jobs:
           python -m py_compile scripts/dynamic_selector.py
           python -m py_compile scripts/stock_data_only.py
           python -m py_compile scripts/quant/signal_generator.py
+          python -m py_compile scripts/quant/news_quality.py
+          python -m py_compile scripts/quant/monte_carlo.py
+          python -m py_compile backend/services/signals.py
+          python -m py_compile backend/services/intraday_monitor.py
+          python -m py_compile backend/services/report_sender.py
+          python -m py_compile strategies/__init__.py
+          python -m py_compile streamlit_app.py
 
       - name: Run unit tests (Windows)
         shell: bash
