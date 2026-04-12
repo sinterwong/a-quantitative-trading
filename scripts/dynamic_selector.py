@@ -52,54 +52,106 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _last_call: Dict[str, float] = {}
 
 def get(url: str, headers: dict = None, timeout: int = 10) -> Optional[str]:
-    """HTTP GET with 3 retries + domain-level rate limiting (200ms gap)"""
+    """
+    HTTP GET with exponential backoff on 429/503, and domain-level rate limiting.
+
+    Strategy:
+    - Normal calls: respect 200ms gap to avoid triggering rate limits
+    - On 429/503: exponential backoff (1s -> 2s -> 4s), max 3 retries
+    - On other errors: give up immediately
+    """
     import time
     domain = url.split('/')[2] if '://' in url else ''
     _last_call.setdefault(domain, 0)
-    
-    for attempt in range(3):
+
+    for attempt in range(4):   # 0=first, 1=retry1(1s), 2=retry2(2s), 3=retry3(4s)
         try:
+            # Domain rate limit: 200ms gap between calls to same domain
             elapsed = time.time() - _last_call[domain]
             if elapsed < 0.2:
                 time.sleep(0.2 - elapsed)
-            
+
             h = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
             if headers:
                 h.update(headers)
             req = urllib.request.Request(url, headers=h)
             with urllib.request.urlopen(req, context=SSL_CTX, timeout=timeout) as r:
                 _last_call[domain] = time.time()
+                if r.status in (429, 503):
+                    # Rate limited - back off and retry
+                    if attempt < 3:
+                        backoff = 2 ** attempt  # 1s, 2s, 4s
+                        _log('WARNING', 'get: HTTP ' + str(r.status) + ' from ' + domain
+                             + ', retry ' + str(attempt + 1) + '/3 in ' + str(backoff) + 's')
+                        time.sleep(backoff)
+                        continue
+                    else:
+                        _log('WARNING', 'get: HTTP 429/503 exhausted retries from ' + domain)
+                        return None
                 return r.read().decode('utf-8', errors='replace')
-        except Exception:
-            if attempt < 2:
-                time.sleep(1.5 ** attempt)
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 503):
+                if attempt < 3:
+                    backoff = 2 ** attempt
+                    _log('WARNING', 'get: HTTPError ' + str(e.code) + ' from ' + domain
+                         + ', retry ' + str(attempt + 1) + '/3 in ' + str(backoff) + 's')
+                    time.sleep(backoff)
+                    continue
+                else:
+                    _log('WARNING', 'get: HTTPError 429/503 exhausted from ' + domain)
+                    return None
             else:
+                _log('WARNING', 'get: HTTPError ' + str(e.code) + ' from ' + domain + ': ' + str(e))
+                return None
+        except Exception as e:
+            if attempt < 3:
+                _log('WARNING', 'get: error from ' + domain + ' (attempt ' + str(attempt + 1)
+                     + '): ' + str(e)[:80])
+                time.sleep(0.5 * (attempt + 1))
+            else:
+                _log('WARNING', 'get: all retries failed for ' + domain + ': ' + str(e)[:80])
                 return None
     return None
 
 
 def get_gbk(url: str, headers: dict = None, timeout: int = 10) -> Optional[str]:
-    """HTTP GET (GBK) with 3 retries + domain-level rate limiting"""
+    """HTTP GET (GBK) with same exponential backoff strategy as get()."""
     import time
     domain = url.split('/')[2] if '://' in url else ''
     _last_call.setdefault(domain, 0)
-    
-    for attempt in range(3):
+
+    for attempt in range(4):
         try:
             elapsed = time.time() - _last_call[domain]
             if elapsed < 0.2:
                 time.sleep(0.2 - elapsed)
-            
+
             h = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
             if headers:
                 h.update(headers)
             req = urllib.request.Request(url, headers=h)
             with urllib.request.urlopen(req, context=SSL_CTX, timeout=timeout) as r:
                 _last_call[domain] = time.time()
+                if r.status in (429, 503):
+                    if attempt < 3:
+                        backoff = 2 ** attempt
+                        _log('WARNING', 'get_gbk: HTTP ' + str(r.status) + ' from ' + domain
+                             + ', retry ' + str(attempt + 1) + '/3 in ' + str(backoff) + 's')
+                        time.sleep(backoff)
+                        continue
+                    return None
                 return r.read().decode('gbk', errors='replace')
-        except Exception:
-            if attempt < 2:
-                time.sleep(1.5 ** attempt)
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 503):
+                if attempt < 3:
+                    backoff = 2 ** attempt
+                    time.sleep(backoff)
+                    continue
+                return None
+            return None
+        except Exception as e:
+            if attempt < 3:
+                time.sleep(0.5 * (attempt + 1))
             else:
                 return None
     return None
@@ -139,15 +191,52 @@ def _read_file_cache(filename: str, max_age_seconds: int = 3600) -> Optional[Dic
 
 
 def _write_file_cache(filename: str, data: Dict) -> bool:
-    """写入文件缓存"""
+    """写入文件缓存，同时清理超限文件（最多保留5个缓存文件）"""
     try:
         _ensure_cache_dir()
+        _cleanup_cache(max_files=5)
         path = os.path.join(CACHE_DIR, filename)
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False)
         return True
     except Exception:
         return False
+
+
+def _cleanup_cache(max_files: int = 5) -> None:
+    """
+    清理缓存目录：
+    - 保留最多 max_files 个 .json 缓存文件（按修改时间，最新的优先）
+    - 删除 .tmp 临时文件
+    """
+    try:
+        if not os.path.exists(CACHE_DIR):
+            return
+        files = [
+            f for f in os.listdir(CACHE_DIR)
+            if f.endswith('.json') or f.endswith('.tmp')
+        ]
+        # 删除临时文件
+        for f in files:
+            if f.endswith('.tmp'):
+                try:
+                    os.remove(os.path.join(CACHE_DIR, f))
+                except Exception:
+                    pass
+        # 超过数量限制时，删除最旧的 .json 文件
+        json_files = sorted(
+            [f for f in os.listdir(CACHE_DIR) if f.endswith('.json')],
+            key=lambda x: os.path.getmtime(os.path.join(CACHE_DIR, x))
+        )
+        if len(json_files) > max_files:
+            for old_file in json_files[:-max_files]:
+                try:
+                    os.remove(os.path.join(CACHE_DIR, old_file))
+                    _log('INFO', '_cleanup_cache: removed oldest cache file: ' + old_file)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 
 def safe_float(val, default=0.0):

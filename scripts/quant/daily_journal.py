@@ -66,6 +66,34 @@ def list_journal_days(base_name='journal') -> list:
     return [d for d in days if os.path.isdir(os.path.join(journal_root, d))]
 
 
+def cleanup_old_journals(base_name='journal', keep_days: int = 30) -> int:
+    """
+    清理过旧的Journal目录，保留最近 keep_days 天。
+
+    Returns:
+        删除的目录数量
+    """
+    import time
+    journal_root = get_journal_dir(base_name)
+    if not os.path.exists(journal_root):
+        return 0
+    now = time.time()
+    cutoff = now - keep_days * 86400  # 秒
+    removed = 0
+    for day_dir in os.listdir(journal_root):
+        full_path = os.path.join(journal_root, day_dir)
+        if not os.path.isdir(full_path):
+            continue
+        try:
+            if os.path.getmtime(full_path) < cutoff:
+                import shutil
+                shutil.rmtree(full_path)
+                removed += 1
+        except Exception:
+            pass
+    return removed
+
+
 # ============================================================
 # 数据结构
 # ============================================================
@@ -309,6 +337,12 @@ class JournalWriter:
         self.trading_date = trading_date
         self.base_name = base_name
         self.day_dir = get_day_dir(trading_date, base_name)
+
+        # 启动时清理30天前的旧Journal
+        removed = cleanup_old_journals(base_name, keep_days=30)
+        if removed > 0:
+            import sys
+            print('[INFO] Journal cleanup: removed ' + str(removed) + ' old directories', file=sys.stderr)
 
         # 数据收集
         self.signals = []

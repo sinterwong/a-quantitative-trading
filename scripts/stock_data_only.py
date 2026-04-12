@@ -127,7 +127,12 @@ def main():
         all(selector.sector_scores.get(bk, {}).get('total', 0) < 20 for bk, _ in top_bks_check)
     )
     if is_fallback:
-        print("[注意] 板块数据暂时无法获取，显示宽基ETF行情")
+        print()
+        print("!!! ================================================")
+        print("!!!  板块数据暂时无法获取，本报告使用宽基ETF替代")
+        print("!!!  评分仅供参考，不构成投资建议")
+        print("!!!  建议稍后手动确认市场板块情况")
+        print("!!! ================================================")
     print()
     
     # ===== 获取行情数据 =====
@@ -230,7 +235,7 @@ def main():
     sector_src = src_map.get(selector._last_source, selector._last_source)
     print(f"[数据状态] 资讯: {news_src} | 板块: {sector_src}")
     if is_fallback:
-        print("[WARN] 板块数据来源失败，已fallback到宽基ETF，评分仅供参考")
+        print("[WARN] 板块数据获取失败 -> 已fallback宽基ETF(沪深300/创业板/酒ETF)，评分仅供参考")
     print("数据来源: 腾讯财经/东方财富/同花顺 | 仅供参考，不构成投资建议")
     
     # 返回选中的标的代码（供外部调用）

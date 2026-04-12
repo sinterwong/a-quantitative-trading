@@ -11,12 +11,12 @@
 ### P1 — Improve Reliability
 - [x] **Parameter externalization** — created `params.json` with all global strategy defaults (RSI period/oversold/overbought/stop_loss/take_profit, MACD, risk params). `config_stock_pool.py` now loads via `get_default_params('RSI')` and merges with per-stock `strategy_override`. Modify `params.json` without touching code to adjust strategy.
 - [ ] **Journal persistence** — verify full signal → trade → position cycle writes correctly to `scripts/quant/journal/`
-- [ ] **Retry with backoff** — current 200ms rate limit works; add exponential backoff (1s → 2s → 4s) when API returns 429/503
-- [ ] **Empty-state reporting** — when all APIs fail and we fall back to broad ETFs, generate a visible "Data Unavailable" notice in the report
+- [x] **Retry with backoff** — `get()`/`get_gbk()` now distinguish HTTP 429/503 from other errors. 429/503: exponential backoff 1s/2s/4s, max 3 retries. Network errors: gentle retry. All failures logged with `[WARN]` + domain.
+- [x] **Empty-state reporting** — fallback now shows large `!!! ... !!!` banner at top + `[WARN]` at bottom.
 
 ### P2 — Polish
 - [x] **CI on Windows** — CI now runs 3 jobs: Linux portable tests (all Python versions), pytest (3.12), and Windows CI (`windows-latest` + bash shell for Linux-style execution)
-- [ ] **Log file rotation** — prevent `cache/` and `journal/` from growing unbounded
+- [x] **Log file rotation** — `_cleanup_cache()` removes oldest cache files (keeps 5). `cleanup_old_journals()` removes journals > 30 days old.
 - [ ] **Daily health check** — add a lightweight pre-check at 14:55 that verifies API connectivity before market close
 
 ---
@@ -58,8 +58,8 @@
 - [ ] **Scheduled reports** — configurable report time (currently hardcoded to 15:00 CST); add 9:00 pre-market summary
 
 ### Community
-- [ ] **CONTRIBUTING.md** — contribution guidelines, coding style (PEP 8 + black), PR template
-- [ ] **Issue templates** — Bug Report / Feature Request / Question templates on GitHub
+- [x] **CONTRIBUTING.md** — contribution guidelines, coding style, PR process, adding new signal sources.
+- [x] **Issue templates** — Bug Report / Feature Request / Question templates on GitHub.
 - [ ] **Changelog** — maintain `CHANGELOG.md` with every release; use semantic versioning
 - [ ] **License clarification** — current MIT is permissive; consider dual-licensing if commercial use cases emerge
 
