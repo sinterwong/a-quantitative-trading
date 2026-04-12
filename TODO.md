@@ -1,78 +1,102 @@
 # Roadmap & TODO
 
-## Short-term: Stable Daily Operation (1-3 months)
+## Phase 1: Backend Service (current sprint)
 
-### P0 — Must Fix Before Production
-- [ ] **Verify THS sector fallback** — replace broken `d.10jqka.com.cn` URL with working Sina Finance sector API (`vip.stock.finance.sina.com.cn`)
-- [ ] **Monday open validation** — observe if Eastmoney push API recovers after weekend cooldown; confirm cron delivers to Feishu
-- [x] **Expand test coverage** — added `tests/test_signal_generator.py` (20 tests: RSISignalSource, MarketRegimeSource, SignalGenerator, BlackListFilter) + `tests/run_tests.py` (88 tests total, no external deps). For GitHub Actions use `python -m pytest tests/ -v`.
-- [x] **Error handling audit** — `dynamic_selector.py`: added `_log()` with INFO/WARNING levels; all API failures are now logged with reason (rate limit / parse error / empty). `_last_source` / `_last_news_source` track data origin. `fetch_sectors()`: removed dead THS code referencing undefined `raw2`. `stock_data_only.py`: shows `[数据状态] 资讯:{src} | 板块:{src}` + fallback warning at end of report.
+> Build a persistent backend service with portfolio persistence and HTTP API.
+> Agent (小黑) communicates via HTTP — not one-shot scripts.
 
-### P1 — Improve Reliability
-- [x] **Parameter externalization** — created `params.json` with all global strategy defaults (RSI period/oversold/overbought/stop_loss/take_profit, MACD, risk params). `config_stock_pool.py` now loads via `get_default_params('RSI')` and merges with per-stock `strategy_override`. Modify `params.json` without touching code to adjust strategy.
-- [ ] **Journal persistence** — verify full signal → trade → position cycle writes correctly to `scripts/quant/journal/`
-- [x] **Retry with backoff** — `get()`/`get_gbk()` now distinguish HTTP 429/503 from other errors. 429/503: exponential backoff 1s/2s/4s, max 3 retries. Network errors: gentle retry. All failures logged with `[WARN]` + domain.
-- [x] **Empty-state reporting** — fallback now shows large `!!! ... !!!` banner at top + `[WARN]` at bottom.
+### P0 — Core Backend
+- [ ] **Backend skeleton** — `backend/main.py` with HTTP server (`wsgiserver` or stdlib), starts as persistent process
+- [ ] **Portfolio Service** — `backend/services/portfolio.py` with SQLite persistence (positions, trades, cash)
+- [ ] **HTTP API endpoints** — `GET /positions`, `GET /trades`, `GET /cash`, `POST /orders`, `GET /health`
+- [ ] **OpenClaw tool integration** — register backend as an MCP tool so 小黑 can query positions at any time
 
-### P2 — Polish
-- [x] **CI on Windows** — CI now runs 3 jobs: Linux portable tests (all Python versions), pytest (3.12), and Windows CI (`windows-latest` + bash shell for Linux-style execution)
-- [x] **Log file rotation** — `_cleanup_cache()` removes oldest cache files (keeps 5). `cleanup_old_journals()` removes journals > 30 days old.
-- [ ] **Daily health check** — add a lightweight pre-check at 14:55 that verifies API connectivity before market close
+### P1 — Scheduling & Automation
+- [ ] **Background scheduler** — `backend/scheduler.py` runs every day at 15:10 CST, triggers `daily_engine`
+- [ ] **Service lifecycle** — `backend/start.sh` / `backend/stop.sh` for systemd service management
+- [ ] **Self-healing** — process auto-restarts on crash with log rotation
+
+### P2 — API Quality
+- [ ] **Swagger/OpenAPI docs** — auto-generated docs at `GET /docs`
+- [ ] **Request validation** — reject malformed orders with clear error messages
+- [ ] **Rate limiting** — prevent abuse of `/orders` endpoint
 
 ---
 
-## Mid-term: Signal Quality (3-6 months)
+## Phase 2: Broker Integration
+
+### P0 — Paper Trading
+- [ ] **Broker abstraction layer** — `backend/services/broker.py` interface, first implementation is paper trading
+- [ ] **Paper executor** — simulate fills with VWAP model, no real money
+
+### P1 — Real Broker
+- [ ] **Broker choice** — Futu (富途) / Tiger (老虎) / other (TBD)
+- [ ] **Account connector** — authenticate, fetch real positions and cash
+- [ ] **Order execution** — market orders, limit orders with proper error handling
+
+---
+
+## Phase 3: Real-time Intelligence
+
+### P0 — Live Market Data
+- [ ] **WebSocket or polling** — real-time price updates (every 30s during market hours)
+- [ ] **Intraday signal detection** — RSI/MACD triggers during trading hours
+
+### P1 — Proactive Alerts
+- [ ] **Push notifications** — alerts to Feishu when signals fire during market hours
+- [ ] **OpenClaw proactive reporting** — 小黑 proactively messages Sinter with signals, not just passive query
+
+---
+
+## Phase 4: Research Infrastructure
 
 ### Signal System
-- [ ] **Walk-Forward parameter update** — auto-retrain RSI parameters quarterly using `scripts/quant/walkforward.py` instead of hardcoded values
-- [ ] **Market regime detection** — distinguish bull/bear/sideways; apply different strategy parameters per regime
-- [ ] **Signal resonance v2** — current rule is "2+ signals = strong buy"; refine with weighted signal confidence scores
+- [ ] **Walk-Forward parameter update** — auto-retrain RSI parameters quarterly
+- [ ] **Market regime detection** — distinguish bull/bear/sideways; different strategy params per regime
+- [ ] **Signal resonance v2** — weighted confidence scores instead of "2+ signals = strong buy"
 
 ### Data Quality
-- [ ] **Real-time institutional data** — current fund-holding data is quarterly and lagged; evaluate 月度持仓 or 雪球/韭圈儿 as alternatives
-- [ ] **News quality scoring** — replace keyword-only matching with: (a) discard vague phrases like "有望", "或将"; (b) weight official sources (Xinhua, 证监会) vs 自媒体
-- [ ] **Volume-Price confirmation** — require price rise + volume expansion as a combined signal filter
+- [ ] **News quality scoring** — discard vague phrases ("有望", "或将"), weight official sources
+- [ ] **Volume-Price confirmation** — price rise + volume expansion as combined filter
+- [ ] **Real-time institutional data** — evaluate monthly holdings data sources
 
 ### Portfolio
-- [ ] **Multi-stock expansion** — extend from single-ETF to 5-10 stock portfolio with proper position sizing
-- [ ] **Stop-loss module** — implement per-trade stop-loss (e.g., -5% hard stop) and trailing stop
-- [ ] **Drawdown circuit breaker** — if portfolio drawdown > 15%, halt new position opening for that day
+- [ ] **Multi-stock expansion** — 5-10 stock portfolio with proper position sizing
+- [ ] **Stop-loss module** — per-trade hard stop + trailing stop
+- [ ] **Drawdown circuit breaker** — halt new positions if portfolio drawdown > 15%
 
 ### Backtesting
-- [ ] **In-sample / out-of-sample split** — standard train/test split before any parameter optimization
-- [ ] **Monte Carlo simulation** — run backtest with randomized slippage and commission to get confidence intervals
-- [ ] **Benchmark comparison** — add CSI 300 and行业指数 as performance benchmarks in report
+- [ ] **In-sample / out-of-sample split** — standard train/test before optimization
+- [ ] **Monte Carlo simulation** — confidence intervals on backtest results
+- [ ] **Benchmark comparison** — CSI 300 as performance baseline
 
 ---
 
-## Long-term: Productization (6-12 months)
+## Phase 5: Productization
 
 ### Infrastructure
-- [ ] **Web UI** — build a Streamlit or Gradio dashboard for non-technical users; view positions, signals, and daily reports in browser
-- [ ] **Database** — replace JSON file journal with SQLite/PostgreSQL for structured queries (e.g., "show all buy signals for 创业板 in last 30 days")
-- [ ] **Performance optimization** — use `vectorbt` or `numba` to accelerate backtesting 10-100x for large parameter grids
+- [ ] **Web UI** — Streamlit/Gradio dashboard for positions, signals, and reports
+- [ ] **Database upgrade** — PostgreSQL for structured queries, multi-user support
+- [ ] **Performance optimization** — `vectorbt`/`numba` for large parameter grids
 
 ### Ecosystem
-- [ ] **Strategy plugins** — make `scripts/quant/strategies/` a pluggable interface; users can drop in a new `strategy_xxx.py` without modifying core engine
-- [ ] **Paper trading integration** — connect to a broker's simulated account API (大多数券商 support 模拟资金账户); execute signals automatically
-- [ ] **Scheduled reports** — configurable report time (currently hardcoded to 15:00 CST); add 9:00 pre-market summary
+- [ ] **Strategy plugins** — drop in `strategies/strategy_xxx.py` without modifying core
+- [ ] **Scheduled reports** — configurable times (pre-market 9:00, post-market 15:30)
 
 ### Community
-- [x] **CONTRIBUTING.md** — contribution guidelines, coding style, PR process, adding new signal sources.
-- [x] **Issue templates** — Bug Report / Feature Request / Question templates on GitHub.
-- [ ] **Changelog** — maintain `CHANGELOG.md` with every release; use semantic versioning
-- [ ] **License clarification** — current MIT is permissive; consider dual-licensing if commercial use cases emerge
+- [ ] **Changelog** — `CHANGELOG.md` with semantic versioning
+- [ ] **License clarification** — dual-licensing if commercial use cases emerge
 
 ---
 
-## Icebox (Nice to Have, Low Priority)
+## Icebox
 
-- [ ] TradingView integration for chart embedding in reports
-- [ ] Email report option (currently Feishu only)
-- [ ] Dark mode for web UI
-- [ ] Multi-language support (English / 中文 switch)
-- [ ] Mobile push notification via Server酱 or PushPlus
+- TradingView chart embedding in reports
+- Email report option
+- Dark mode for web UI
+- Multi-language support (EN/CN)
+- Mobile push via Server酱
 
 ---
 
-*Last updated: 2026-04-12*
+*Last updated: 2026-04-12 | Phase 1 is the current sprint*

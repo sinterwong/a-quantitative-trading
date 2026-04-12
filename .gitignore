@@ -12,8 +12,11 @@ heartbeat-state.json
 # Personal data
 investments.json
 
-# Python cache
-__pycache__/
+backend.log
+backend/__pycache__/
+scripts/__pycache__/
+scripts/quant/__pycache__/
+backend/services/__pycache__/
 *.pyc
 *.pyo
 
@@ -29,6 +32,8 @@ Thumbs.db
 .ipynb_checkpoints/
 
 # Quant data cache (too large for repo)
+*.db
+*.db-journal
 scripts/cache/
 scripts/quant/cache/
 scripts/quant/journal/
