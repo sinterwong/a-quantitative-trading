@@ -657,8 +657,9 @@ class BlackListFilter:
     - 成交量异常低（疑似流动性枯竭）
     """
 
-    def __init__(self, min_volume_ratio=0.001):
+    def __init__(self, min_volume_ratio=0.001, up_limit_discount=0.90):
         self.min_volume_ratio = min_volume_ratio
+        self.up_limit_discount = up_limit_discount  # 涨停折扣（≥此比例视为涨停）
 
     def can_buy(self, data, i) -> tuple:
         """
