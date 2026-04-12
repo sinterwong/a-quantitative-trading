@@ -1,7 +1,43 @@
 {
-  "_comment": "全局策略参数配置文件 - 修改此文件即可调整策略，无需改动代码",
+  "_comment": "全局参数配置文件",
   "version": "1.0",
   "updated": "2026-04-12",
+
+  "strategies": {
+    "RSI": {
+      "symbol": "600519.SH",
+      "params": {
+        "rsi_period": 14,
+        "rsi_buy": 35,
+        "rsi_sell": 65,
+        "stop_loss": 0.08,
+        "take_profit": 0.25,
+        "min_hold_days": 3
+      }
+    },
+    "MACD": {
+      "symbol": "600900.SH",
+      "params": {
+        "fast_period": 12,
+        "slow_period": 26,
+        "signal_period": 9,
+        "stop_loss": 0.08,
+        "take_profit": 0.25,
+        "min_hold_days": 5
+      }
+    },
+    "BollingerBand": {
+      "symbol": "300750.SZ",
+      "params": {
+        "period": 20,
+        "std_mult": 2.0,
+        "stop_loss": 0.08,
+        "take_profit": 0.20,
+        "rsi_period": 14,
+        "rsi_buy": 35
+      }
+    }
+  },
 
   "portfolio": {
     "capital": 20000,
@@ -13,30 +49,9 @@
 
   "risk": {
     "max_position_pct": 0.20,
-    "max_drawdown_limit": 0.30,
+    "max_drawdown_limit": 0.15,
     "commission": 0.0003,
     "stamp_tax": 0.001,
     "slippage": 0.0005
-  },
-
-  "defaults": {
-    "RSI": {
-      "_comment": "RSI 信号源全局默认值",
-      "period": 21,
-      "oversold": 35,
-      "overbought": 65,
-      "stop_loss": 0.05,
-      "take_profit": 0.20,
-      "min_hold_days": 5
-    },
-    "MACD": {
-      "_comment": "MACD 信号源全局默认值",
-      "fast": 12,
-      "slow": 26,
-      "signal": 9
-    },
-    "MarketRegime": {
-      "ma_period": 200
-    }
   }
 }
