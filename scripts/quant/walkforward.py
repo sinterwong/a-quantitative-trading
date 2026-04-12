@@ -133,6 +133,8 @@ class WalkForwardAnalyzer:
             test_result['_window'] = w + 1
             test_result['_train_period'] = f"{train_start_date}~{train_end_date}"
             test_result['_test_period'] = f"{test_start_date}~{test_end_date}"
+            # 保存权益曲线（供 Monte Carlo 模拟）
+            test_result['equity_curve'] = engine_test.get_equity_curve()
 
             print(f"    Test Result: Sharpe={test_result['sharpe_ratio']:.2f}, "
                   f"Return={test_result['total_return_pct']:+.1f}%, "

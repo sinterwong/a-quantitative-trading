@@ -37,6 +37,8 @@ from data_loader import DataLoader
 from backtest import BacktestEngine
 from walkforward import WalkForwardAnalyzer
 from signal_generator import SignalGenerator
+from quant.monte_carlo import MonteCarloSimulator
+from quant.benchmark import quick_benchmark
 
 # ─── 持久化 ──────────────────────────────────────────────
 BACKEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backend')
@@ -195,11 +197,43 @@ def run_walkforward_for_symbol(symbol: str,
     else:
         print("  [WARN] No valid windows")
 
+    # ── Monte Carlo 模拟（基于所有 window 的权益曲线）──
+    mc_result = None
+    if results and any('equity_curve' in r for r in results):
+        try:
+            sim = MonteCarloSimulator()
+            sim.load_from_wfa(results)
+            mc_result = sim.run(n_iterations=1000)
+            sim.print_summary(mc_result)
+        except Exception as e:
+            print(f"  [WARN] Monte Carlo failed: {e}")
+
+    # ── 沪深300 Benchmark 对比 ─────────────────────────
+    bench_result = None
+    if results and 'equity_curve' in results[-1]:
+        try:
+            bench_result = quick_benchmark(results[-1]['equity_curve'], '510310.SH')
+            if 'error' not in bench_result:
+                print(f"\n  📊 沪深300 Benchmark 对比:")
+                print(f"     Alpha(年化): {bench_result['alpha_annualized']:+.2%}")
+                print(f"     Beta: {bench_result['beta']:.2f}")
+                print(f"     信息比率: {bench_result['info_ratio']:.2f}")
+                print(f"     跑赢天数: {bench_result['outperformance_days_pct']:.1%}")
+                print(f"     策略MaxDD: {bench_result['strategy_maxdd_pct']:.1%}")
+                print(f"     沪深300 MaxDD: {bench_result['benchmark_maxdd_pct']:.1%}")
+                print(f"     相对MaxDD: {bench_result['relative_maxdd_pct']:+.1%}")
+            else:
+                print(f"  [WARN] Benchmark: {bench_result['error']}")
+        except Exception as e:
+            print(f"  [WARN] Benchmark failed: {e}")
+
     return {
         'symbol': symbol,
         'strategy': strategy,
         'summary': summary,
         'results': results,
+        'mc': mc_result,
+        'benchmark': bench_result,
     }
 
 

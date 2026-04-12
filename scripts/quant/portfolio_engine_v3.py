@@ -213,7 +213,7 @@ class PortfolioEngineV3:
         self.max_position_pct = 0.30
         self.max_total_exposure = 1.0
         self.max_trades_per_day = 5
-        self.max_drawdown_limit = 0.50
+        self.max_drawdown_limit = 0.15  # A股熔断阈值 15%（达限禁止开仓）
         self.commission = 0.0003
         self.stamp_tax = 0.001
         self.slippage = 0.0005
@@ -468,12 +468,21 @@ class PortfolioEngineV3:
         for date_idx, date in enumerate(dates):
             self._current_date = date
 
-            # 更新持仓价格
+            # 更新持仓价格 + 止损检查
             for sym, pos in self.positions.items():
                 if pos.shares > 0 and sym in self._data_cache:
                     for d in self._data_cache[sym]:
                         if d['date'] == date:
-                            pos.update(d['close'])
+                            price = d['close']
+                            pos.update(price)
+                            # ── 个股止损检查 ──────────────────────────
+                            stop_pct = info['instance'].sources[0][0].params.get('stop_loss', 0.08) \
+                                       if (info.get('instance') and info['instance'].sources) else 0.08
+                            pnl_since_entry = (price - pos.entry_price) / pos.entry_price
+                            if pnl_since_entry <= -stop_pct:
+                                self._execute_trade(sym, 'sell', price, shares=0,
+                                                   reason=f'stop_loss({pnl_since_entry:.1%})',
+                                                   meta={'entry': pos.entry_price, 'exit': price})
                             break
 
             # 收集所有信号
