@@ -1,0 +1,42 @@
+{
+  "_comment": "全局策略参数配置文件 - 修改此文件即可调整策略，无需改动代码",
+  "version": "1.0",
+  "updated": "2026-04-12",
+
+  "portfolio": {
+    "capital": 20000,
+    "max_positions": 5,
+    "max_layers_per_stock": 2,
+    "layers": 10,
+    "layer_size": 2000
+  },
+
+  "risk": {
+    "max_position_pct": 0.20,
+    "max_drawdown_limit": 0.30,
+    "commission": 0.0003,
+    "stamp_tax": 0.001,
+    "slippage": 0.0005
+  },
+
+  "defaults": {
+    "RSI": {
+      "_comment": "RSI 信号源全局默认值",
+      "period": 21,
+      "oversold": 35,
+      "overbought": 65,
+      "stop_loss": 0.05,
+      "take_profit": 0.20,
+      "min_hold_days": 5
+    },
+    "MACD": {
+      "_comment": "MACD 信号源全局默认值",
+      "fast": 12,
+      "slow": 26,
+      "signal": 9
+    },
+    "MarketRegime": {
+      "ma_period": 200
+    }
+  }
+}

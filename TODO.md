@@ -9,13 +9,13 @@
 - [x] **Error handling audit** — `dynamic_selector.py`: added `_log()` with INFO/WARNING levels; all API failures are now logged with reason (rate limit / parse error / empty). `_last_source` / `_last_news_source` track data origin. `fetch_sectors()`: removed dead THS code referencing undefined `raw2`. `stock_data_only.py`: shows `[数据状态] 资讯:{src} | 板块:{src}` + fallback warning at end of report.
 
 ### P1 — Improve Reliability
-- [ ] **Parameter externalization** — move RSI parameters (`rsi_buy=35`, `rsi_sell=70`, etc.) out of code into `config_stock_pool.py` or a YAML file
+- [x] **Parameter externalization** — created `params.json` with all global strategy defaults (RSI period/oversold/overbought/stop_loss/take_profit, MACD, risk params). `config_stock_pool.py` now loads via `get_default_params('RSI')` and merges with per-stock `strategy_override`. Modify `params.json` without touching code to adjust strategy.
 - [ ] **Journal persistence** — verify full signal → trade → position cycle writes correctly to `scripts/quant/journal/`
 - [ ] **Retry with backoff** — current 200ms rate limit works; add exponential backoff (1s → 2s → 4s) when API returns 429/503
 - [ ] **Empty-state reporting** — when all APIs fail and we fall back to broad ETFs, generate a visible "Data Unavailable" notice in the report
 
 ### P2 — Polish
-- [ ] **CI on Windows** — add `runs-on: windows-latest` matrix job to GitHub Actions; some scripts use Windows-specific path handling
+- [x] **CI on Windows** — CI now runs 3 jobs: Linux portable tests (all Python versions), pytest (3.12), and Windows CI (`windows-latest` + bash shell for Linux-style execution)
 - [ ] **Log file rotation** — prevent `cache/` and `journal/` from growing unbounded
 - [ ] **Daily health check** — add a lightweight pre-check at 14:55 that verifies API connectivity before market close
 

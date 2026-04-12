@@ -7,7 +7,7 @@ USER.md
 TOOLS.md
 SOUL.md
 heartbeat-state.json
-*.json
+!params.json
 
 # Personal data
 investments.json
