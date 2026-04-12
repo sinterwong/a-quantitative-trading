@@ -87,8 +87,9 @@ class RSISignalSource(SignalSource):
     def __init__(self, symbol, params=None):
         super().__init__(symbol, params)
         self.period = self.params.get('period', 21)
-        self.oversold = self.params.get('oversold', 35)
-        self.overbought = self.params.get('overbought', 65)
+        # 支持 walkforward_job 输出的 rsi_buy/rsi_sell 参数名
+        self.oversold = self.params.get('rsi_buy', self.params.get('oversold', 35))
+        self.overbought = self.params.get('rsi_sell', self.params.get('overbought', 65))
         self.stop_loss = self.params.get('stop_loss', 0.05)
         self.take_profit = self.params.get('take_profit', 0.20)
         self.min_hold_days = self.params.get('min_hold_days', 5)
@@ -163,6 +164,15 @@ class RSISignalSource(SignalSource):
             }
 
         return {'signal': SignalType.HOLD, 'strength': 0.0, 'reason': 'no_signal'}
+
+    def _reinit_from_params(self):
+        """重新从 params 初始化阈值（在 load_live_params 后调用）"""
+        self.period = self.params.get('period', 21)
+        self.oversold = self.params.get('rsi_buy', self.params.get('oversold', 35))
+        self.overbought = self.params.get('rsi_sell', self.params.get('overbought', 65))
+        self.stop_loss = self.params.get('stop_loss', 0.05)
+        self.take_profit = self.params.get('take_profit', 0.20)
+        self.min_hold_days = self.params.get('min_hold_days', 5)
 
     def reset(self):
         self._entry_price = 0
@@ -261,6 +271,15 @@ class MACDSignalSource(SignalSource):
             }
 
         return {'signal': SignalType.HOLD, 'strength': 0.0, 'reason': 'no_signal'}
+
+    def _reinit_from_params(self):
+        """重新从 params 初始化参数（在 load_live_params 后调用）"""
+        self.fast = self.params.get('fast', 12)
+        self.slow = self.params.get('slow', 26)
+        self.signal = self.params.get('signal', 9)
+        self.stop_loss = self.params.get('stop_loss', 0.08)
+        self.take_profit = self.params.get('take_profit', 0.25)
+        self.min_hold_days = self.params.get('min_hold_days', 10)
 
     def reset(self):
         self._entry_price = 0
@@ -501,6 +520,32 @@ class SignalGenerator:
         self.sources.append((inst, weight))
         self._source_instances[source_class.name] = inst
         return inst
+
+    def load_live_params(self, live_params: dict):
+        """
+        用 walkforward 训练出的最新参数覆盖各信号源配置。
+
+        live_params 格式（由 walkforward_job.py 写入 live_params.json）：
+            {
+              'RSI': {'rsi_buy': 30, 'rsi_sell': 65, 'stop_loss': 0.08, 'take_profit': 0.25},
+              'MACD': {'fast': 12, 'slow': 26, 'signal': 9, ...}
+            }
+        """
+        SOURCE_NAME_MAP = {
+            'RSISignalSource': 'RSI',
+            'MACDSignalSource': 'MACD',
+            'BollingerBandSource': 'BollingerBand',
+            'InstitutionalSignalSource': 'Institutional',
+            'MarketRegimeSource': 'MarketRegime',
+        }
+        for src, weight in self.sources:
+            key = SOURCE_NAME_MAP.get(src.name, src.name)
+            if key in live_params:
+                trained = live_params[key]
+                # 合并：默认参数被 trained 参数覆盖
+                src.params = {**src.params, **trained}
+                # 重新初始化信号源内部状态（RSI 用 params 初始化指标阈值）
+                src._reinit_from_params()
 
     def load_all(self, data_loader, start, end):
         """加载所有源的数据"""
