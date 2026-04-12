@@ -38,8 +38,7 @@ from services.signals import (
 
 logger = logging.getLogger('intraday_monitor')
 
-# 全局配置（可被外部覆盖）
-FEISHU_USER_ID = 'ou_b8add658ac094464606af32933a02d0b'
+# 全局配置
 CHECK_INTERVAL  = 300   # 秒（5分钟）
 COOLDOWN       = 900   # 同一标的信号推送冷却时间（15分钟）
 
@@ -81,43 +80,6 @@ def next_market_seconds(now: Optional[datetime] = None) -> int:
     return int((tomorrow.timestamp() - now.timestamp())) + (morning_start * 60)
 
 
-# ─── Feishu 推送 ─────────────────────────────────────────
-
-def push_feishu(text: str) -> bool:
-    """通过 OpenClaw 发送飞书消息"""
-    try:
-        # 读取 OpenClaw 配置
-        cfg_path = os.path.expanduser('~/.openclaw/config.json')
-        if os.path.exists(cfg_path):
-            with open(cfg_path) as f:
-                cfg = json.load(f)
-                token = cfg.get('feishu', {}).get('bot_token') or cfg.get('plugins', {}).get('feishu', {}).get('token')
-        else:
-            token = None
-
-        # 直接用 OpenClaw message tool
-        from openclaw_core_plugin import get_plugin
-        # 尝试直接调用 OpenClaw 内部消息接口
-        import socket
-        s = socket.socket()
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b'\x01\x00\x00\x00\x00\x00\x00\x00')
-        logger.debug('Feishu push not available via socket, trying HTTP')
-    except Exception as e:
-        logger.debug('push_feishu: %s', e)
-
-    # 通过 OpenClaw 运行时发送（会在主 session 中处理）
-    # 写入信号文件，由 heartbeat 或主循环读取并通过 message tool 推送
-    signal_file = os.path.join(BACKEND_DIR, 'pending_alerts.json')
-    try:
-        with open(signal_file, 'a') as f:
-            f.write(text + '\n')
-        logger.info('Alert written to pending_alerts.json')
-        return True
-    except Exception as e:
-        logger.warning('Failed to write pending alert: %s', e)
-        return False
-
-
 # ─── 冷却追踪 ─────────────────────────────────────────────
 
 class CooldownTracker:
@@ -147,11 +109,9 @@ class IntradayMonitor:
     盘中信号监控后台线程。
     """
 
-    def __init__(self, svc, check_interval: int = CHECK_INTERVAL,
-                 feishu_user: str = FEISHU_USER_ID):
+    def __init__(self, svc, check_interval: int = CHECK_INTERVAL):
         self._svc       = svc
         self._interval  = check_interval
-        self._feishu_user = feishu_user
         self._stop_evt  = threading.Event()
         self._thread:   Optional[threading.Thread] = None
         self._cooldown  = CooldownTracker()
@@ -254,59 +214,47 @@ class IntradayMonitor:
             logger.info('Pushed %d alerts to Feishu at %s', len(actionable), check_time)
 
     def _deliver_alert(self, text: str):
-        """投递警报：尝试直接发送，否则写入待发送队列"""
-        # 方案A：写入待推送文件，由 heartbeat 读取并发送
-        queue_dir  = os.path.join(BACKEND_DIR, 'alert_queue')
-        os.makedirs(queue_dir, exist_ok=True)
-        fname = os.path.join(queue_dir, f"alert_{int(time.time()*1000)}.txt")
+        """通过飞书 IM API 推送文本消息给用户。"""
+        app_id = 'cli_a9217a3f3f389cc2'
+        app_secret = '5kOAKAmFzhySMYQB9nV5ndInIlWS43mt'
+        user_open_id = 'ou_b8add658ac094464606af32933a02d0b'
+
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        # 1. 获取 tenant_access_token
         try:
-            with open(fname, 'w', encoding='utf-8') as f:
-                f.write(text)
-            logger.info('Alert queued: %s', fname)
+            token_url = 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal'
+            payload = json.dumps({'app_id': app_id, 'app_secret': app_secret}).encode()
+            req = urllib.request.Request(token_url, data=payload,
+                                        headers={'Content-Type': 'application/json'}, method='POST')
+            with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
+                token_result = json.loads(resp.read())
+            token = token_result.get('tenant_access_token', '')
+            if not token:
+                logger.warning('Feishu: no tenant_access_token returned: %s', token_result)
+                return
         except Exception as e:
-            logger.error('Failed to queue alert: %s', e)
+            logger.error('Feishu token request failed: %s', e)
+            return
 
-        # 方案B：直接 HTTP 推 OpenClaw（如果有接口）
-        self._try_openclaw_push(text)
-
-    def _try_openclaw_push(self, text: str):
-        """尝试通过 OpenClaw HTTP 接口直接推 Feishu"""
+        # 2. 发送消息
         try:
-            import socket
-            # OpenClaw gateway 通常在本地 18789
-            s = socket.socket()
-            s.settimeout(2)
-            s.connect(('127.0.0.1', 18789))
-            s.close()
-        except Exception:
-            pass
-
-        # 尝试通过 OpenClaw 的 Feishu plugin 推送
-        # 这需要知道 bot_token，在 config 中
-        try:
-            cfg_file = os.path.expanduser('~/.openclaw/config.json')
-            if os.path.exists(cfg_file):
-                with open(cfg_file) as f:
-                    cfg = json.load(f)
-                feishu_cfg = cfg.get('feishu', {}) or cfg.get('plugins', {}).get('feishu', {})
-                bot_token  = feishu_cfg.get('bot_token') or feishu_cfg.get('token')
-                if bot_token:
-                    import urllib.request
-                    import urllib.parse
-                    url = 'https://open.feishu.cn/open-apis/bot/v2/hook/' + bot_token.split('/')[-1]
-                    payload = json.dumps({'msg_type': 'text', 'content': {'text': text}}).encode()
-                    req = urllib.request.Request(
-                        url, data=payload,
-                        headers={'Content-Type': 'application/json'},
-                        method='POST'
-                    )
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-                    with urllib.request.urlopen(req, timeout=5, context=ctx) as resp:
-                        result = json.loads(resp.read())
-                        if result.get('code') == 0 or result.get('StatusCode') == 0:
-                            logger.info('Feishu push via webhook succeeded')
-                            return
+            send_url = 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id'
+            headers = {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token}
+            msg_payload = json.dumps({
+                'receive_id': user_open_id,
+                'msg_type': 'text',
+                'content': json.dumps({'text': text})
+            }).encode()
+            req2 = urllib.request.Request(send_url, data=msg_payload, headers=headers, method='POST')
+            with urllib.request.urlopen(req2, timeout=8, context=ctx) as resp2:
+                result = json.loads(resp2.read())
+                code = result.get('code', -1)
+                if code == 0:
+                    logger.info('Feishu push succeeded: msg_id=%s', result.get('data', {}).get('message_id'))
+                else:
+                    logger.warning('Feishu push code=%s: %s', code, result.get('msg'))
         except Exception as e:
-            logger.debug('Feishu webhook push failed: %s', e)
+            logger.error('Feishu send failed: %s', e)
