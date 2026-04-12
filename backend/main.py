@@ -2,12 +2,13 @@
 main.py — Backend service entry point
 =====================================
 Starts the HTTP API server as a persistent background process.
-Can also run the scheduler for automated daily analysis.
+Runs the Scheduler for automated daily analysis (15:10 CST).
+Runs the IntradayMonitor for intraday signal detection (every 5 min during trading hours).
 
 Usage:
     python main.py                    # start API server
     python main.py --mode scheduler   # start scheduler only
-    python main.py --mode both       # API + scheduler
+    python main.py --mode both       # API + scheduler + intraday monitor
 """
 
 import os
@@ -160,6 +161,30 @@ def main():
     signal.signal(signal.SIGINT, lambda *_: on_shutdown())
     signal.signal(signal.SIGTERM, lambda *_: on_shutdown())
 
+    # Intraday monitor — runs during trading hours, pushes Feishu on signals
+    monitor = None
+    if args.mode in ('scheduler', 'both'):
+        sys.path.insert(0, BACKEND_DIR)
+        try:
+            from services.intraday_monitor import IntradayMonitor
+            from api import app as _flask_app
+            # Get PortfolioService from the Flask app's global
+            svc = None
+            try:
+                from api import _svc
+                svc = _svc
+            except ImportError:
+                pass
+            if svc is None:
+                # Instantiate directly
+                from services.portfolio import PortfolioService
+                svc = PortfolioService()
+            monitor = IntradayMonitor(svc=svc, check_interval=300)
+            monitor.start()
+            logger.info('IntradayMonitor started (push alerts to Feishu on signals)')
+        except Exception as e:
+            logger.warning('IntradayMonitor start failed (non-fatal): %s', e)
+
     if args.mode in ('api', 'both'):
         logger.info('Starting API server thread')
         api_t = threading.Thread(
@@ -178,6 +203,8 @@ def main():
             sched_thread.join(timeout=5)
     except KeyboardInterrupt:
         on_shutdown()
+        if monitor:
+            monitor.stop()
 
 
 if __name__ == '__main__':

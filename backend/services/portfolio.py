@@ -186,7 +186,7 @@ class PortfolioService:
                 '''INSERT OR IGNORE INTO orders
                    (order_id, symbol, direction, shares, price, price_type,
                     status, filled_shares, avg_fill_price, submitted_at)
-                   VALUES (?, ?, ?, ?, ?, ?, 'submitted', 0, 0.0, ?)',
+                   VALUES (?, ?, ?, ?, ?, ?, 'submitted', 0, 0.0, ?)''',
                 (order_id, symbol, direction, shares, price,
                  price_type, datetime.now().isoformat())
             )

@@ -36,14 +36,15 @@
 
 ---
 
-## Phase 3: Real-time Intelligence
+## Phase 3: Real-time Intelligence  ← IN PROGRESS
 
 ### P0 — Live Market Data
-- [ ] **WebSocket or polling** — real-time price updates (every 30s during market hours)
-- [ ] **Intraday signal detection** — RSI/MACD triggers during trading hours
+- [x] **Signal engine** — `backend/services/signals.py`: RSI approximation (prev-day RSI + intraday momentum), signal evaluation (BUY/SELL/WATCH_BUY/WATCH_SELL/VOLATILE)
+- [x] **Bulk price fetch** — Tencent `qt.gtimg.cn` batch API for real-time quotes (single request for all positions)
+- [x] **IntradayMonitor** — `backend/services/intraday_monitor.py`: daemon thread, 5-min polling during 9:35-11:30 & 13:00-14:55 CST Mon-Fri, cooldown tracking to prevent spam
+- [ ] **Push notifications** — Feishu alerts when signals fire during market hours (gateway HTTP hook)
 
 ### P1 — Proactive Alerts
-- [ ] **Push notifications** — alerts to Feishu when signals fire during market hours
 - [ ] **OpenClaw proactive reporting** — 小黑 proactively messages Sinter with signals, not just passive query
 
 ---
