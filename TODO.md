@@ -74,7 +74,14 @@
 - [x] **Web UI** — Streamlit dashboard (streamlit_app.py, 6 pages)
 - [x] **Scheduled reports** — `report_sender.py`: 9:00 早报 + 15:30 晚报（已测试推送成功）
   - OpenClaw cron 已配置：Morning Report (0 9 * * 1-5) + Closing Report (30 15 * * 1-5)
-- [ ] **Strategy plugins** — drop-in `strategies/strategy_xxx.py`
+- [x] **Strategy plugins** — `strategies/` 插件架构（RSI/MACD/BollingerBand）
+  - `strategies/__init__.py` — 注册中心 `STRATEGY_REGISTRY` + `load_strategy()`
+  - `strategies/base.py` — `BaseStrategy` 基类（含 `compute_rsi/compute_ema`）
+  - `strategies/rsi_strategy.py` — RSI 超买超卖插件
+  - `strategies/macd_strategy.py` — MACD 金叉死叉插件
+  - `strategies/bollinger_strategy.py` — 布林带插件
+  - `backend/services/strategy_loader.py` — 从 `params.json` 动态加载
+  - `params.json` — 策略配置（symbols + params）
 - [ ] **PostgreSQL** — upgrade from SQLite for multi-user
 - [ ] **Changelog + License**
 
