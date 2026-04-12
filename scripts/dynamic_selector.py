@@ -25,6 +25,15 @@ import time as _time
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 
+# 新闻质量评分（过滤含糊信号）
+try:
+    from quant.news_quality import score_news_item, score_and_filter_news
+except ImportError:
+    score_news_item = None
+    score_and_filter_news = None
+    def score_news_item(title): return 0.5  # fallback
+    def score_and_filter_news(news, **kw): return news
+
 # 日志级别: DEBUG / INFO / WARNING / ERROR
 LOG_LEVEL = 'INFO'
 
@@ -531,19 +540,37 @@ class DynamicStockSelectorV2:
 
     def calc_news_score(self) -> Dict[str, float]:
         """
-        计算新闻热度分，返回 {大类板块名: 分数}
+        计算新闻热度分（已整合质量评分），返回 {大类板块名: 分数}
+        - D级（质量<0.35）新闻直接丢弃
+        - C级新闻权重打5折
+        - B级以上新闻正常计入
         """
         if not self.news_cache:
             self.fetch_market_news()
 
+        # 应用新闻质量过滤（丢弃D级）
+        if score_and_filter_news:
+            news_to_score = score_and_filter_news(self.news_cache, min_quality=0.35)
+        else:
+            news_to_score = self.news_cache
+
         scores = {}
 
-        for news in self.news_cache:
+        for news in news_to_score:
             title = news.get('title', '')
             if not title:
                 continue
 
-            # 确定新闻类型和权重
+            # 质量折扣系数：C级×0.5，A/B级×1.0
+            quality = news.get('quality', 0.5)
+            if quality < 0.35:
+                quality_factor = 0    # D级丢弃
+            elif quality < 0.50:
+                quality_factor = 0.5  # C级半折
+            else:
+                quality_factor = 1.0   # A/B级全价
+
+            # 确定新闻类型基础权重
             if any(k in title for k in NEWS_POLICY_KEYWORDS):
                 w = NEWS_WEIGHTS['政策']
             elif any(k in title for k in NEWS_EARNINGS_KEYWORDS):
@@ -557,11 +584,15 @@ class DynamicStockSelectorV2:
             else:
                 w = NEWS_WEIGHTS['一般']
 
+            # 热度加成
             hot = news.get('hot_value', 0)
             if hot > 1000:
                 w *= 1.5
             elif hot > 500:
                 w *= 1.2
+
+            # 应用质量折扣
+            w *= quality_factor
 
             # 命中大类板块
             for sector, keywords in SECTOR_NEWS_KEYWORDS.items():
