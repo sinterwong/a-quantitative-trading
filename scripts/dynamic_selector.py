@@ -324,11 +324,9 @@ class DynamicStockSelectorV2:
             except Exception:
                 pass
 
-        # 3. 同花顺备选数据源
-        raw2 = get(
-            'https://d.10jqka.com.cn/v4/rank/hs_bk/{last}.js',
-            {'Referer': 'https://www.10jqka.com.cn/'}
-        )
+        # 3. 同花顺备选数据源 (experimental - 需要认证，暂不可用)
+        # 注：同花顺板块接口需认证，当前 fallback 主要依赖文件缓存
+        # 如需启用，可替换为新浪财经板块API
         # 同花顺数据格式不同，尝试解析
         if raw2 and '({' in raw2:
             try:

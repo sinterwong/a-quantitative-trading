@@ -92,25 +92,6 @@ def format_amount(num_str):
         return num_str
 
 
-def get_stock_name(code, selector):
-    """尝试获取股票名称"""
-    try:
-        url = f"https://qt.gtimg.cn/q={code}"
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
-        with urllib.request.urlopen(req, context=ssl_context, timeout=5) as resp:
-            data = resp.read().decode('gbk', errors='ignore')
-        for line in data.strip().split(';'):
-            if '=' in line:
-                fields = line.split('=')[1].strip().strip('"').split('~')
-                if len(fields) > 1:
-                    return fields[1]
-    except:
-        pass
-    return code
-
-
 def main():
     today = datetime.datetime.now().strftime('%Y-%m-%d')
     weekday = datetime.datetime.now().weekday()
@@ -160,11 +141,7 @@ def main():
             qt_codes.append(code)
     stocks = get_stocks_tencent(qt_codes)
     
-    # 补充名称（腾讯接口有时候返回空）
-    name_cache = {s['code']: s['name'] for s in stocks if 'error' not in s}
-    for s in stocks:
-        if s.get('name') in ['', '-'] or s.get('name') is None:
-            s['name'] = get_stock_name(s['code'], selector)
+    # 名称由腾讯接口直接返回，无需额外获取
     
     # ===== 生成报告 =====
     print("【一、关注标的行情】")
