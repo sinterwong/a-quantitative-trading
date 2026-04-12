@@ -21,8 +21,21 @@ import urllib.request
 import ssl
 import os
 import json
+import time as _time
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
+
+# 日志级别: DEBUG / INFO / WARNING / ERROR
+LOG_LEVEL = 'INFO'
+
+
+def _log(level: str, msg: str):
+    if level == 'DEBUG' and LOG_LEVEL != 'DEBUG':
+        return
+    if level == 'INFO' and LOG_LEVEL not in ('INFO', 'DEBUG'):
+        return
+    ts = datetime.now().strftime('%H:%M:%S')
+    print(f"[{ts}] [{level}] {msg}")
 
 # 禁用代理
 for key in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']:
@@ -35,10 +48,8 @@ SSL_CTX.verify_mode = ssl.CERT_NONE
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
-
-# ============================================================
-# 工具函数
-# ============================================================
+# Global rate limit tracker (per-domain)
+_last_call: Dict[str, float] = {}
 
 def get(url: str, headers: dict = None, timeout: int = 10) -> Optional[str]:
     """HTTP GET with 3 retries + domain-level rate limiting (200ms gap)"""
@@ -92,11 +103,6 @@ def get_gbk(url: str, headers: dict = None, timeout: int = 10) -> Optional[str]:
             else:
                 return None
     return None
-
-# Global rate limit tracker (per-domain)
-_last_call: Dict[str, float] = {}
-
-
 # ============================================================
 # 文件级缓存（进程重启后仍有效）
 # ============================================================
@@ -226,22 +232,26 @@ class DynamicStockSelectorV2:
         self._sectors_fetched = False
         # 实例级缓存：避免同一板块成分股重复请求
         self._constituent_cache: Dict[str, List[Dict]] = {}
-        self._sectors_fetched = False
+        # 数据来源追踪: 'cache' | 'eastmoney' | 'ths' | 'failed'
+        self._last_source: str = 'not_tried'
+        self._last_news_source: str = 'not_tried'
 
     # ----------------------------------------------------------
     # 数据获取
     # ----------------------------------------------------------
 
     def fetch_market_news(self, limit: int = 30) -> List[Dict]:
-        """获取市场资讯，优先东方财富，失败则用同花顺+文件缓存"""
+        """获取市场资讯，依次尝试：缓存 -> 东方财富 -> 同花顺"""
         if self._news_fetched and self.news_cache:
-            return self.news_cache
+            return self.news_cache[:limit]
 
-        # 1. 尝试文件缓存（30分钟内有效，避免盘中资讯过期）
+        # 1. 文件缓存（30分钟内有效）
         cached = _read_file_cache('news.json', max_age_seconds=1800)
         if cached:
             self.news_cache = cached
             self._news_fetched = True
+            self._last_news_source = 'cache'
+            _log('INFO', 'fetch_market_news: using file cache (' + str(len(cached)) + ' items)')
             return self.news_cache[:limit]
 
         # 2. 东方财富主数据源
@@ -265,11 +275,15 @@ class DynamicStockSelectorV2:
                         })
                     _write_file_cache('news.json', self.news_cache)
                     self._news_fetched = True
+                    self._last_news_source = 'eastmoney'
+                    _log('INFO', 'fetch_market_news: eastmoney ok (' + str(len(self.news_cache)) + ' items)')
                     return self.news_cache
-            except Exception:
-                pass
+            except Exception as e:
+                _log('WARNING', 'fetch_market_news: eastmoney parse failed: ' + str(e))
+        else:
+            _log('WARNING', 'fetch_market_news: eastmoney empty (rate limited)')
 
-        # 3. 同花顺备选
+        # 3. 同花顺备用
         url2 = f'https://news.10jqka.com.cn/tapp/news/push/stock/?page=1&tag=&track=website&pagesize={limit}'
         raw2 = get(url2, {'Referer': 'https://www.10jqka.com.cn/'})
         if raw2:
@@ -286,23 +300,31 @@ class DynamicStockSelectorV2:
                         })
                     _write_file_cache('news.json', self.news_cache)
                     self._news_fetched = True
+                    self._last_news_source = 'ths'
+                    _log('INFO', 'fetch_market_news: tonghuashun ok (' + str(len(self.news_cache)) + ' items)')
                     return self.news_cache
-            except Exception:
-                pass
+            except Exception as e:
+                _log('WARNING', 'fetch_market_news: ths parse failed: ' + str(e))
+        else:
+            _log('WARNING', 'fetch_market_news: ths empty')
 
         self._news_fetched = True
-        return self.news_cache
+        self._last_news_source = 'failed'
+        _log('WARNING', 'fetch_market_news: all sources failed, returning empty')
+        return []
 
     def fetch_sectors(self) -> List[Dict]:
-        """获取板块行情+资金流向，优先东方财富，失败则用同花顺缓存"""
+        """获取板块行情+资金流向，依次尝试：文件缓存 -> 东方财富 -> 失败"""
         if self._sectors_fetched and self.sectors_raw:
             return self.sectors_raw
 
-        # 1. 尝试文件缓存（1小时内有效）
+        # 1. 文件缓存（1小时内有效）
         cached = _read_file_cache('sectors.json', max_age_seconds=3600)
         if cached:
             self.sectors_raw = cached
             self._sectors_fetched = True
+            self._last_source = 'cache'
+            _log('INFO', 'fetch_sectors: using file cache (' + str(len(cached)) + ' sectors)')
             return self.sectors_raw
 
         # 2. 东方财富主数据源
@@ -316,41 +338,24 @@ class DynamicStockSelectorV2:
         if raw:
             try:
                 data = json.loads(raw)
-                self.sectors_raw = data.get('data', {}).get('diff', []) if isinstance(data.get('data'), dict) else []
-                if self.sectors_raw:
+                sectors = data.get('data', {}).get('diff', []) if isinstance(data.get('data'), dict) else []
+                if sectors:
+                    self.sectors_raw = sectors
+                    self._last_source = 'eastmoney'
                     _write_file_cache('sectors.json', self.sectors_raw)
                     self._sectors_fetched = True
+                    _log('INFO', 'fetch_sectors: eastmoney API ok (' + str(len(sectors)) + ' sectors)')
                     return self.sectors_raw
-            except Exception:
-                pass
+            except Exception as e:
+                _log('WARNING', 'fetch_sectors: eastmoney parse failed: ' + str(e))
+        else:
+            _log('WARNING', 'fetch_sectors: eastmoney API returned empty (rate limited or network error)')
 
-        # 3. 同花顺备选数据源 (experimental - 需要认证，暂不可用)
-        # 注：同花顺板块接口需认证，当前 fallback 主要依赖文件缓存
-        # 如需启用，可替换为新浪财经板块API
-        # 同花顺数据格式不同，尝试解析
-        if raw2 and '({' in raw2:
-            try:
-                json_str = raw2[raw2.index('({'):-1]
-                data = json.loads(json_str)
-                items = data.get('data', {}).get('items', [])
-                result = []
-                for item in items:
-                    result.append({
-                        'f12': item.get('板块代码', ''),
-                        'f14': item.get('板块名称', ''),
-                        'f3': item.get('涨跌幅', 0),
-                        'f62': 0,  # 同花顺不含北向数据
-                    })
-                if result:
-                    self.sectors_raw = result
-                    _write_file_cache('sectors.json', self.sectors_raw)
-                    self._sectors_fetched = True
-                    return self.sectors_raw
-            except Exception:
-                pass
-
+        # 3. 无备用数据源，依赖文件缓存；标记失败状态
         self._sectors_fetched = True
-        return self.sectors_raw
+        self._last_source = 'failed'
+        _log('WARNING', 'fetch_sectors: all sources failed, returning empty list')
+        return []
 
     def fetch_sector_constituents(self, bk_code: str, top_n: int = 5) -> List[Dict]:
         """获取板块成分股（按涨幅排序，取前N），带实例缓存"""

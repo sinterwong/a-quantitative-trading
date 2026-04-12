@@ -6,7 +6,7 @@
 - [ ] **Verify THS sector fallback** — replace broken `d.10jqka.com.cn` URL with working Sina Finance sector API (`vip.stock.finance.sina.com.cn`)
 - [ ] **Monday open validation** — observe if Eastmoney push API recovers after weekend cooldown; confirm cron delivers to Feishu
 - [x] **Expand test coverage** — added `tests/test_signal_generator.py` (20 tests: RSISignalSource, MarketRegimeSource, SignalGenerator, BlackListFilter) + `tests/run_tests.py` (88 tests total, no external deps). For GitHub Actions use `python -m pytest tests/ -v`.
-- [ ] **Error handling audit** — every API call should have a clear fallback path; empty data must not crash the report
+- [x] **Error handling audit** — `dynamic_selector.py`: added `_log()` with INFO/WARNING levels; all API failures are now logged with reason (rate limit / parse error / empty). `_last_source` / `_last_news_source` track data origin. `fetch_sectors()`: removed dead THS code referencing undefined `raw2`. `stock_data_only.py`: shows `[数据状态] 资讯:{src} | 板块:{src}` + fallback warning at end of report.
 
 ### P1 — Improve Reliability
 - [ ] **Parameter externalization** — move RSI parameters (`rsi_buy=35`, `rsi_sell=70`, etc.) out of code into `config_stock_pool.py` or a YAML file

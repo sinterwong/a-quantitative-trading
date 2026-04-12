@@ -224,7 +224,14 @@ def main():
     
     print()
     print("=" * 60)
-    print("数据来源: 腾讯财经/东方财富 | 仅供参考，不构成投资建议")
+    # 数据来源状态
+    src_map = {'cache': '文件缓存', 'eastmoney': '东方财富API', 'ths': '同花顺', 'failed': '全部失败(WARN)', 'not_tried': '未尝试'}
+    news_src = src_map.get(selector._last_news_source, selector._last_news_source)
+    sector_src = src_map.get(selector._last_source, selector._last_source)
+    print(f"[数据状态] 资讯: {news_src} | 板块: {sector_src}")
+    if is_fallback:
+        print("[WARN] 板块数据来源失败，已fallback到宽基ETF，评分仅供参考")
+    print("数据来源: 腾讯财经/东方财富/同花顺 | 仅供参考，不构成投资建议")
     
     # 返回选中的标的代码（供外部调用）
     return [s['code'] for s in stocks if 'error' not in s]
