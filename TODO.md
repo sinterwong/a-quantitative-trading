@@ -71,10 +71,10 @@
 
 ## Phase 5: Productization
 
-- [ ] **Web UI** — Streamlit dashboard (positions, signals, reports)
-- [ ] **PostgreSQL** — upgrade from SQLite for multi-user
+- [x] **Web UI** — Streamlit dashboard (streamlit_app.py, 6 pages: 组合概览/实时信号/动态选股/回测分析/持仓详情/历史交易)
+- [ ] **Scheduled reports** — 9:00 早报 + 15:30 晚报推送（飞书）
 - [ ] **Strategy plugins** — drop-in `strategies/strategy_xxx.py`
-- [ ] **Scheduled reports** — configurable times (pre-market 9:00, post-market 15:30)
+- [ ] **PostgreSQL** — upgrade from SQLite for multi-user
 - [ ] **Changelog + License**
 
 ---
