@@ -127,10 +127,37 @@ def init_db():
             )
 
         # Add latest_price column if not exists (migration from older schema)
-        try:
-            cur.execute("ALTER TABLE positions ADD COLUMN latest_price REAL NOT NULL DEFAULT 0.0")
-        except Exception:
-            pass  # column already exists
+        # ---- Orders table (order lifecycle) ----
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS orders (
+                order_id       TEXT    PRIMARY KEY,
+                symbol         TEXT    NOT NULL,
+                direction      TEXT    NOT NULL,
+                shares         INTEGER NOT NULL,
+                price          REAL    NOT NULL DEFAULT 0,
+                price_type    TEXT    NOT NULL DEFAULT 'market',
+                status        TEXT    NOT NULL DEFAULT 'submitted',
+                filled_shares INTEGER NOT NULL DEFAULT 0,
+                avg_fill_price REAL    NOT NULL DEFAULT 0.0,
+                submitted_at   TEXT,
+                filled_at     TEXT,
+                cancel_reason TEXT,
+                rejection_reason TEXT
+            )
+        ''')
+
+        # Add columns to existing orders table if missing (migration)
+        for col, dtype in [
+            ('filled_shares', 'INTEGER NOT NULL DEFAULT 0'),
+            ('avg_fill_price', 'REAL NOT NULL DEFAULT 0.0'),
+            ('cancel_reason', 'TEXT'),
+            ('rejection_reason', 'TEXT'),
+            ('latest_price', 'REAL NOT NULL DEFAULT 0.0'),
+        ]:
+            try:
+                cur.execute(f'ALTER TABLE positions ADD COLUMN {col} {dtype}')
+            except Exception:
+                pass  # column already exists
 
 
 # ============================================================
@@ -141,6 +168,84 @@ class PortfolioService:
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
         init_db()
+
+    # ============================================================
+    # Order Lifecycle
+    # ============================================================
+
+    def create_order(self, symbol: str, direction: str, shares: int,
+                     price: float = 0, price_type: str = 'market') -> str:
+        """
+        Create a new order in 'submitted' status.
+        Returns order_id.
+        """
+        import time
+        order_id = f"ORD_{int(time.time()*1000)}"
+        with get_cursor() as cur:
+            cur.execute(
+                '''INSERT OR IGNORE INTO orders
+                   (order_id, symbol, direction, shares, price, price_type,
+                    status, filled_shares, avg_fill_price, submitted_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'submitted', 0, 0.0, ?)',
+                (order_id, symbol, direction, shares, price,
+                 price_type, datetime.now().isoformat())
+            )
+        return order_id
+
+    def update_order_filled(self, order_id: str, filled_shares: int,
+                            avg_price: float):
+        with get_cursor() as cur:
+            cur.execute(
+                '''UPDATE orders SET
+                    status='filled', filled_shares=?, avg_fill_price=?,
+                    filled_at=? WHERE order_id=?''',
+                (filled_shares, avg_price, datetime.now().isoformat(), order_id)
+            )
+
+    def update_order_rejected(self, order_id: str, reason: str):
+        with get_cursor() as cur:
+            cur.execute(
+                '''UPDATE orders SET
+                    status='rejected', rejection_reason=?
+                    WHERE order_id=?''',
+                (reason, order_id)
+            )
+
+    def update_order_cancelled(self, order_id: str, reason: str = 'user_cancelled'):
+        with get_cursor() as cur:
+            cur.execute(
+                '''UPDATE orders SET
+                    status='cancelled', cancel_reason=?
+                    WHERE order_id=?''',
+                (reason, order_id)
+            )
+
+    def get_order(self, order_id: str) -> Optional[Dict]:
+        with get_cursor() as cur:
+            cur.execute('SELECT * FROM orders WHERE order_id=?', (order_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def get_orders(self, symbol: Optional[str] = None,
+                  status: Optional[str] = None,
+                  limit: int = 50) -> List[Dict]:
+        with get_cursor() as cur:
+            query = 'SELECT * FROM orders WHERE 1=1'
+            args: List[Any] = []
+            if symbol:
+                query += ' AND symbol=?'
+                args.append(symbol)
+            if status:
+                query += ' AND status=?'
+                args.append(status)
+            query += ' ORDER BY submitted_at DESC LIMIT ?'
+            args.append(limit)
+            cur.execute(query, args)
+            return [dict(row) for row in cur.fetchall()]
+
+    def get_pending_orders(self) -> List[Dict]:
+        """Return orders still in 'submitted' status."""
+        return self.get_orders(status='submitted')
 
     # ------------------------------------------------------------
     # Positions
