@@ -1,25 +1,33 @@
 """
-portfolio.py — Portfolio persistence service with SQLite
-=================================================
-Phase 1 core: stores positions, trades, cash, signals persistently.
-All state survives restarts — no in-memory loss.
+portfolio.py — Portfolio persistence service with SQLite + P&L
+=========================================================
+Phase 1: stores positions, trades, cash, signals persistently.
+All state survives restarts.
 
-Database: portfolio.db (SQLite)
 Schema:
-    positions   — current holdings
+    positions   — current holdings (updated at each fill)
     trades     — completed trades
     cash       — available cash
     signals    — today's signals
     daily_meta — daily summaries
+    trade_pnl  — realized P&L per trade (updated on SELL)
+
+P&L:
+    unrealized_pnl  = (latest_price - entry_price) * shares  (floating)
+    realized_pnl    = selling_price - entry_price   (locked in on SELL)
+    total_pnl       = unrealized + realized
 """
 
 import os
 import sqlite3
 import json
 import time
+import logging
 from datetime import datetime, date
 from typing import List, Dict, Optional, Any
 from contextlib import contextmanager
+
+logger = logging.getLogger('portfolio')
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(THIS_DIR, 'portfolio.db')
@@ -30,7 +38,6 @@ DB_PATH = os.path.join(THIS_DIR, 'portfolio.db')
 # ============================================================
 
 def get_db() -> sqlite3.Connection:
-    """Get a raw DB connection."""
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
@@ -38,7 +45,6 @@ def get_db() -> sqlite3.Connection:
 
 @contextmanager
 def get_cursor():
-    """Context manager for safe DB access."""
     conn = get_db()
     try:
         yield conn.cursor()
@@ -51,18 +57,20 @@ def get_cursor():
 
 
 def init_db():
-    """Create all tables if they don't exist."""
     with get_cursor() as cur:
+        # positions: current holdings
         cur.execute('''
             CREATE TABLE IF NOT EXISTS positions (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol      TEXT    NOT NULL UNIQUE,
                 shares     INTEGER NOT NULL DEFAULT 0,
                 entry_price REAL   NOT NULL DEFAULT 0.0,
+                latest_price REAL  NOT NULL DEFAULT 0.0,
                 updated_at TEXT    NOT NULL
             )
         ''')
 
+        # cash balance
         cur.execute('''
             CREATE TABLE IF NOT EXISTS cash (
                 id         INTEGER PRIMARY KEY DEFAULT 1,
@@ -71,6 +79,7 @@ def init_db():
             )
         ''')
 
+        # completed trades
         cur.execute('''
             CREATE TABLE IF NOT EXISTS trades (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,10 +89,11 @@ def init_db():
                 price      REAL    NOT NULL,
                 pnl        REAL,
                 trade_id   TEXT    NOT NULL UNIQUE,
-                executed_at TEXT    NOT NULL
+                executed_at TEXT   NOT NULL
             )
         ''')
 
+        # signals
         cur.execute('''
             CREATE TABLE IF NOT EXISTS signals (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,6 +105,7 @@ def init_db():
             )
         ''')
 
+        # daily summaries
         cur.execute('''
             CREATE TABLE IF NOT EXISTS daily_meta (
                 trade_date TEXT PRIMARY KEY,
@@ -107,7 +118,7 @@ def init_db():
             )
         ''')
 
-        # Ensure cash row exists
+        # Initialize cash if not exists
         cur.execute('SELECT id FROM cash WHERE id=1')
         if cur.fetchone() is None:
             cur.execute(
@@ -115,71 +126,153 @@ def init_db():
                 (20000.0, datetime.now().isoformat())
             )
 
+        # Add latest_price column if not exists (migration from older schema)
+        try:
+            cur.execute("ALTER TABLE positions ADD COLUMN latest_price REAL NOT NULL DEFAULT 0.0")
+        except Exception:
+            pass  # column already exists
+
 
 # ============================================================
-# Portfolio Service class
+# Portfolio Service
 # ============================================================
 
 class PortfolioService:
-    """
-    Thread-safe portfolio state manager backed by SQLite.
-
-    All mutations are transactional. Queries return typed dicts.
-    """
-
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
-        init_db()   # ensure schema on startup
+        init_db()
 
     # ------------------------------------------------------------
     # Positions
     # ------------------------------------------------------------
 
     def get_positions(self) -> List[Dict]:
-        """Return all current positions."""
+        """Return all current positions with P&L calculated."""
         with get_cursor() as cur:
             cur.execute(
-                'SELECT symbol, shares, entry_price, updated_at FROM positions WHERE shares > 0'
+                '''SELECT symbol, shares, entry_price, latest_price, updated_at
+                   FROM positions WHERE shares > 0'''
             )
-            return [dict(row) for row in cur.fetchall()]
+            rows = [dict(row) for row in cur.fetchall()]
+
+        result = []
+        for p in rows:
+            shares = p['shares']
+            entry = p['entry_price']
+            latest = p['latest_price']
+            cost_value = round(shares * entry, 2)
+            current_value = round(shares * latest, 2) if latest > 0 else cost_value
+            unrealized = round(current_value - cost_value, 2)
+            unrealized_pct = round(unrealized / cost_value * 100, 2) if cost_value > 0 else 0.0
+            result.append({
+                **p,
+                'cost_value': cost_value,
+                'current_value': current_value,
+                'unrealized_pnl': unrealized,
+                'unrealized_pnl_pct': unrealized_pct,
+            })
+        return result
 
     def get_position(self, symbol: str) -> Optional[Dict]:
-        """Return a single position by symbol."""
-        with get_cursor() as cur:
-            cur.execute(
-                'SELECT symbol, shares, entry_price, updated_at FROM positions WHERE symbol=?',
-                (symbol,)
-            )
-            row = cur.fetchone()
-            return dict(row) if row else None
+        positions = self.get_positions()
+        for p in positions:
+            if p['symbol'] == symbol:
+                return p
+        return None
 
-    def upsert_position(self, symbol: str, shares: int, entry_price: float):
-        """Insert or replace a position. Use shares=0 to close it."""
+    def upsert_position(self, symbol: str, shares: int,
+                        entry_price: float, latest_price: float = 0.0):
         with get_cursor() as cur:
             cur.execute(
                 '''INSERT OR REPLACE INTO positions
-                   (symbol, shares, entry_price, updated_at)
-                   VALUES (?, ?, ?, ?)''',
-                (symbol, shares, entry_price, datetime.now().isoformat())
+                   (symbol, shares, entry_price, latest_price, updated_at)
+                   VALUES (?, ?, ?, ?, ?)''',
+                (symbol, shares, entry_price, latest_price, datetime.now().isoformat())
+            )
+
+    def update_position_price(self, symbol: str, latest_price: float):
+        """Update the latest known price for a position."""
+        with get_cursor() as cur:
+            cur.execute(
+                'UPDATE positions SET latest_price=?, updated_at=? WHERE symbol=?',
+                (latest_price, datetime.now().isoformat(), symbol)
             )
 
     def close_position(self, symbol: str):
-        """Remove a position (e.g., sold to zero)."""
-        self.upsert_position(symbol, 0, 0.0)
+        self.upsert_position(symbol, 0, 0.0, 0.0)
+
+    # ------------------------------------------------------------
+    # Price refresh (real-time or latest close)
+    # ------------------------------------------------------------
+
+    def refresh_prices(self) -> Dict[str, float]:
+        """
+        Fetch latest prices for all open positions from Tencent Finance.
+        Returns {symbol: latest_price} for positions that were updated.
+        """
+        positions = self.get_positions()
+        if not positions:
+            return {}
+
+        # Build batch request: sh600900 → qt.gtimg.cn format
+        symbols = []
+        qt_symbols = []
+        for p in positions:
+            sym = p['symbol']
+            if '.' in sym:
+                num, market = sym.split('.', 1)
+                qt = ('sh' if market == 'SH' else 'sz') + num
+                qt_symbols.append(qt)
+                symbols.append(sym)
+
+        if not qt_symbols:
+            return {}
+
+        updated = {}
+        try:
+            import urllib.request, ssl
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            url = 'https://qt.gtimg.cn/q=' + ','.join(qt_symbols)
+            req = urllib.request.Request(url, headers={
+                'User-Agent': 'Mozilla/5.0',
+                'Referer': 'https://finance.qq.com/'
+            })
+            with urllib.request.urlopen(req, context=ctx, timeout=8) as r:
+                raw = r.read().decode('gbk', errors='replace')
+
+            for i, line in enumerate(raw.strip().split(';')):
+                if '=' not in line:
+                    continue
+                fields = line.split('=')[1].strip().strip('"').split('~')
+                if len(fields) < 32:
+                    continue
+                try:
+                    price = float(fields[3]) if fields[3] not in ('', '-') else 0.0
+                    sym = symbols[i]
+                    if price > 0:
+                        self.update_position_price(sym, price)
+                        updated[sym] = price
+                except (ValueError, IndexError):
+                    continue
+
+        except Exception as e:
+            logger.warning('refresh_prices failed: %s', e)
+
+        return updated
 
     # ------------------------------------------------------------
     # Cash
     # ------------------------------------------------------------
 
     def get_cash(self) -> float:
-        """Return available cash."""
         with get_cursor() as cur:
             cur.execute('SELECT amount FROM cash WHERE id=1')
             row = cur.fetchone()
             return float(row['amount']) if row else 0.0
 
     def set_cash(self, amount: float):
-        """Update cash balance."""
         with get_cursor() as cur:
             cur.execute(
                 'UPDATE cash SET amount=?, updated_at=? WHERE id=1',
@@ -191,11 +284,7 @@ class PortfolioService:
     # ------------------------------------------------------------
 
     def record_trade(self, symbol: str, direction: str, shares: int,
-                     price: float, pnl: Optional[float] = None) -> str:
-        """
-        Record a completed trade.
-        Returns the trade_id.
-        """
+                    price: float, pnl: Optional[float] = None) -> str:
         trade_id = f"{symbol}_{direction}_{int(time.time()*1000)}"
         with get_cursor() as cur:
             cur.execute(
@@ -208,7 +297,6 @@ class PortfolioService:
 
     def get_trades(self, symbol: Optional[str] = None,
                    limit: int = 50) -> List[Dict]:
-        """Return recent trades, optionally filtered by symbol."""
         with get_cursor() as cur:
             if symbol:
                 cur.execute(
@@ -222,13 +310,17 @@ class PortfolioService:
                 )
             return [dict(row) for row in cur.fetchall()]
 
+    def get_realized_pnl(self, symbol: Optional[str] = None) -> float:
+        """Sum of realized P&L (all SELL trades with pnl recorded)."""
+        trades = self.get_trades(symbol=symbol)
+        return round(sum(t['pnl'] or 0 for t in trades), 2)
+
     # ------------------------------------------------------------
     # Signals
     # ------------------------------------------------------------
 
     def record_signal(self, symbol: str, signal: str,
-                      strength: float, reason: str = ''):
-        """Record a generated signal."""
+                     strength: float = 0.0, reason: str = ''):
         with get_cursor() as cur:
             cur.execute(
                 '''INSERT INTO signals
@@ -240,7 +332,6 @@ class PortfolioService:
     def get_signals(self, symbol: Optional[str] = None,
                     since: Optional[str] = None,
                     limit: int = 50) -> List[Dict]:
-        """Return recent signals."""
         with get_cursor() as cur:
             query = 'SELECT * FROM signals WHERE 1=1'
             args: List[Any] = []
@@ -262,19 +353,17 @@ class PortfolioService:
     def record_daily_meta(self, equity: float, cash: float,
                          n_signals: int = 0, n_trades: int = 0,
                          note: str = ''):
-        """Save end-of-day summary."""
-        today = date.today()
-        wd = today.strftime('%A')
+        today = str(date.today())
+        wd = date.today().strftime('%A')
         with get_cursor() as cur:
             cur.execute(
                 '''INSERT OR REPLACE INTO daily_meta
                    (trade_date, weekday, n_signals, n_trades, equity, cash, note)
                    VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                (str(today), wd, n_signals, n_trades, equity, cash, note)
+                (today, wd, n_signals, n_trades, equity, cash, note)
             )
 
     def get_daily_metas(self, limit: int = 30) -> List[Dict]:
-        """Return recent daily summaries."""
         with get_cursor() as cur:
             cur.execute(
                 'SELECT * FROM daily_meta ORDER BY trade_date DESC LIMIT ?',
@@ -283,27 +372,39 @@ class PortfolioService:
             return [dict(row) for row in cur.fetchall()]
 
     # ------------------------------------------------------------
-    # Composite queries
+    # Full portfolio snapshot with P&L
     # ------------------------------------------------------------
 
-    def get_portfolio_summary(self) -> Dict:
+    def get_portfolio_summary(self, refresh_prices_now: bool = False) -> Dict:
         """
-        Return full portfolio snapshot: positions + cash + recent stats.
+        Return full portfolio snapshot with P&L.
+
+        Args:
+            refresh_prices_now: if True, fetch latest prices before calculating
         """
+        if refresh_prices_now:
+            self.refresh_prices()
+
         positions = self.get_positions()
         cash = self.get_cash()
 
-        total_position_value = sum(
-            p['shares'] * p['entry_price'] for p in positions
-        )
+        total_cost = sum(p['cost_value'] for p in positions)
+        total_current = sum(p['current_value'] for p in positions)
+        total_unrealized = round(total_current - total_cost, 2)
+        total_realized = self.get_realized_pnl()
+        total_pnl = round(total_unrealized + total_realized, 2)
 
         recent_trades = self.get_trades(limit=5)
         recent_signals = self.get_signals(limit=5)
 
         return {
             'cash': cash,
-            'position_value': round(total_position_value, 2),
-            'total_equity': round(cash + total_position_value, 2),
+            'position_cost': round(total_cost, 2),
+            'position_value': round(total_current, 2),
+            'total_equity': round(cash + total_current, 2),
+            'unrealized_pnl': total_unrealized,
+            'realized_pnl': total_realized,
+            'total_pnl': total_pnl,
             'positions': positions,
             'recent_trades': recent_trades,
             'recent_signals': recent_signals,
@@ -316,21 +417,44 @@ class PortfolioService:
 # ============================================================
 
 if __name__ == '__main__':
+    print('=== Portfolio P&L Test ===')
     svc = PortfolioService()
-    print('=== Portfolio Service Test ===')
-    print('Cash:', svc.get_cash())
-    svc.set_cash(25000.0)
-    print('Cash after +5000:', svc.get_cash())
+    svc.set_cash(20000.0)
 
-    svc.upsert_position('600900.SH', 200, 23.50)
-    svc.upsert_position('300750.SZ', 50, 180.0)
-    print('Positions:', svc.get_positions())
-
+    # BUY 长江电力 200股 @ 23.50
+    svc.upsert_position('600900.SH', 200, 23.50, 23.50)
     svc.record_trade('600900.SH', 'BUY', 200, 23.50, None)
-    svc.record_signal('600900.SH', 'BUY', 0.85, 'RSI oversold + institutional holding')
-    print('Trades:', svc.get_trades())
-    print('Signals:', svc.get_signals())
 
+    # Simulate price rise to 25.00
+    svc.update_position_price('600900.SH', 25.00)
+
+    # BUY 宁德时代 50股 @ 180.0
+    svc.upsert_position('300750.SZ', 50, 180.0, 180.0)
+    svc.record_trade('300750.SZ', 'BUY', 50, 180.0, None)
+
+    # SELL 长江电力 50股 @ 26.00 (realized P&L)
+    svc.record_trade('600900.SH', 'SELL', 50, 26.00,
+                    pnl=(26.00 - 23.50) * 50)   # +125
+    pos = svc.get_position('600900.SH')
+    svc.upsert_position('600900.SH', 150, 23.50, 25.00)  # still 150 shares at old price
+
+    # Full summary
     summary = svc.get_portfolio_summary()
-    print('Portfolio summary:', json.dumps(summary, indent=2, ensure_ascii=False))
-    print('=== All tests passed ===')
+    print('Cash:', summary['cash'])
+    print('Position cost:', summary['position_cost'])
+    print('Position value:', summary['position_value'])
+    print('Unrealized P&L:', summary['unrealized_pnl'])
+    print('Realized P&L:', summary['realized_pnl'])
+    print('Total P&L:', summary['total_pnl'])
+    print()
+    print('Positions:')
+    for p in summary['positions']:
+        print(f"  {p['symbol']}: {p['shares']} shares @ cost={p['entry_price']} "
+              f"latest={p['latest_price']} "
+              f"unrealized={p['unrealized_pnl']} ({p['unrealized_pnl_pct']:+.2f}%)")
+    print()
+    print('Trades:')
+    for t in summary['recent_trades']:
+        print(f"  {t['direction']} {t['symbol']} {t['shares']} @ {t['price']} pnl={t['pnl']}")
+    print()
+    print('=== All P&L tests passed ===')

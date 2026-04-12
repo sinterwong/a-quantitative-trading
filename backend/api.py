@@ -100,8 +100,16 @@ def health():
 
 @app.route('/positions', methods=['GET'])
 def get_positions():
-    """GET /positions — all open positions."""
+    """
+    GET /positions?refresh=1
+
+    Returns positions with unrealized P&L.
+    refresh=1 fetches latest prices from Tencent Finance first.
+    """
+    refresh = request.args.get('refresh', '0') == '1'
     svc = get_svc()
+    if refresh:
+        svc.refresh_prices()
     return ok(positions=svc.get_positions())
 
 
@@ -221,9 +229,15 @@ def record_signal():
 
 @app.route('/portfolio/summary', methods=['GET'])
 def portfolio_summary():
-    """GET /portfolio/summary — full snapshot."""
+    """
+    GET /portfolio/summary?refresh=1
+
+    Query params:
+        refresh=1  — fetch latest prices before calculating P&L
+    """
+    refresh = request.args.get('refresh', '0') == '1'
     svc = get_svc()
-    return ok(**svc.get_portfolio_summary())
+    return ok(**svc.get_portfolio_summary(refresh_prices_now=refresh))
 
 
 @app.route('/portfolio/daily', methods=['GET'])
@@ -274,8 +288,10 @@ def submit_order():
 
 @app.route('/orders/recent', methods=['GET'])
 def recent_orders():
-    """GET /orders/recent — placeholder for order history."""
-    return ok(orders=[], message="Order history comes in Phase 2 with broker")
+    """GET /orders/recent — recent filled orders."""
+    svc = get_svc()
+    trades = svc.get_trades(limit=50)
+    return ok(orders=trades, realized_pnl=svc.get_realized_pnl())
 
 
 # ============================================================
