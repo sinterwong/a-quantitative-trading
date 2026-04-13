@@ -225,8 +225,11 @@ class BacktestEngine:
         peak_price = max(window_highs) if window_highs else entry_price
 
         # ATR值
-        atr_idx = min(current_idx, len(atr_vals) - 1)
-        atr = atr_vals[atr_idx] if atr_vals else entry_price * 0.02
+        # ATR values are offset by (period-1) from data indices:
+        # atr_vals[0] corresponds to data[period-1], so:
+        atr_idx = current_idx - (self.atr_period - 1)
+        atr_idx = max(0, min(atr_idx, len(atr_vals) - 1))
+        atr = atr_vals[atr_idx] if atr_vals and atr_idx >= 0 else entry_price * 0.02
 
         stop_price = peak_price - self.atr_multiplier * atr
         # 止损价不能低于成本价-15%
@@ -460,7 +463,7 @@ class BacktestEngine:
             if dd > max_dd:
                 max_dd = dd
 
-        # 止损/止盈触发统计
+        # 止损/止盈触发统计（从交易记录重新计算）
         stop_triggers = {'atr_stop': 0, 'trailing_stop': 0, 'stop_loss': 0, 'take_profit': 0}
         for t in self.trades:
             if t.get('action') == 'sell' and t.get('reason') in stop_triggers:
