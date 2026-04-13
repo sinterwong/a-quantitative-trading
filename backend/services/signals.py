@@ -836,3 +836,68 @@ def format_feishu_message(alerts: list[SignalAlert], check_time: str) -> str:
             f"   {a.reason}"
         )
     return '\n'.join(lines)
+
+
+# ─── 参数加载器（WFA 优化参数优先）───────────────────────────────
+
+_DEFAULTS = dict(
+    rsi_period=14, rsi_buy=35, rsi_sell=70,
+    stop_loss=0.08, take_profit=0.25,
+    atr_period=14, atr_multiplier=2.0,
+    min_hold_days=3,
+)
+
+
+def load_symbol_params(symbol: str) -> dict:
+    """
+    加载指定股票的完整参数集。
+    优先级：
+      1. live_params.json（WFA 输出）→ 覆盖全部字段
+      2. params.json（手工配置）→ 补充 RSI / 止止损
+      3. 硬编码默认值兜底
+
+    ATR 参数暂不纳入 WFA 输出，手工配置或使用默认值。
+    """
+    import json as _json
+    result = dict(_DEFAULTS)  # 浅拷贝默认值
+
+    # 1. 尝试 params.json
+    proj = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    params_file = os.path.join(proj, 'params.json')
+    if os.path.exists(params_file):
+        try:
+            with open(params_file, 'r', encoding='utf-8') as f:
+                params_all = _json.load(f)
+            for strat_name, strat_conf in params_all.get('strategies', {}).items():
+                if strat_conf.get('symbol', '').upper() == symbol.upper():
+                    p = strat_conf.get('params', {})
+                    result['rsi_period']  = p.get('rsi_period', result['rsi_period'])
+                    result['rsi_buy']     = p.get('rsi_buy',    result['rsi_buy'])
+                    result['rsi_sell']    = p.get('rsi_sell',   result['rsi_sell'])
+                    result['stop_loss']   = p.get('stop_loss',  result['stop_loss'])
+                    result['take_profit'] = p.get('take_profit', result['take_profit'])
+                    result['min_hold_days'] = p.get('min_hold_days', result['min_hold_days'])
+                    break
+        except Exception:
+            pass
+
+    # 2. 尝试 live_params.json（WFA 覆盖 RSI 参数）
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    live_file = os.path.join(backend_dir, 'services', 'live_params.json')
+    if os.path.exists(live_file):
+        try:
+            with open(live_file, 'r', encoding='utf-8') as f:
+                live = _json.load(f)
+            # key 格式: {symbol}_RSI
+            live_key = f"{symbol.upper()}_RSI"
+            if live_key in live:
+                wp = live[live_key].get('params', {})
+                result['rsi_period'] = wp.get('rsi_period', result['rsi_period'])
+                result['rsi_buy']    = wp.get('rsi_buy',    result['rsi_buy'])
+                result['rsi_sell']   = wp.get('rsi_sell',   result['rsi_sell'])
+                result['stop_loss']  = wp.get('stop_loss',  result['stop_loss'])
+                result['take_profit']= wp.get('take_profit', result['take_profit'])
+        except Exception:
+            pass
+
+    return result

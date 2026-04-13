@@ -152,6 +152,9 @@ class IntradayMonitor:
         self._daily_refresh = daily_selector_refresh
         self._selector_cache: list = []
         self._selector_loaded_date: str = ''
+        # WFA 参数缓存（每天刷新一次）
+        self._params_cache: dict = {}
+        self._params_cache_date: str = ''
 
     # ── Public API ────────────────────────────────────────
 
@@ -258,6 +261,7 @@ class IntradayMonitor:
         """
         检查动态选股列表中的标的，如有买入信号则自动建仓。
         """
+        from services.signals import evaluate_signal, confirm_signal_minute
         watched = self._get_watched_symbols()
         if not watched:
             return
@@ -268,7 +272,12 @@ class IntradayMonitor:
             if not self._cooldown.can_fire(f'new_{sym}'):
                 continue
             try:
-                alert = evaluate_signal(sym, rsi_buy=35, rsi_sell=70)
+                params = self._get_params(sym)
+                alert = evaluate_signal(
+                    sym,
+                    rsi_buy=int(params.get('rsi_buy', 35)),
+                    rsi_sell=int(params.get('rsi_sell', 70)),
+                )
                 if not alert:
                     continue
                 if alert.signal not in ('RSI_BUY', 'WATCH_BUY'):
@@ -359,8 +368,22 @@ class IntradayMonitor:
             logger.error('Order submission failed for %s: %s', alert.symbol, e)
             return None
 
+    def _get_params(self, symbol: str) -> dict:
+        """
+        返回股票的参数集（WFA优先，fallback到params.json）。
+        每天刷新一次缓存。
+        """
+        today = date.today().isoformat()
+        if self._params_cache_date != today:
+            self._params_cache = {}
+            self._params_cache_date = today
+        if symbol not in self._params_cache:
+            from services.signals import load_symbol_params
+            self._params_cache[symbol] = load_symbol_params(symbol)
+        return self._params_cache[symbol]
+
     def _check_and_push(self, now: datetime):
-        """获取持仓 → 检查信号 → 推送飞书 + 自动下单"""
+        """获取持仓 → 检查信号 → 推送飞书 + 自动下单（使用WFA优化参数）"""
         # 获取当前持仓
         try:
             positions = self._svc.get_positions()
@@ -372,19 +395,21 @@ class IntradayMonitor:
             logger.debug('No positions, skipping signal check')
             return
 
-        # 只保留有 symbol 的持仓
-        pos_list = [
-            {'symbol': p.get('symbol'), 'shares': p.get('shares', 0),
-             'rsi_buy': 35, 'rsi_sell': 70}
-            for p in positions
-            if p.get('symbol')
-        ]
-        if not pos_list:
-            return
-
-        # 检查信号
-        from services.signals import check_portfolio_signals
-        alerts = check_portfolio_signals(pos_list)
+        # 使用 WFA 优化参数逐个检查持仓信号
+        from services.signals import evaluate_signal, format_feishu_message
+        alerts = []
+        for pos in positions:
+            sym = pos.get('symbol')
+            if not sym:
+                continue
+            params = self._get_params(sym)
+            alert = evaluate_signal(
+                sym,
+                rsi_buy=int(params.get('rsi_buy', 35)),
+                rsi_sell=int(params.get('rsi_sell', 70)),
+            )
+            if alert:
+                alerts.append(alert)
         if not alerts:
             logger.debug('No signals at %s', now.strftime('%H:%M'))
             return
@@ -402,7 +427,7 @@ class IntradayMonitor:
             self._deliver_alert(msg)
             logger.info('Pushed %d alerts to Feishu at %s', len(actionable), check_time)
 
-        # 自动下单（如果有 broker）
+        # 自动下单（使用 per-symbol 参数）
         if self._broker:
             for alert in actionable:
                 self._submit_order_for_signal(alert)
@@ -431,21 +456,6 @@ class IntradayMonitor:
             check_fixed_take_profit,
             check_atr_trailing_stop,
         )
-        # 读取 params.json 中的止盈配置
-        tp_pct = 0.25  # 默认25%
-        try:
-            import json as _json
-            params_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                '..', 'params.json'
-            )
-            if os.path.exists(params_path):
-                with open(params_path, 'r', encoding='utf-8') as f:
-                    params = _json.load(f)
-                tp_pct = params.get('strategies', {}).get('RSI', {}).get(
-                    'params', {}).get('take_profit', 0.25)
-        except Exception:
-            pass
 
         for pos in positions:
             sym = pos.get('symbol')
@@ -458,6 +468,10 @@ class IntradayMonitor:
             peak_price = pos.get('peak_price', 0) or entry_price
             if entry_price <= 0:
                 continue
+
+            params = self._get_params(sym)
+            tp_pct = params.get('take_profit', 0.25)
+            atr_multiplier = params.get('atr_multiplier', 2.0)
 
             snap = fetch_realtime(sym)
             if not snap or snap.get('price', 0) <= 0:
@@ -474,7 +488,8 @@ class IntradayMonitor:
             # 1. ATR 移动止盈（优先，让利润奔跑）
             atr_triggered, atr_stop, atr_reason = check_atr_trailing_stop(
                 sym, peak_price, entry_price, current_price,
-                atr_period=14, atr_multiplier=2.0)
+                atr_period=int(params.get('atr_period', 14)),
+                atr_multiplier=atr_multiplier)
             logger.debug('TakeProfit ATR %s @ %.2f: %s', sym, current_price, atr_reason)
 
             # 2. 固定止盈
@@ -490,7 +505,7 @@ class IntradayMonitor:
             # 优先报告 ATR 移动止盈（更智能）
             if atr_triggered:
                 reason = atr_reason
-                label = 'ATR移动止盈'
+                label = f'ATR移动止盈({atr_multiplier}x)'
             else:
                 reason = fixed_reason
                 label = f'固定止盈{tp_pct*100:.0f}%'
@@ -539,16 +554,20 @@ class IntradayMonitor:
             if entry_price <= 0:
                 continue
 
+            params = self._get_params(sym)
+
             # 获取最新价
             snap = fetch_realtime(sym)
             if not snap or snap.get('price', 0) <= 0:
                 continue
             current_price = snap['price']
 
-            # 检查止损
+            # 检查止损（per-symbol params，WFA 优先）
             triggered, stop_price, reason = check_position_stop_loss(
                 sym, entry_price, current_price,
-                atr_period=14, atr_multiplier=2.0, fixed_sl_pct=0.08,
+                atr_period=int(params.get('atr_period', 14)),
+                atr_multiplier=params.get('atr_multiplier', 2.0),
+                fixed_sl_pct=params.get('stop_loss', 0.08),
             )
             logger.debug('StopLoss check %s @ %.2f (entry %.2f): %s',
                         sym, current_price, entry_price, reason)
