@@ -415,6 +415,107 @@ class IntradayMonitor:
         if self._broker:
             self._check_stop_losses(positions, now)
 
+        # ── 止盈检查（ATR移动止盈 + 固定止盈）──────────────
+        if self._broker:
+            self._check_take_profits(positions, now)
+
+    def _check_take_profits(self, positions, now: datetime):
+        """
+        对持仓检查止盈条件（优先用 params.json 配置）：
+        1. ATR 移动止盈（Chandelier Exit）：峰值回撤超过 2×ATR 时触发
+        2. 固定止盈：涨幅达到 take_profit_pct 时触发
+        触发 → 市价卖出 → 推送飞书。
+        """
+        from services.signals import (
+            fetch_realtime,
+            check_fixed_take_profit,
+            check_atr_trailing_stop,
+        )
+        # 读取 params.json 中的止盈配置
+        tp_pct = 0.25  # 默认25%
+        try:
+            import json as _json
+            params_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                '..', 'params.json'
+            )
+            if os.path.exists(params_path):
+                with open(params_path, 'r', encoding='utf-8') as f:
+                    params = _json.load(f)
+                tp_pct = params.get('strategies', {}).get('RSI', {}).get(
+                    'params', {}).get('take_profit', 0.25)
+        except Exception:
+            pass
+
+        for pos in positions:
+            sym = pos.get('symbol')
+            if not sym:
+                continue
+            shares = pos.get('shares', 0)
+            if shares <= 0:
+                continue
+            entry_price = pos.get('entry_price', 0)
+            peak_price = pos.get('peak_price', 0) or entry_price
+            if entry_price <= 0:
+                continue
+
+            snap = fetch_realtime(sym)
+            if not snap or snap.get('price', 0) <= 0:
+                continue
+            current_price = snap['price']
+
+            # 同时更新持仓峰值（内存层面）
+            if current_price > peak_price:
+                peak_price = current_price
+
+            # 止盈冷却 key
+            tp_key = f'tp_{sym}'
+
+            # 1. ATR 移动止盈（优先，让利润奔跑）
+            atr_triggered, atr_stop, atr_reason = check_atr_trailing_stop(
+                sym, peak_price, entry_price, current_price,
+                atr_period=14, atr_multiplier=2.0)
+            logger.debug('TakeProfit ATR %s @ %.2f: %s', sym, current_price, atr_reason)
+
+            # 2. 固定止盈
+            fixed_triggered, fixed_target, fixed_reason = check_fixed_take_profit(
+                entry_price, current_price, tp_pct=tp_pct)
+            logger.debug('TakeProfit fixed %s @ %.2f: %s', sym, current_price, fixed_reason)
+
+            # 哪个先触发用哪个（取更早的信号）
+            triggered = atr_triggered or fixed_triggered
+            if not triggered:
+                continue
+
+            # 优先报告 ATR 移动止盈（更智能）
+            if atr_triggered:
+                reason = atr_reason
+                label = 'ATR移动止盈'
+            else:
+                reason = fixed_reason
+                label = f'固定止盈{tp_pct*100:.0f}%'
+
+            # 冷却检查
+            if not self._cooldown.can_fire(tp_key):
+                continue
+
+            sell_shares = (shares // 100) * 100
+            try:
+                result = self._broker.submit_order(
+                    symbol=sym, direction='SELL',
+                    shares=sell_shares, price=current_price, price_type='market',
+                )
+                status_str = '✅ 成交' if result.status == 'filled' else f'❌ {result.status}'
+                self._deliver_alert(
+                    f'🎯[{sym}] {label}触发（自动止盈）\n'
+                    f'   {status_str} {sell_shares}股 @ {result.avg_price:.2f}\n'
+                    f'   原因: {reason}'
+                )
+                logger.info('TakeProfit SELL %s %d @ %.2f => %s',
+                           sym, sell_shares, result.avg_price, result.status)
+            except Exception as e:
+                logger.error('TakeProfit order failed for %s: %s', sym, e)
+
     def _check_stop_losses(self, positions, now: datetime):
         """
         对持仓逐个检查 ATR 动态止损。

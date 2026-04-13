@@ -153,6 +153,7 @@ def init_db():
             ('cancel_reason', 'TEXT'),
             ('rejection_reason', 'TEXT'),
             ('latest_price', 'REAL NOT NULL DEFAULT 0.0'),
+            ('peak_price', 'REAL NOT NULL DEFAULT 0.0'),
         ]:
             try:
                 cur.execute(f'ALTER TABLE positions ADD COLUMN {col} {dtype}')
@@ -255,7 +256,7 @@ class PortfolioService:
         """Return all current positions with P&L calculated."""
         with get_cursor() as cur:
             cur.execute(
-                '''SELECT symbol, shares, entry_price, latest_price, updated_at
+                '''SELECT symbol, shares, entry_price, latest_price, peak_price, updated_at
                    FROM positions WHERE shares > 0'''
             )
             rows = [dict(row) for row in cur.fetchall()]
@@ -275,6 +276,7 @@ class PortfolioService:
                 'current_value': current_value,
                 'unrealized_pnl': unrealized,
                 'unrealized_pnl_pct': unrealized_pct,
+                'peak_price': p.get('peak_price', 0.0),
             })
         return result
 
@@ -287,20 +289,34 @@ class PortfolioService:
 
     def upsert_position(self, symbol: str, shares: int,
                         entry_price: float, latest_price: float = 0.0):
+        # Initialize peak_price to entry_price on new position
         with get_cursor() as cur:
             cur.execute(
                 '''INSERT OR REPLACE INTO positions
-                   (symbol, shares, entry_price, latest_price, updated_at)
-                   VALUES (?, ?, ?, ?, ?)''',
-                (symbol, shares, entry_price, latest_price, datetime.now().isoformat())
+                   (symbol, shares, entry_price, latest_price, peak_price, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                (symbol, shares, entry_price,
+                 latest_price if latest_price else entry_price,
+                 entry_price,  # peak starts at entry
+                 datetime.now().isoformat())
             )
 
     def update_position_price(self, symbol: str, latest_price: float):
-        """Update the latest known price for a position."""
+        """
+        Update the latest known price and peak price for a position.
+        Peak price is tracked for ATR trailing stop (Chandelier Exit).
+        """
         with get_cursor() as cur:
             cur.execute(
-                'UPDATE positions SET latest_price=?, updated_at=? WHERE symbol=?',
-                (latest_price, datetime.now().isoformat(), symbol)
+                'SELECT peak_price FROM positions WHERE symbol=?',
+                (symbol,)
+            )
+            row = cur.fetchone()
+            current_peak = row[0] if row else 0.0
+            new_peak = max(current_peak, latest_price)
+            cur.execute(
+                'UPDATE positions SET latest_price=?, peak_price=?, updated_at=? WHERE symbol=?',
+                (latest_price, new_peak, datetime.now().isoformat(), symbol)
             )
 
     def close_position(self, symbol: str):

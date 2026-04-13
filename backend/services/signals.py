@@ -374,6 +374,45 @@ def check_position_stop_loss(symbol: str, entry_price: float,
     return False, stop_price, f'未触发止损 {stop_label}（当前价{current_price:.2f}>止损价{stop_price:.2f})'
 
 
+def check_fixed_take_profit(entry_price: float, current_price: float,
+                            tp_pct: float = 0.25) -> tuple[bool, float, str]:
+    """
+    检查固定百分比止盈。
+    涨跌幅达到 tp_pct 时触发。
+
+    Returns:
+        (should_sell, target_price, reason)
+    """
+    target_price = round(entry_price * (1 + tp_pct), 2)
+    if current_price >= target_price:
+        return True, target_price, f'触发固定止盈 {tp_pct*100:.0f}%（现价{current_price:.2f}≥目标价{target_price:.2f})'
+    return False, target_price, f'未触发止盈 {tp_pct*100:.0f}%（现价{current_price:.2f}<目标价{target_price:.2f})'
+
+
+def check_atr_trailing_stop(symbol: str, peak_price: float, entry_price: float,
+                             current_price: float,
+                             atr_period: int = 14, atr_multiplier: float = 2.0) -> tuple[bool, float, str]:
+    """
+    检查 ATR 移动止盈（Chandelier Exit）。
+    峰值回撤超过 atr_multiplier × ATR 时触发。
+    与固定止盈配合使用：固定止盈锁定目标，移动止盈跟踪回撤。
+
+    Returns:
+        (should_sell, stop_price, reason)
+    """
+    atr = _compute_atr(symbol, period=atr_period)
+    if atr is None or atr <= 0:
+        return False, 0.0, 'ATR计算失败，跳过移动止盈'
+
+    stop_price = round(peak_price - atr_multiplier * atr, 2)
+    drawdown_pct = (peak_price - current_price) / peak_price if peak_price > 0 else 0
+    if current_price <= stop_price:
+        return True, stop_price, (f'触发ATR移动止盈 {atr_multiplier}x（峰值{peak_price:.2f}，'
+                                   f'回撤{drawdown_pct*100:.1f}%≥0%，当前价{current_price:.2f}≤追踪止损价{stop_price:.2f})')
+    return False, stop_price, (f'未触发ATR移动止盈 {atr_multiplier}x（峰值{peak_price:.2f}，'
+                               f'回撤{drawdown_pct*100:.1f}%，追踪止损价{stop_price:.2f})')
+
+
 def _compute_rsi(closes: list[float], period: int = 14) -> Optional[float]:
     if len(closes) < period + 1:
         return None
