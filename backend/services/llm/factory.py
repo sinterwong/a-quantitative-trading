@@ -11,6 +11,7 @@ from typing import Optional
 from backend.services.llm.providers.base import LLMProvider
 from backend.services.llm.providers.deepseek import DeepSeekProvider
 from backend.services.llm.providers.kimi import KimiProvider
+from backend.services.llm.providers.minimax import MiniMaxProvider
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +30,16 @@ def create_provider(provider_name: Optional[str] = None, **kwargs) -> LLMProvide
     Raises:
         ValueError: provider_name 不合法或 Provider 不可用（未配置 API key）
     """
-    name = (provider_name or os.environ.get('LLM_PROVIDER', 'deepseek')).lower()
+    name = (provider_name or os.environ.get('LLM_PROVIDER', 'minimax')).lower()
 
     if name == 'deepseek':
         prov = DeepSeekProvider(**kwargs)
     elif name == 'kimi':
         prov = KimiProvider(**kwargs)
+    elif name == 'minimax':
+        prov = MiniMaxProvider(**kwargs)
     else:
-        raise ValueError(f"Unknown LLM provider: {name}. Use 'deepseek' or 'kimi'.")
+        raise ValueError(f"Unknown LLM provider: {name}. Use 'deepseek', 'kimi', or 'minimax'.")
 
     if not prov.is_available:
         raise ValueError(

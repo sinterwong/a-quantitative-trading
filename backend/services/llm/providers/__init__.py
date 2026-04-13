@@ -10,5 +10,6 @@ from backend.services.llm.providers.base import LLMProvider, LLMResponse
 # Re-export concrete providers for convenience
 from backend.services.llm.providers.deepseek import DeepSeekProvider
 from backend.services.llm.providers.kimi import KimiProvider
+from backend.services.llm.providers.minimax import MiniMaxProvider
 
-__all__ = ['LLMProvider', 'LLMResponse', 'DeepSeekProvider', 'KimiProvider']
+__all__ = ['LLMProvider', 'LLMResponse', 'DeepSeekProvider', 'KimiProvider', 'MiniMaxProvider']
