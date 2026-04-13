@@ -133,12 +133,14 @@ class IntradayMonitor:
     def __init__(self, svc, broker=None, check_interval: int = CHECK_INTERVAL,
                  max_position_pct: float = 0.20,
                  selector_top_n: int = 5,
-                 daily_selector_refresh: bool = True):
+                 daily_selector_refresh: bool = True,
+                 llm_service=None):
         """
         broker: BrokerBase instance (e.g. PaperBroker). 如果不传，只推送不下单。
         max_position_pct: 每笔买入占总现金的比例（默认 20%）
         selector_top_n: 动态选股取前N（默认 5）
         daily_selector_refresh: 每天开盘前刷新一次选股列表（默认 True）
+        llm_service: LLMService instance. 如果不传，新闻情绪检查被跳过。
         """
         self._svc       = svc
         self._broker    = broker
@@ -155,6 +157,11 @@ class IntradayMonitor:
         # WFA 参数缓存（每天刷新一次）
         self._params_cache: dict = {}
         self._params_cache_date: str = ''
+        # LLM 新闻情绪服务（可空）
+        self._llm = llm_service
+        # 新闻情绪缓存：{symbol: (sentiment, confidence, summary, date)}  每天刷新
+        self._sentiment_cache: dict = {}
+        self._sentiment_cache_date: str = ''
 
     # ── Public API ────────────────────────────────────────
 
@@ -225,6 +232,61 @@ class IntradayMonitor:
         # 向下取整到100股的整数倍
         return (raw_shares // 100) * 100
 
+    # ── 新闻情绪检查（Method A & B 共享）───────────────────────
+
+    BEARISH_BLOCK_CONFIDENCE = 0.60  # 空方置信度 >此值则阻止建仓/换仓
+
+    def _check_news_sentiment(self, symbol: str) -> tuple[bool, Optional[str], Optional[float], Optional[str]]:
+        """
+        检查标的的新闻情绪。
+
+        Returns:
+            (blocked, sentiment, confidence, summary)
+            blocked=True  → 新闻情绪强烈看空，不应建仓/不追加
+            blocked=False → 可以交易（或无法获取情绪）
+
+        情绪缓存：每天早上刷新一次（盘中不重复请求 LLM）。
+        """
+        today = date.today().isoformat()
+        if self._sentiment_cache_date != today:
+            self._sentiment_cache = {}
+            self._sentiment_cache_date = today
+
+        # 缓存命中
+        if symbol in self._sentiment_cache:
+            sent, conf, summ = self._sentiment_cache[symbol]
+            blocked = (sent == 'bearish' and conf >= self.BEARISH_BLOCK_CONFIDENCE)
+            return blocked, sent, conf, summ
+
+        if self._llm is None:
+            return False, None, None, None
+
+        # 构建搜索关键词：股票名称 + "板块" + "利好/利空"
+        # 从持仓 params 拿股票名称（兜底用代码）
+        params = self._get_params(symbol)
+        name = params.get('name', symbol)
+
+        news_text = f"{name} ({symbol}) 最新财经新闻"
+
+        try:
+            result = self._llm.analyze_news(news_text, timeout=12)
+            sentiment = getattr(result, 'sentiment', 'neutral')
+            confidence = getattr(result, 'confidence', 0.0)
+            summary = getattr(result, 'summary', '')
+            self._sentiment_cache[symbol] = (sentiment, confidence, summary)
+            blocked = (sentiment == 'bearish' and confidence >= self.BEARISH_BLOCK_CONFIDENCE)
+            logger.info(
+                'NewsSentiment %s: sentiment=%s conf=%.2f blocked=%s',
+                symbol, sentiment, confidence, blocked
+            )
+            return blocked, sentiment, confidence, summary
+        except Exception as e:
+            logger.warning('NewsSentiment %s failed: %s', symbol, e)
+            self._sentiment_cache[symbol] = ('unknown', 0.0, '')
+            return False, 'unknown', 0.0, ''
+
+    # ── 每日动态选股 + 新闻过滤（Method B）───────────────────────
+
     def _load_selector_once(self):
         """每天开盘前只加载一次动态选股结果。"""
         today = date.today().isoformat()
@@ -244,9 +306,26 @@ class IntradayMonitor:
             sel.fetch_market_news(30)
             sel.fetch_sectors()
             sel.calc_all_scores()
-            selected = sel.select_stocks(self._selector_top_n)
+            # ── Method B：新闻情绪过滤 ──────────────────────────
+            if self._llm is not None:
+                filtered = []
+                for sym in selected:
+                    blocked, sent, conf, summ = self._check_news_sentiment(sym)
+                    if blocked:
+                        logger.info('DynamicSelector: %s blocked by news sentiment (%s conf=%.2f)',
+                                   sym, sent, conf)
+                        self._deliver_alert(
+                            f'\u26d4[{sym}] 开盘前新闻情绪过滤\n'
+                            f'   情绪：{sent}（置信度 {conf:.0%}）\n'
+                            f'   摘要：{summ[:60] if summ else "无"}\n'
+                            f'   原因：利空强烈，暂不纳入候选'
+                        )
+                    else:
+                        filtered.append(sym)
+                selected = filtered
+
             self._selector_cache = selected
-            logger.info('DynamicSelector: loaded %d stocks for today', len(selected))
+            logger.info('DynamicSelector: loaded %d stocks (after news filter)', len(selected))
         except Exception as e:
             logger.warning('DynamicSelector: failed to load: %s', e)
             self._selector_cache = []
@@ -294,6 +373,17 @@ class IntradayMonitor:
                     )
                     continue
 
+
+                # Method A: news sentiment check before buying (new position)
+                if self._llm is not None:
+                    blocked, sent, conf, summ = self._check_news_sentiment(sym)
+                    if blocked:
+                        self._deliver_alert(
+                            f'\u26d4[{sym}] \u65b0\u95fb\u60c5\u7eea\u5229\u7a7a\uff0c\u62d2\u7edd\u5efa\u4ed3\n'
+                            f'   \u60c5\u7eea\uff1a{sent}\uff08\u7f6e\u4fe1\u5ea6 {conf:.0%}\uff09\n'
+                            f'   \u6458\u8981\uff1a{summ[:80] if summ else "\u65e0"}'
+                        )
+                        continue
                 shares = self._calc_shares(sym, alert.price)
                 if shares < 100:
                     continue
@@ -338,6 +428,17 @@ class IntradayMonitor:
                 return None
 
         # 计算股数
+
+        # Method A: news sentiment check before buying (existing position)
+        if self._llm is not None and direction == 'BUY':
+            blocked, sent, conf, summ = self._check_news_sentiment(alert.symbol)
+            if blocked:
+                self._deliver_alert(
+                    f'\u26d4[{alert.symbol}] \u65b0\u95fb\u60c5\u7eea\u5229\u7a7a\uff0c\u6682\u505c\u4e70\u5165\\n'
+                    f'   \u60c5\u7eea\uff1a{sent}\uff08\u7f6e\u4fe1\u5ea6 {conf:.0%}\uff09\\n'
+                    f'   \u6458\u8981\uff1a{summ[:80] if summ else "\u65e0"}\\n'
+                )
+                return None
         shares = self._calc_shares(alert.symbol, alert.price)
         if shares < 100:
             logger.warning('Insufficient cash for %s: calculated %d shares (min 100)',

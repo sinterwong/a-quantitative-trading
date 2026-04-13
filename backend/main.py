@@ -19,6 +19,20 @@ import threading
 import time
 import signal
 
+# Load .env before accessing environment variables
+_dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+if os.path.exists(_dotenv_path):
+    try:
+        with open(_dotenv_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                k, v = line.split('=', 1)
+                os.environ.setdefault(k.strip(), v.strip())
+    except Exception:
+        pass
+
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJ_DIR = os.path.dirname(THIS_DIR)
 BACKEND_DIR = THIS_DIR
@@ -196,12 +210,24 @@ def main():
                 except Exception:
                     pass
 
-            monitor = IntradayMonitor(svc=svc, broker=broker,
-                                      check_interval=300,
-                                      max_position_pct=max_pos_pct)
+            # Initialize LLM service for news sentiment analysis
+            llm_service = None
+            try:
+                from services.llm.factory import create_llm_service
+                llm_service = create_llm_service()
+                logger.info('LLM service initialized for news sentiment')
+            except Exception as e:
+                logger.warning('LLM service init failed (news sentiment disabled): %s', e)
+
+            monitor = IntradayMonitor(
+                svc=svc, broker=broker,
+                check_interval=300,
+                max_position_pct=max_pos_pct,
+                llm_service=llm_service,
+            )
             monitor.start()
-            logger.info('IntradayMonitor started (broker=PaperBroker, max_pos_pct=%.0f%%)',
-                        max_pos_pct * 100)
+            logger.info('IntradayMonitor started (broker=PaperBroker, max_pos_pct=%.0f%%, llm=%s)',
+                        max_pos_pct * 100, llm_service is not None)
         except Exception as e:
             logger.warning('IntradayMonitor start failed (non-fatal): %s', e)
 

@@ -1,1 +1,26 @@
-{}
+{
+  "600519.SH_RSI": {
+    "symbol": "600519.SH",
+    "strategy": "RSI",
+    "params": {
+      "rsi_buy": 25,
+      "rsi_sell": 60,
+      "stop_loss": 0.05,
+      "take_profit": 0.2
+    },
+    "test_sharpe": 0.5231953485378231,
+    "updated_at": "2026-04-13 21:02"
+  },
+  "510310.SH_RSI": {
+    "symbol": "510310.SH",
+    "strategy": "RSI",
+    "params": {
+      "rsi_buy": 25,
+      "rsi_sell": 70,
+      "stop_loss": 0.05,
+      "take_profit": 0.2
+    },
+    "test_sharpe": 1.0480929801343437,
+    "updated_at": "2026-04-13 21:03"
+  }
+}

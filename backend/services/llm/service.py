@@ -60,16 +60,49 @@ class NewsSentiment:
 
 @dataclass
 class PolicyAnalysis:
-    """政策文档分析结果"""
-    sentiment: str           # "bullish" | "bearish" | "neutral"
-    policy_type: str         # "货币政策" | "财政政策" | ...
+    """政策解读结果（v2 — 意图穿透 + 超预期 + Price-In）"""
+    # 基础分类
+    policy_type: str = ""        # 刺激型|托底型|收紧型|制度型|口号型
+    real_intent: str = ""        # 底层真实意图（一句话）
+    mandatory_vs_rhetoric: str = ""  # "不得不做X%|口头平衡Y%"
+    # 超预期分析
+    surprise_degree: float = 0.0  # 0-100
+    surprise_reason: str = ""
+    # 资源约束
+    resource_constraint: list[str] = field(default_factory=list)
+    # 影响板块
     affected_sectors: list[str] = field(default_factory=list)
-    implementation_timeline: Optional[str] = None
-    market_impact_score: Optional[float] = None
-    key_signal: str = ""
-    new_vs_existing: Optional[str] = None
-    previous_similar_policy: Optional[str] = None
-    market_reaction_estimate: str = ""
+    # Price-In 判断
+    price_in_judgment: Optional[bool] = None  # True/False/null
+    price_in_reason: str = ""
+    # 落地节奏
+    implementation_timeline: str = ""  # 立即执行|3个月内|3-6个月|6个月以上|规划中
+    new_vs_continuation: str = ""  # new|continuation|unknown
+    # 情绪结论
+    market_sentiment: str = "neutral"  # bullish|bearish|neutral
+    confidence: float = 0.0          # 0.0-1.0
+    key_takeaway: str = ""           # 普通投资者最需要知道的1件事
+    # 兜底
+    raw_json: str = ""
+    from_cache: bool = False
+
+
+@dataclass
+class MarketNarrative:
+    """市场叙事生成结果"""
+    market_theme: str = ""         # 一句话市场主线
+    sentiment_temperature: str = "中性"  # 亢奋|偏热|中性|偏冷|恐慌
+    temperature_score: float = 50.0  # 0-100
+    main_line_sectors: list[str] = field(default_factory=list)
+    secondary_line_sectors: list[str] = field(default_factory=list)
+    key_events: list[str] = field(default_factory=list)
+    volume_signal: str = ""        # 放量突破|缩量整理|量能萎缩|异常放大|null
+    north_flow: str = ""            # 净流入X亿|null
+    narrative: str = ""             # 完整叙事段落
+    next_day_outlook: str = ""      # 次日展望
+    risk_alert: str = ""            # 风险提示（可为空）
+    opportunity_alert: str = ""     # 逆向机会（可为空）
+    confidence: float = 0.0
     raw_json: str = ""
     from_cache: bool = False
 
@@ -196,8 +229,14 @@ class LLMService:
             result = self._parse_news_result(parsed, raw)
 
             # 写入缓存（只有置信度 > 0.3 才缓存，避免垃圾数据）
+            # 存入时去掉 markdown 包装，确保缓存可直接 json.loads
+            cache_value = raw.strip()
+            if cache_value.startswith('```'):
+                lines = cache_value.split('\n')
+                cache_value = '\n'.join(lines[1:-1])  # 去掉首尾 ``` 行
+                cache_value = cache_value.strip()
             if result.confidence > 0.3:
-                self.cache.set(text, raw, task='news_sentiment', ttl=self.news_cache_ttl)
+                self.cache.set(text, cache_value, task='news_sentiment', ttl=self.news_cache_ttl)
 
             logger.info(
                 "News sentiment: sentiment=%s conf=%.2f sectors=%s [cache=%s]",
@@ -337,13 +376,14 @@ class LLMService:
         parsed = self._parse_json(raw)
         result = self._parse_policy_result(parsed, raw)
 
-        if result.market_impact_score and result.market_impact_score > 0.2:
+        if result.confidence >= 0.5:
             self.cache.set(text, raw, task='policy_analysis', ttl=self.policy_cache_ttl)
 
         logger.info(
-            "Policy analysis: sentiment=%s type=%s sectors=%s impact=%.2f",
-            result.sentiment, result.policy_type, result.affected_sectors,
-            result.market_impact_score or 0.0,
+            "Policy analysis: sentiment=%s type=%s surprise=%.0f%% sectors=%s confidence=%.2f",
+            result.market_sentiment, result.policy_type,
+            result.surprise_degree or 0.0, result.affected_sectors,
+            result.confidence,
         )
         return result
 
@@ -445,22 +485,94 @@ class LLMService:
         )
 
     def _parse_policy_result(self, parsed: dict, raw: str) -> PolicyAnalysis:
-        """将 LLM JSON 解析为 PolicyAnalysis"""
-        sentiment_raw = parsed.get('sentiment', 'neutral')
+        """将 LLM JSON 解析为 PolicyAnalysis（v2）"""
+        sentiment_raw = parsed.get('market_sentiment', parsed.get('sentiment', 'neutral'))
         sentiment = sentiment_raw.lower() if sentiment_raw else 'neutral'
         if sentiment not in ('bullish', 'bearish', 'neutral'):
             sentiment = 'neutral'
 
         return PolicyAnalysis(
-            sentiment=sentiment,
             policy_type=parsed.get('policy_type') or '',
+            real_intent=parsed.get('real_intent') or '',
+            mandatory_vs_rhetoric=parsed.get('mandatory_vs_rhetoric') or '',
+            surprise_degree=_safe_float(parsed.get('surprise_degree', 0)),
+            surprise_reason=parsed.get('surprise_reason') or '',
+            resource_constraint=parsed.get('resource_constraint') or [],
             affected_sectors=parsed.get('affected_sectors') or [],
-            implementation_timeline=parsed.get('implementation_timeline'),
-            market_impact_score=_safe_float(parsed.get('market_impact_score')),
-            key_signal=parsed.get('key_signal') or '',
-            new_vs_existing=parsed.get('new_vs_existing'),
-            previous_similar_policy=parsed.get('previous_similar_policy'),
-            market_reaction_estimate=parsed.get('market_reaction_estimate') or '',
+            price_in_judgment=parsed.get('price_in_judgment'),
+            price_in_reason=parsed.get('price_in_reason') or '',
+            implementation_timeline=parsed.get('implementation_timeline') or '',
+            new_vs_continuation=parsed.get('new_vs_continuation') or 'unknown',
+            market_sentiment=sentiment,
+            confidence=_safe_float(parsed.get('confidence', 0.5)),
+            key_takeaway=parsed.get('key_takeaway') or '',
+            raw_json=raw,
+            from_cache=False,
+        )
+
+    def analyze_market_narrative(self, market_data: str, timeout: int = 15) -> MarketNarrative:
+        """
+        生成市场叙事（每日报告用）。
+
+        Args:
+            market_data: 市场行情摘要文本（可以是板块涨跌、资金流向、北向数据等）
+            timeout: 超时时间（秒）
+
+        Returns:
+            MarketNarrative 结果
+        """
+        if not market_data or not market_data.strip():
+            return MarketNarrative(
+                market_theme='无数据',
+                narrative='市场数据不足，无法生成叙事',
+                confidence=0.0,
+            )
+
+        text = market_data.strip()
+
+        # 缓存查询
+        cached = self.cache.get(text, task='market_narrative')
+        if cached:
+            try:
+                parsed = json.loads(cached)
+                result = self._parse_narrative_result(parsed, cached)
+                result.from_cache = True
+                return result
+            except Exception:
+                pass
+
+        # LLM 调用
+        raw = self._call_llm(task='market_narrative', content=text, timeout=timeout)
+        parsed = self._parse_json(raw)
+        result = self._parse_narrative_result(parsed, raw)
+
+        # 缓存
+        if result.confidence >= 0.4:
+            self.cache.set(text, raw, task='market_narrative', ttl=self.policy_cache_ttl)
+
+        logger.info(
+            "Market narrative: theme=%s temp=%s score=%.0f confidence=%.2f",
+            result.market_theme, result.sentiment_temperature,
+            result.temperature_score, result.confidence,
+        )
+        return result
+
+    def _parse_narrative_result(self, parsed: dict, raw: str) -> MarketNarrative:
+        """将 LLM JSON 解析为 MarketNarrative"""
+        return MarketNarrative(
+            market_theme=parsed.get('market_theme') or '市场主题不明确',
+            sentiment_temperature=parsed.get('sentiment_temperature', '中性'),
+            temperature_score=_safe_float(parsed.get('temperature_score', 50.0)),
+            main_line_sectors=parsed.get('main_line_sectors') or [],
+            secondary_line_sectors=parsed.get('secondary_line_sectors') or [],
+            key_events=parsed.get('key_events') or [],
+            volume_signal=parsed.get('volume_signal') or '',
+            north_flow=parsed.get('north_flow') or '',
+            narrative=parsed.get('narrative') or '',
+            next_day_outlook=parsed.get('next_day_outlook') or '',
+            risk_alert=parsed.get('risk_alert') or '',
+            opportunity_alert=parsed.get('opportunity_alert') or '',
+            confidence=_safe_float(parsed.get('confidence', 0.5)),
             raw_json=raw,
             from_cache=False,
         )

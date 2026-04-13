@@ -101,42 +101,51 @@ def get_symbols_to_train(portfolio_symbols: list = None) -> list:
 
 # ─── 策略信号函数 ──────────────────────────────────────────
 def make_signal_func(strategy_type: str):
-    """根据策略类型返回对应的 signal_func"""
+    """
+    根据策略类型返回 signal_func(data, i) -> 'buy'/'sell'/'hold'。
+    BacktestEngine.run() 对每个 index i 调用 signal_func(data, i)。
+    """
 
-    def rsi_signal(data, params):
-        gen = SignalGenerator('DUMMY')
+    def rsi_signal(data: list, params: dict):
         closes = [d['close'] for d in data]
-        highs = [d['high'] for d in data]
-        lows = [d['low'] for d in data]
+        n = len(closes)
+        period = 14
+        oversold = params.get('rsi_buy', 35)
+        overbought = params.get('rsi_sell', 65)
 
-        signals = []
-        for i in range(14, len(data)):
-            result = gen._eval_rsi(
-                closes[:i+1], params['rsi_buy'], params['rsi_sell']
-            )
-            signals.append(result)
-        return signals
+        # 预计算所有 RSI 值（避免每次调用重复计算）
+        rsi_vals = [None] * n
+        for i in range(period, n):
+            segment = closes[i - period:i + 1]
+            gains, losses = [], []
+            for j in range(1, len(segment)):
+                d = segment[j] - segment[j - 1]
+                gains.append(d if d > 0 else 0.0)
+                losses.append(-d if d < 0 else 0.0)
+            avg_gain = sum(gains) / period
+            avg_loss = sum(losses) / period
+            rsi_vals[i] = 100 if avg_loss == 0 else 100 - (100 / (1 + avg_gain / avg_loss))
 
-    def macd_signal(data, params):
-        gen = SignalGenerator('DUMMY')
-        closes = [d['close'] for d in data]
-        signals = []
-        for i in range(30, len(data)):
-            result = gen._eval_macd(
-                closes[:i+1],
-                params.get('fast', 12),
-                params.get('slow', 26),
-                params.get('signal', 9)
-            )
-            signals.append(result)
-        return signals
+        def signal_func(data: list, idx: int):
+            if idx < period or rsi_vals[idx] is None or rsi_vals[idx - 1] is None:
+                return 'hold'
+            rsi = rsi_vals[idx]
+            rsi_prev = rsi_vals[idx - 1]
+            if rsi_prev < oversold <= rsi:
+                return 'buy'
+            if rsi_prev < overbought <= rsi:
+                return 'sell'
+            return 'hold'
+
+        return signal_func
 
     if strategy_type == 'RSI':
         return rsi_signal
     elif strategy_type == 'MACD':
-        return macd_signal
+        # MACD 未实现，退化为 RSI
+        return rsi_signal
     else:
-        return rsi_signal  # 默认 RSI
+        return rsi_signal
 
 
 # ─── 主训练流程 ────────────────────────────────────────────
@@ -186,7 +195,7 @@ def run_walkforward_for_symbol(symbol: str,
 
     # 打印摘要
     if summary:
-        print(f"\n  📊 WFA Summary ({summary['n_windows']} windows):")
+        print(f"\n  [WFA Summary] ({summary['n_windows']} windows):")
         print(f"     Sharpe: {summary['avg_sharpe']:.2f} "
               f"(min={summary['min_sharpe']:.2f}, max={summary['max_sharpe']:.2f})")
         print(f"     Return: {summary['avg_return']:+.1f}%  "
@@ -214,7 +223,7 @@ def run_walkforward_for_symbol(symbol: str,
         try:
             bench_result = quick_benchmark(results[-1]['equity_curve'], '510310.SH')
             if 'error' not in bench_result:
-                print(f"\n  📊 沪深300 Benchmark 对比:")
+                print(f"\n  [Benchmark] 沪深300 对比:")
                 print(f"     Alpha(年化): {bench_result['alpha_annualized']:+.2%}")
                 print(f"     Beta: {bench_result['beta']:.2f}")
                 print(f"     信息比率: {bench_result['info_ratio']:.2f}")
@@ -262,7 +271,7 @@ def update_backend_params(symbol: str, strategy: str, params: Dict, test_sharpe:
     with open(param_file, 'w') as f:
         json.dump(live_params, f, indent=2)
 
-    print(f"  ✅ Params written to {param_file}")
+    print(f"  [OK] Params written to {param_file}")
 
 
 # ─── 主入口 ────────────────────────────────────────────────
