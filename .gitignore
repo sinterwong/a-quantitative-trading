@@ -41,6 +41,10 @@ scripts/quant/journal/
 # Skills (OpenClaw-specific)
 skills/
 
+# Environment variables (API keys)
+.env
+.env.local
+
 # Temporary
 *.tmp
 *.bak
