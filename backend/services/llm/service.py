@@ -192,7 +192,7 @@ class LLMService:
             if not raw:
                 logger.warning("LLM returned whitespace-only response")
                 return NewsSentiment(sentiment='neutral', confidence=0.0, summary='Whitespace-only response from LLM')
-            parsed = json.loads(raw)
+            parsed = self._parse_json(raw)
             result = self._parse_news_result(parsed, raw)
 
             # 写入缓存（只有置信度 > 0.3 才缓存，避免垃圾数据）
@@ -334,7 +334,7 @@ class LLMService:
 
         # LLM 调用
         raw = self._call_llm(task='policy_analysis', content=text, timeout=timeout)
-        parsed = json.loads(raw)
+        parsed = self._parse_json(raw)
         result = self._parse_policy_result(parsed, raw)
 
         if result.market_impact_score and result.market_impact_score > 0.2:
@@ -389,6 +389,44 @@ class LLMService:
         raise LLMError(f"LLM call failed after {self.max_retries + 1} attempts: {last_error}")
 
     def _parse_news_result(self, parsed: dict, raw: str) -> NewsSentiment:
+        """将 LLM JSON 解析为 NewsSentiment，带默认值保护"""
+        sentiment_raw = parsed.get('sentiment', 'neutral')
+        sentiment = sentiment_raw.lower() if sentiment_raw else 'neutral'
+        if sentiment not in ('bullish', 'bearish', 'neutral'):
+            sentiment = 'neutral'
+
+        return NewsSentiment(
+            sentiment=sentiment,
+            confidence=float(parsed.get('confidence', 0.5) or 0.5),
+            impact_sectors=parsed.get('impact_sectors') or [],
+            price_already_moved=parsed.get('price_already_moved'),
+            price_already_moved_reason=parsed.get('price_already_moved_reason'),
+            summary=parsed.get('summary') or '',
+            raw_json=raw,
+            from_cache=False,
+        )
+
+    def _parse_json(self, raw: str) -> dict:
+        """
+        解析 LLM 返回的 JSON 字符串。
+        LLM 有时会返回 markdown 包裹的 JSON（```json ... ```），
+        此函数自动处理这种情况。
+        """
+        # 去掉 markdown code fence
+        text = raw.strip()
+        if text.startswith('```'):
+            # 去掉 ```json 或 ```
+            text = text.split('\n', 1)[-1]  # 去掉第一行（```json 或 ```）
+            text = text.rsplit('```', 1)[0]  # 去掉最后一行的 ```
+            text = text.strip()
+
+        # 如果还有 ``` 在中间，当作普通字符处理后尝试解析
+        # 去掉可能的行内 ``` 
+        import re
+        text = re.sub(r'^```[a-z]*\s*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\s*```$', '', text)
+
+        return json.loads(text)
         """将 LLM JSON 解析为 NewsSentiment，带默认值保护"""
         sentiment_raw = parsed.get('sentiment', 'neutral')
         sentiment = sentiment_raw.lower() if sentiment_raw else 'neutral'
