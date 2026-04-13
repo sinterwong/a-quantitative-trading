@@ -185,6 +185,13 @@ class LLMService:
                 content=text,
                 timeout=timeout,
             )
+            if not raw:
+                logger.warning("LLM returned empty response for news sentiment")
+                return NewsSentiment(sentiment='neutral', confidence=0.0, summary='Empty response from LLM')
+            raw = raw.strip()
+            if not raw:
+                logger.warning("LLM returned whitespace-only response")
+                return NewsSentiment(sentiment='neutral', confidence=0.0, summary='Whitespace-only response from LLM')
             parsed = json.loads(raw)
             result = self._parse_news_result(parsed, raw)
 
@@ -367,7 +374,10 @@ class LLMService:
             except Exception as e:
                 last_error = e
                 if attempt < self.max_retries:
-                    delay = self.retry_base_delay * (2 ** attempt)
+                    # 过载时等更久（指数退避 + 额外等待）
+                    base_delay = self.retry_base_delay * (2 ** attempt)
+                    is_overload = 'overload' in str(e).lower() or '529' in str(e)
+                    delay = base_delay * 3 if is_overload else base_delay
                     logger.warning(
                         "LLM call attempt %d/%d failed for %s: %s. Retrying in %.1fs...",
                         attempt + 1, self.max_retries + 1, task, e, delay,

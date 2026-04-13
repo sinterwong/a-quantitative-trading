@@ -170,10 +170,14 @@ class MiniMaxProvider(LLMProvider):
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 raw = resp.read().decode('utf-8')
+                if not raw or not raw.strip():
+                    raise MiniMaxOverloadedError("Empty response from MiniMax API (server overloaded)")
                 data_resp = json.loads(raw)
+        except (json.JSONDecodeError, MiniMaxOverloadedError):
+            raise
         except urllib.error.HTTPError as e:
             body = e.read().decode('utf-8')
-            if e.code == 529 or 'overloaded' in body.lower():
+            if e.code == 529 or 'overloaded' in body.lower() or 'overload' in body.lower():
                 raise MiniMaxOverloadedError(f"MiniMax API overloaded (HTTP {e.code})")
             logger.error("MiniMax HTTP %d: %s", e.code, body)
             raise RuntimeError(f"MiniMax API error {e.code}: {body}") from e
