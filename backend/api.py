@@ -26,8 +26,10 @@ Run with: python api.py
 import os
 import sys
 import json
+import time
 import traceback
 from datetime import datetime, date
+from functools import wraps
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.dirname(THIS_DIR)
@@ -38,6 +40,39 @@ from flask import Flask, request, jsonify
 from services.portfolio import PortfolioService
 
 app = Flask(__name__)
+
+# ─── Rate limiting (simple in-memory token bucket) ───────────────────
+_RATE_LIMIT = {}          # client_key -> [timestamp, ...]
+_RATE_WINDOW = 60           # seconds
+_RATE_MAX    = 10           # max requests per window
+
+
+def rate_limit(max_per_window: int = None, window_seconds: int = None):
+    """Decorator: limits requests per client IP. Applied per-route."""
+    mw = max_per_window or _RATE_MAX
+    ws = window_seconds or _RATE_WINDOW
+
+    def decorator(f):
+        @wraps(f)
+        def wrapped(*args, **kwargs):
+            now = time.time()
+            key = request.remote_addr or 'unknown'
+            # Prune old entries
+            cutoff = now - ws
+            if key in _RATE_LIMIT:
+                _RATE_LIMIT[key] = [t for t in _RATE_LIMIT[key] if t > cutoff]
+            else:
+                _RATE_LIMIT[key] = []
+            if len(_RATE_LIMIT[key]) >= mw:
+                return jsonify({
+                    'status': 'error',
+                    'code': 429,
+                    'message': f'Too many requests (max {mw}/{'{0}s'.format(ws)}). Please retry later.',
+                }), 429
+            _RATE_LIMIT[key].append(now)
+            return f(*args, **kwargs)
+        return wrapped
+    return decorator
 
 # Singleton portfolio service
 _svc: PortfolioService = None
@@ -288,11 +323,11 @@ def portfolio_daily():
 # ============================================================
 
 @app.route('/orders/submit', methods=['POST'])
+@rate_limit(max_per_window=10, window_seconds=60)
 def submit_order():
     """
-    POST /orders/submit — submit an order intent.
-    Phase 1: validates and records the order.
-    Phase 2: will execute via broker.
+    POST /orders/submit — submit an order → PaperBroker executes it.
+    Phase 1: PaperBroker simulates fill and updates portfolio.
     """
     if (e := require_json()):
         return e
@@ -310,13 +345,30 @@ def submit_order():
     if shares <= 0:
         return err("shares must be positive")
 
-    # Phase 1: just record the intent (Phase 2: execute via broker)
+    symbol = body['symbol']
+    price = float(body.get('price', 0))
+    price_type = body.get('price_type', 'market')
+
+    # Execute via PaperBroker
+    from services.broker import PaperBroker
+    svc = get_svc()
+    broker = PaperBroker(portfolio_service=svc)
+    broker.connect()
+    result = broker.submit_order(symbol=symbol, direction=direction,
+                                  shares=shares, price=price,
+                                  price_type=price_type)
+
     return ok(
-        message="Order intent recorded (Phase 1: no broker execution yet)",
-        symbol=body['symbol'],
+        order_id=result.order_id,
+        status=result.status,
+        symbol=symbol,
         direction=direction,
         shares=shares,
-        note="Connect broker in Phase 2 to execute",
+        filled_shares=result.filled_shares,
+        avg_price=result.avg_price,
+        reason=result.reason,
+        submitted_at=result.submitted_at,
+        filled_at=result.filled_at,
     )
 
 

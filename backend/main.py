@@ -161,14 +161,16 @@ def main():
     signal.signal(signal.SIGINT, lambda *_: on_shutdown())
     signal.signal(signal.SIGTERM, lambda *_: on_shutdown())
 
-    # Intraday monitor — runs during trading hours, pushes Feishu on signals
+    # Intraday monitor — runs during trading hours, pushes Feishu + auto-orders
     monitor = None
     if args.mode in ('scheduler', 'both'):
         sys.path.insert(0, BACKEND_DIR)
         try:
             from services.intraday_monitor import IntradayMonitor
-            from api import app as _flask_app
-            # Get PortfolioService from the Flask app's global
+            from services.portfolio import PortfolioService
+            from services.broker import PaperBroker
+
+            # Get or create PortfolioService
             svc = None
             try:
                 from api import _svc
@@ -176,12 +178,30 @@ def main():
             except ImportError:
                 pass
             if svc is None:
-                # Instantiate directly
-                from services.portfolio import PortfolioService
                 svc = PortfolioService()
-            monitor = IntradayMonitor(svc=svc, check_interval=300)
+
+            # Initialize PaperBroker with PortfolioService
+            broker = PaperBroker(portfolio_service=svc)
+            broker.connect()
+
+            # Load max_position_pct from params.json if available
+            import json as _json
+            max_pos_pct = 0.20
+            params_path = os.path.join(BACKEND_DIR, '..', 'params.json')
+            if os.path.exists(params_path):
+                try:
+                    with open(params_path, 'r', encoding='utf-8') as f:
+                        params = _json.load(f)
+                    max_pos_pct = params.get('risk', {}).get('max_position_pct', 0.20)
+                except Exception:
+                    pass
+
+            monitor = IntradayMonitor(svc=svc, broker=broker,
+                                      check_interval=300,
+                                      max_position_pct=max_pos_pct)
             monitor.start()
-            logger.info('IntradayMonitor started (push alerts to Feishu on signals)')
+            logger.info('IntradayMonitor started (broker=PaperBroker, max_pos_pct=%.0f%%)',
+                        max_pos_pct * 100)
         except Exception as e:
             logger.warning('IntradayMonitor start failed (non-fatal): %s', e)
 

@@ -255,6 +255,125 @@ def _fetch_history_sina(symbol: str, days: int = 6) -> Optional[list[dict]]:
         return None
 
 
+def _fetch_history_tencent(symbol: str, days: int = 20) -> Optional[list[dict]]:
+    """
+    用腾讯财经接口获取日K线（前复权），用于 ATR 计算（需要 H/L）。
+    返回 [{date, open, close, high, low, volume}, ...]，日期升序。
+    """
+    upper = symbol.upper()
+    if upper.endswith('.SH'):
+        qt = 'sh' + upper[:-3]
+    elif upper.endswith('.SZ'):
+        qt = 'sz' + upper[:-3]
+    else:
+        qt = symbol.lower()
+    url = (f'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get'
+           f'?_var=kline_dayqfq&param={qt},day,,,{days},qfq')
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0',
+            'Referer': 'https://finance.qq.com',
+        })
+        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
+            raw = resp.read().decode('utf-8')
+        eq = raw.find('=')
+        if eq >= 0:
+            raw = raw[eq + 1:]
+        data = json.loads(raw)
+        qfq = data.get('data', {}).get(qt, {})
+        days_list = qfq.get('qfqday', []) or qfq.get('day', [])
+        if not days_list:
+            return None
+        result = []
+        for bar in days_list:
+            if len(bar) < 6:
+                continue
+            try:
+                result.append({
+                    'date':   bar[0],
+                    'open':   float(bar[1]),
+                    'close':  float(bar[2]),
+                    'high':   float(bar[3]),
+                    'low':    float(bar[4]),
+                    'volume': float(bar[5]),
+                })
+            except (ValueError, IndexError):
+                continue
+        return result if len(result) >= 15 else None
+    except Exception:
+        return None
+
+
+def _compute_atr(symbol: str, period: int = 14) -> Optional[float]:
+    """
+    计算指定周期 ATR（Average True Range）。
+    使用腾讯前复权日K线数据。
+    """
+    bars = _fetch_history_tencent(symbol, days=period + 5)
+    if not bars or len(bars) < period + 1:
+        return None
+    closes = [b['close'] for b in bars]
+    highs  = [b['high']  for b in bars]
+    lows   = [b['low']   for b in bars]
+    trs = []
+    for i in range(1, len(closes)):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i]  - closes[i - 1]),
+        )
+        trs.append(tr)
+    if len(trs) < period:
+        return None
+    # Initial ATR: simple average of first 'period' TRs
+    atr = sum(trs[:period]) / period
+    # Subsequent: smoothed ATR
+    for i in range(period, len(trs)):
+        atr = (atr * (period - 1) + trs[i]) / period
+    return round(atr, 4)
+
+
+def get_atr_stop_loss(symbol: str, entry_price: float,
+                      atr_period: int = 14, multiplier: float = 2.0) -> Optional[float]:
+    """
+    计算 ATR 止损价。
+    公式: stop_price = entry_price - multiplier * ATR
+    返回止损价（None 表示无法计算 ATR）。
+    """
+    atr = _compute_atr(symbol, period=atr_period)
+    if atr is None or atr <= 0:
+        return None
+    stop_price = entry_price - multiplier * atr
+    return round(stop_price, 2)
+
+
+def check_position_stop_loss(symbol: str, entry_price: float,
+                             current_price: float,
+                             atr_period: int = 14, atr_multiplier: float = 2.0,
+                             fixed_sl_pct: float = 0.08) -> tuple[bool, Optional[float], str]:
+    """
+    检查持仓是否触发止损。
+    优先使用 ATR 止损；ATR 不可用时降级为固定百分比止损。
+
+    Returns:
+        (should_sell, stop_price, reason)
+    """
+    atr = _compute_atr(symbol, period=atr_period)
+    if atr and atr > 0:
+        stop_price = round(entry_price - atr_multiplier * atr, 2)
+        stop_label = f'ATR({atr_multiplier}x)={atr:.2f}'
+    else:
+        stop_price = round(entry_price * (1 - fixed_sl_pct), 2)
+        stop_label = f'固定{fixed_sl_pct*100:.0f}%'
+
+    if current_price <= stop_price:
+        return True, stop_price, f'触发止损 {stop_label}（当前价{current_price:.2f}≤止损价{stop_price:.2f})'
+    return False, stop_price, f'未触发止损 {stop_label}（当前价{current_price:.2f}>止损价{stop_price:.2f})'
+
+
 def _compute_rsi(closes: list[float], period: int = 14) -> Optional[float]:
     if len(closes) < period + 1:
         return None
@@ -288,6 +407,105 @@ def _compute_avg_volume_ratio(symbol: str) -> Optional[float]:
         return None
     today_vol = hist[-1]['volume']
     return round(today_vol / avg_vol, 2)
+
+
+# ─── 分钟级K线数据（用于信号二次确认）────────────────────────
+
+def _fetch_minute_bars(symbol: str, scale: int = 15,
+                       datalen: int = 16) -> Optional[list[dict]]:
+    """
+    用新浪财经接口获取分钟K线。
+    scale: 5/15/30/60（分钟数）
+    datalen: 返回的BAR数量（最多约100）
+    返回 [{time, close, volume}, ...]，时间升序。
+    """
+    upper = symbol.upper()
+    if upper.endswith('.SH'):
+        code = 'sh' + upper[:-3]
+    elif upper.endswith('.SZ'):
+        code = 'sz' + upper[:-3]
+    else:
+        return None
+    url = (f'https://money.finance.sina.com.cn/quotes_service/api/json_v2.php'
+           f'/CN_MarketData.getKLineData?symbol={code}&scale={scale}'
+           f'&ma=no&datalen={datalen}')
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0',
+            'Referer': 'https://finance.sina.com.cn',
+        })
+        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
+            content = resp.read().decode('utf-8')
+            data = json.loads(content)
+            if not data or not isinstance(data, list):
+                return None
+            result = []
+            for item in data:
+                try:
+                    result.append({
+                        'time':  item.get('day', ''),
+                        'close': float(item.get('close', 0)),
+                        'volume': float(item.get('volume', 0)),
+                    })
+                except (ValueError, TypeError):
+                    continue
+            return result if len(result) >= 5 else None
+    except Exception:
+        return None
+
+
+def get_minute_rsi(symbol: str, scale: int = 15) -> Optional[float]:
+    """
+    计算指定周期分钟线的 RSI。
+    scale: 5/15/30/60（分钟）
+    返回 0-100 的 RSI 值，计算失败返回 None。
+    """
+    bars = _fetch_minute_bars(symbol, scale=scale, datalen=20)
+    if not bars or len(bars) < 15:
+        return None
+    closes = [b['close'] for b in bars]
+    return _compute_rsi(closes, period=14)
+
+
+def confirm_signal_minute(symbol: str, direction: str) -> tuple[bool, Optional[float], str]:
+    """
+    分钟级信号二次确认。
+
+    逻辑：
+      - RSI_BUY（日线超卖）：15min RSI < 55 → 确认买入（还有上涨空间）
+                             15min RSI >= 70 → 拒绝（已超买，追高风险大）
+                             否则中性（观望，确认力度一般）
+      - RSI_SELL（日线超买）：15min RSI > 45 → 确认卖出（还有下跌空间）
+                             15min RSI <= 30 → 拒绝（已超卖，空头力量枯竭）
+                             否则中性
+
+    Returns: (confirmed: bool, minute_rsi: float, reason: str)
+    """
+    minute_rsi = get_minute_rsi(symbol, scale=15)
+    if minute_rsi is None:
+        # 获取失败：中立，不阻止交易
+        return True, None, '分钟RSI获取失败，跳过确认'
+
+    if direction == 'BUY':
+        if minute_rsi < 55:
+            return True, minute_rsi, f'15min RSI={minute_rsi:.0f}<55，确认买入动力充足'
+        elif minute_rsi >= 70:
+            return False, minute_rsi, f'15min RSI={minute_rsi:.0f}≥70，已超买，拒绝追高'
+        else:
+            return True, minute_rsi, f'15min RSI={minute_rsi:.0f}∈[55,70)，中性确认'
+
+    elif direction == 'SELL':
+        if minute_rsi > 45:
+            return True, minute_rsi, f'15min RSI={minute_rsi:.0f}>45，确认下跌空间存在'
+        elif minute_rsi <= 30:
+            return False, minute_rsi, f'15min RSI={minute_rsi:.0f}≤30，已超卖，拒绝做空'
+        else:
+            return True, minute_rsi, f'15min RSI={minute_rsi:.0f}∈[30,45]，中性确认'
+
+    return True, minute_rsi, '未知方向，跳过确认'
 
 
 # ─── RSI（前日日线 RSI，盘中近似）───────────────────────────

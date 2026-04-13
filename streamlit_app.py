@@ -225,9 +225,9 @@ if page == '📊 组合概览':
 
     # 基本指标
     cash    = portfolio.get('cash', 0)
-    total   = portfolio.get('total_value', cash)
-    pos_val = total - cash
-    today_pnl = portfolio.get('today_pnl', 0)
+    total   = portfolio.get('total_equity', cash)
+    pos_val = portfolio.get('position_value', 0)
+    today_pnl = portfolio.get('unrealized_pnl', 0)  # 累计浮动盈亏
     total_pnl = portfolio.get('total_pnl', 0)
 
     col1, col2, col3, col4 = st.columns(4)
@@ -240,8 +240,15 @@ if page == '📊 组合概览':
 
     # 持仓饼图
     if positions:
-        labels = [p['symbol'] for p in positions if p.get('shares', 0) > 0]
-        values = [p.get('market_value', 0) for p in positions if p.get('shares', 0) > 0]
+        labels = []
+        values = []
+        for p in positions:
+            if p.get('shares', 0) <= 0:
+                continue
+            snap = get_realtime(p['symbol'])
+            current_price = snap.get('price', p.get('entry_price', 0)) if snap else p.get('entry_price', 0)
+            labels.append(p['symbol'])
+            values.append(current_price * p['shares'])
         if labels:
             fig = px.pie(
                 names=labels, values=values,
@@ -261,14 +268,20 @@ if page == '📊 组合概览':
             if p.get('shares', 0) <= 0:
                 continue
             snap = get_realtime(p['symbol'])
+            entry_price = p.get('entry_price', 0)
+            current_price = snap.get('price', entry_price) if snap else entry_price
+            shares = p['shares']
+            market_value = current_price * shares
+            unrealized_pnl = (current_price - entry_price) * shares
+            unrealized_pnl_pct = unrealized_pnl / (entry_price * shares) if entry_price * shares else 0
             row = {
                 '代码':     p['symbol'],
-                '股数':     p['shares'],
-                '成本价':   f"{p.get('avg_cost', 0):.3f}",
-                '当前价':   f"{snap.get('price', '—'):.3f}" if snap else '—',
-                '市值':     f"¥{p.get('market_value', 0):,.0f}",
-                '盈亏额':   f"{p.get('unrealized_pnl', 0):+,.0f}",
-                '盈亏%':    f"{p.get('unrealized_pnl_pct', 0):+.1%}" if p.get('unrealized_pnl_pct') else '—',
+                '股数':     shares,
+                '成本价':   f"{entry_price:.3f}",
+                '当前价':   f"{current_price:.3f}" if current_price else '—',
+                '市值':     f"¥{market_value:,.0f}",
+                '盈亏额':   f"{unrealized_pnl:+,.0f}",
+                '盈亏%':    f"{unrealized_pnl_pct:+.1%}",
                 '今日涨跌': f"{snap.get('pct', 0):+.2f}%" if snap else '—',
             }
             rows.append(row)
@@ -341,7 +354,7 @@ elif page == '📈 实时信号':
                 '距涨停':      f"{dist_up:.1%}" if dist_up is not None else '—',
                 '跌停价':      f"{lower:.2f}" if lower else '—',
                 '距跌停':      f"{dist_down:.1%}" if dist_down is not None else '—',
-                '持仓成本':    f"{p.get('avg_cost', 0):.3f}",
+                '持仓成本':    f"{p.get('entry_price', 0):.3f}",
             })
         if live_rows:
             df = pd.DataFrame(live_rows)
@@ -503,20 +516,26 @@ elif page == '💼 持仓详情':
             sym = p['symbol']
             snap = get_realtime(sym)
             limit_pct = get_limit_pct(sym)
-            prev = snap.get('prev_close', 0)
+            prev = snap.get('prev_close', 0) if snap else 0
             upper = prev * (1 + limit_pct) if prev else 0
             lower = prev * (1 - limit_pct) if prev else 0
+
+            entry_price = p.get('entry_price', 0)
+            shares = p['shares']
+            current_price = snap.get('price', entry_price) if snap else entry_price
+            market_value = current_price * shares
+            unrealized_pnl = (current_price - entry_price) * shares
 
             with st.container():
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric('代码', sym)
-                col2.metric('持仓', f"{p['shares']} 股")
-                col3.metric('成本价', f"¥{p.get('avg_cost', 0):.3f}")
-                col4.metric('当前价', f"¥{snap.get('price', 0):.2f}" if snap else '—')
+                col2.metric('持仓', f"{shares} 股")
+                col3.metric('成本价', f"¥{entry_price:.3f}")
+                col4.metric('当前价', f"¥{current_price:.2f}" if current_price else '—')
 
                 col5, col6, col7, col8 = st.columns(4)
-                col5.metric('持仓市值', f"¥{p.get('market_value', 0):,.0f}")
-                col6.metric('浮动盈亏', f"{p.get('unrealized_pnl', 0):+,.0f}")
+                col5.metric('持仓市值', f"¥{market_value:,.0f}")
+                col6.metric('浮动盈亏', f"{unrealized_pnl:+,.0f}")
                 col7.metric('今日涨跌', f"{snap.get('pct', 0):+.2f}%" if snap else '—')
                 col8.metric('量比', f"{snap.get('vol_ratio', 0):.2f}x" if snap and snap.get('vol_ratio') else '—')
 
