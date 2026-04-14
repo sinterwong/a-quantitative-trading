@@ -203,16 +203,18 @@ class PaperBroker(BrokerBase):
                        price: float, price_type: str) -> OrderResult:
         """
         Simulate order fill:
-        - Market orders: fill at VWAP with slippage (realistic)
-        - Limit orders: fill if price_type=limit (simplified: always fill at limit price)
-        - 1-second simulated delay between submission and fill
+        - Market orders: fill at current market price (fetched from Tencent) + slippage
+        - Limit orders: fill at specified price if market reaches it
         """
         order_id = self._next_order_id()
         now_str = datetime.now().isoformat()
 
-        # Slippage: add ±slippage_bps random noise
-        slip = random.uniform(-self.slippage_bps, self.slippage_bps) / 10_000
+        # ── Resolve fill price ──────────────────────────────────
         if price_type == 'market':
+            # Fetch real market price if not provided
+            if price <= 0:
+                price = self._fetch_market_price(symbol)
+            slip = random.uniform(-self.slippage_bps, self.slippage_bps) / 10_000
             fill_price = round(price * (1 + slip), 2)
         else:
             fill_price = price  # limit order fills at specified price
@@ -234,6 +236,28 @@ class PaperBroker(BrokerBase):
         )
         self._orders.append(order)
         return order
+
+    def _fetch_market_price(self, symbol: str) -> float:
+        """Fetch latest price from Tencent Finance API."""
+        try:
+            import ssl, urllib.request
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            num, market = symbol.split('.', 1)
+            qt = ('sh' if market == 'SH' else 'sz') + num
+            url = f'https://qt.gtimg.cn/q={qt}'
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, context=ctx, timeout=5) as resp:
+                raw = resp.read().decode('gbk', errors='replace')
+            fields = raw.split('~')
+            if len(fields) > 4:
+                p = float(fields[3])
+                if p > 0:
+                    return p
+        except Exception:
+            pass
+        return 0.0
 
     def submit_order(self, symbol: str, direction: str, shares: int,
                      price: float = 0, price_type: str = 'market') -> OrderResult:

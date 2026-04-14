@@ -441,6 +441,78 @@ def analysis_status():
 
 
 # ============================================================
+# Monthly Performance
+# ============================================================
+
+@app.route('/analysis/monthly', methods=['GET'])
+def monthly_performance():
+    """
+    GET /analysis/monthly?year=2026&month=4&include_chart=1
+
+    Query params:
+        year    — 报告年份（默认今年）
+        month   — 报告月份（默认本月）
+        include_chart — 是否包含图表（默认1，设为0可省带宽）
+
+    Returns: {
+        period, summary, returns, trade_stats,
+        max_drawdown, equity_series, chart_base64
+    }
+    """
+    try:
+        from services.performance import generate_monthly_report
+        year = int(request.args.get('year', date.today().year))
+        month = int(request.args.get('month', date.today().month))
+        include_chart = bool(int(request.args.get('include_chart', 1)))
+        report = generate_monthly_report(year=year, month=month,
+                                         include_chart=include_chart)
+        return ok(**report)
+    except Exception as e:
+        import traceback
+        return err(str(e) + '\n' + traceback.format_exc(), 500)
+
+
+
+@app.route('/analysis/monthly/snapshot', methods=['POST'])
+def record_monthly_snapshot():
+    """
+    POST /analysis/monthly/snapshot
+    Body (optional): {"year": 2026, "month": 4}
+    写入月度快照到数据库，通常在月末自动由Cron触发。
+    """
+    try:
+        from services.performance import record_monthly_snapshot
+        if request.is_json and request.json:
+            body = request.json
+            year = int(body.get('year', date.today().year))
+            month = int(body.get('month', date.today().month))
+        else:
+            year = date.today().year
+            month = date.today().month
+        record_monthly_snapshot(year, month)
+        return ok(message=f'{year}年{month}月快照已记录')
+    except Exception as e:
+        import traceback
+        return err(str(e) + '\n' + traceback.format_exc(), 500)
+
+
+@app.route('/analysis/monthly/history', methods=['GET'])
+def monthly_history():
+    """
+    GET /analysis/monthly/history?limit=12
+    返回历史月度快照列表。
+    """
+    try:
+        from services.performance import get_monthly_snapshots
+        limit = int(request.args.get('limit', 12))
+        snapshots = get_monthly_snapshots(limit=limit)
+        return ok(snapshots=snapshots, count=len(snapshots))
+    except Exception as e:
+        import traceback
+        return err(str(e) + '\n' + traceback.format_exc(), 500)
+
+
+# ============================================================
 # Watchlist endpoints
 # ============================================================
 
