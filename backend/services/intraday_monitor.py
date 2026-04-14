@@ -485,6 +485,25 @@ class IntradayMonitor:
 
     def _check_and_push(self, now: datetime):
         """获取持仓 → 检查信号 → 推送飞书 + 自动下单（使用WFA优化参数）"""
+
+        # ── 大盘指数异动检查（每次轮询都检查，独立冷却）─────────
+        try:
+            self._check_market_index(now)
+        except Exception as e:
+            logger.warning('Market index check error: %s', e)
+
+        # ── 自选股异动检查 ───────────────────────────────────
+        try:
+            self._check_watchlist(now)
+        except Exception as e:
+            logger.warning('Watchlist check error: %s', e)
+
+        # ── 板块资金流向突变检查 ─────────────────────────────
+        try:
+            self._check_sector_flow(now)
+        except Exception as e:
+            logger.warning('Sector flow check error: %s', e)
+
         # 获取当前持仓
         try:
             positions = self._svc.get_positions()
@@ -703,8 +722,201 @@ class IntradayMonitor:
             except Exception as e:
                 logger.error('StopLoss order failed for %s: %s', sym, e)
 
-    def _deliver_alert(self, text: str):
-        """通过飞书 IM API 推送文本消息给用户。"""
+    # ── 大盘指数监控 ───────────────────────────────────────────────
+    # 监控的指数及其预警阈值（涨跌幅绝对值超过此值则告警）
+    INDEX_CONFIG = {
+        'sh000001': {'name': '上证指数', 'alert_pct': 1.5},
+        'sz399001': {'name': '深证成指', 'alert_pct': 1.5},
+        'sz399006': {'name': '创业板指', 'alert_pct': 2.0},
+        'sh000688': {'name': '科创50',   'alert_pct': 2.0},
+        'sh000300': {'name': '沪深300', 'alert_pct': 1.5},
+    }
+
+    def _fetch_index_data(self) -> dict:
+        """获取所有监控指数的当前行情"""
+        from services.signals import fetch_bulk
+        codes = list(self.INDEX_CONFIG.keys())
+        result = fetch_bulk(codes)
+        return result
+
+    def _check_market_index(self, now: datetime):
+        """
+        检查大盘指数是否出现显著异动（涨跌超过阈值）。
+        发现异动 → 推送飞书 + 记录 alert_history。
+        冷却：每只指数 30 分钟内不重复告警。
+        """
+        data = self._fetch_index_data()
+        if not data:
+            logger.debug('Index data fetch failed')
+            return
+
+        for code, cfg in self.INDEX_CONFIG.items():
+            sym_key = code  # fetch_bulk returns with original code as key
+            # find matching key
+            row = None
+            for k, v in data.items():
+                if k.upper().replace('.SH', '').replace('.SZ', '').replace('SH', '').replace('SZ', '') == code.replace('sh', '').replace('sz', '').upper():
+                    row = v
+                    break
+            if not row:
+                continue
+
+            pct = row.get('pct', 0)
+            abs_pct = abs(pct)
+            threshold = cfg['alert_pct']
+            if abs_pct < threshold:
+                continue
+
+            # 冷却检查
+            cooldown_key = f'idx_{code}'
+            if not self._cooldown.can_fire(cooldown_key):
+                continue
+
+            direction = '暴涨' if pct > 0 else '暴跌'
+            emoji = '🚀' if pct > 0 else ('🚨' if pct < -2 else '⚠️')
+            name = cfg['name']
+            price = row.get('price', 0)
+            msg = (
+                f'{emoji}【大盘异动】{name}{direction}\n'
+                f'   当前: {price} ({pct:+.2f}%)\n'
+                f'   阈值: ±{threshold}% | 时间: {now.strftime("%H:%M")}'
+            )
+            self._deliver_alert(msg)
+            from services.alert_history import record_alert
+            record_alert('INDEX', msg, symbol=code, price=price, pct_change=pct)
+            logger.info('Market index alert: %s %+.2f%%', name, pct)
+
+    # ── 自选股监控 ───────────────────────────────────────────────
+
+    def _check_watchlist(self, now: datetime):
+        """
+        检查自选股列表中的股票是否出现异动（涨跌幅超过各股阈值）。
+        阈值默认 5%，可在 watchlist 表中逐股配置。
+        只做预警推送，不自动交易。
+        """
+        from services.watchlist import get_watchlist, get_stock_alert_pct
+        from services.signals import fetch_bulk
+
+        watchlist = get_watchlist()
+        if not watchlist:
+            return
+
+        codes = [w['symbol'] for w in watchlist]
+        data = fetch_bulk(codes)
+        if not data:
+            return
+
+        for w in watchlist:
+            sym = w['symbol']
+            # 找到匹配的行
+            row = None
+            for k, v in data.items():
+                if k.upper().replace('.SH', '').replace('.SZ', '').replace('SH', '').replace('SZ', '') == sym.replace('.SH', '').replace('.SZ', '').upper():
+                    row = v
+                    break
+            if not row:
+                continue
+
+            pct = row.get('pct', 0)
+            threshold = w.get('alert_pct', 5.0)
+            if abs(pct) < threshold:
+                continue
+
+            # 冷却
+            cooldown_key = f'wl_{sym}'
+            if not self._cooldown.can_fire(cooldown_key):
+                continue
+
+            price = row.get('price', 0)
+            emoji = '🔺' if pct > 0 else '🔻'
+            direction = '大涨' if pct > 0 else '大跌'
+            name = w.get('name', sym)
+            alert_reason = w.get('reason', '')
+            reason_str = f' | 自选理由: {alert_reason}' if alert_reason else ''
+
+            msg = (
+                f'{emoji}【自选股异动】{name}({sym}) {direction}\n'
+                f'   当前: {price} ({pct:+.2f}%)\n'
+                f'   预警阈值: ±{threshold}%{reason_str}\n'
+                f'   时间: {now.strftime("%H:%M")}'
+            )
+            self._deliver_alert(msg)
+            from services.alert_history import record_alert
+            record_alert('WATCHLIST', msg, symbol=sym, price=price, pct_change=pct)
+            logger.info('Watchlist alert: %s %+.2f%%', sym, pct)
+
+    # ── 板块资金流向监控 ───────────────────────────────────────────
+
+    def _load_sector_flows(self):
+        """加载今日板块资金流向数据（从 dynamic_selector）"""
+        try:
+            import sys as _sys
+            PROJ_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            SCRIPTS_DIR = os.path.join(PROJ_DIR, 'scripts')
+            if SCRIPTS_DIR not in _sys.path:
+                _sys.path.insert(0, SCRIPTS_DIR)
+            from dynamic_selector import DynamicStockSelectorV2
+            sel = DynamicStockSelectorV2()
+            sel.fetch_sectors()
+            return sel.sector_scores  # {bk_code: {name, flow, ...}}
+        except Exception as e:
+            logger.debug('Sector flow load failed: %s', e)
+            return {}
+
+    def _check_sector_flow(self, now: datetime):
+        """
+        检查板块资金流向是否出现异常突变。
+        资金流入评分从上一轮监控到这一轮出现显著提升（flow ↑>20分）→ 预警。
+        每只板块 30 分钟冷却。
+        """
+        if not hasattr(self, '_prev_sector_flows'):
+            self._prev_sector_flows = {}
+
+        current_flows = self._load_sector_flows()
+        if not current_flows:
+            return
+
+        for bk, info in current_flows.items():
+            prev = self._prev_sector_flows.get(bk, {})
+            prev_flow = prev.get('flow', 0)
+            curr_flow = info.get('flow', 0)
+
+            # 检测突变：资金流入评分跃升 > 20 分
+            if prev_flow > 0 and (curr_flow - prev_flow) > 20:
+                cooldown_key = f'sf_{bk}'
+                if not self._cooldown.can_fire(cooldown_key):
+                    continue
+
+                name = info.get('name', bk)
+                chg = info.get('change_pct', 0)
+                chg_emoji = '🔺' if chg > 0 else '➖'
+                msg = (
+                    f'💰【资金异动】{name} 资金大幅流入\n'
+                    f'   板块涨幅: {chg_emoji}{chg:+.2f}%\n'
+                    f'   资金评分: {prev_flow:.0f} → {curr_flow:.0f} (+{curr_flow - prev_flow:.0f})\n'
+                    f'   可能受消息面驱动，关注持续性\n'
+                    f'   时间: {now.strftime("%H:%M")}'
+                )
+                self._deliver_alert(msg)
+                from services.alert_history import record_alert
+                record_alert('SECTOR_FLOW', msg, symbol=bk, pct_change=chg)
+                logger.info('Sector flow alert: %s flow %d→%d', name, prev_flow, curr_flow)
+
+        # 更新缓存
+        self._prev_sector_flows = current_flows
+
+    def _record_position_alert(self, alert_type: str, symbol: str, message: str,
+                                price: float = None, pct: float = None):
+        """记录持仓相关预警到历史"""
+        try:
+            from services.alert_history import record_alert
+            record_alert(alert_type, message, symbol=symbol, price=price, pct_change=pct)
+        except Exception as e:
+            logger.debug('record_position_alert failed: %s', e)
+
+    def _deliver_alert(self, text: str, alert_type: str = 'POSITION',
+                       symbol: str = '', price: float = None, pct: float = None):
+        """通过飞书 IM API 推送文本消息给用户，并记录到历史。"""
         app_id = 'cli_a9217a3f3f389cc2'
         app_secret = '5kOAKAmFzhySMYQB9nV5ndInIlWS43mt'
         user_open_id = 'ou_b8add658ac094464606af32933a02d0b'
@@ -748,3 +960,11 @@ class IntradayMonitor:
                     logger.warning('Feishu push code=%s: %s', code, result.get('msg'))
         except Exception as e:
             logger.error('Feishu send failed: %s', e)
+
+        # 3. 记录到预警历史
+        try:
+            from services.alert_history import record_alert
+            record_alert(alert_type, text, symbol=symbol or '',
+                          price=price, pct_change=pct)
+        except Exception:
+            pass  # 不因记录失败影响推送

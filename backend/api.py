@@ -441,6 +441,112 @@ def analysis_status():
 
 
 # ============================================================
+# Watchlist endpoints
+# ============================================================
+
+@app.route('/watchlist', methods=['GET'])
+def get_watchlist():
+    """GET /watchlist — 返回当前自选股列表"""
+    from services.watchlist import get_watchlist_all
+    items = get_watchlist_all()
+    return ok(watchlist=items, count=len(items))
+
+
+@app.route('/watchlist/add', methods=['POST'])
+def add_watchlist():
+    """
+    POST /watchlist/add
+    Body: {"symbol": "600900.SH", "name": "长江电力",
+           "reason": "防守型持仓", "alert_pct": 5.0}
+    """
+    if not request.is_json:
+        return err('Content-Type must be application/json', 415)
+    body = request.json or {}
+    symbol = body.get('symbol', '')
+    if not symbol:
+        return err('symbol is required', 422)
+    from services.watchlist import add_to_watchlist
+    ok_ = add_to_watchlist(
+        symbol=symbol,
+        name=body.get('name', ''),
+        reason=body.get('reason', ''),
+        alert_pct=float(body.get('alert_pct', 5.0)),
+    )
+    if ok_:
+        return ok(message=f'{symbol} added to watchlist')
+    return err('Failed to add to watchlist', 500)
+
+
+@app.route('/watchlist/<symbol>', methods=['DELETE'])
+def remove_watchlist(symbol):
+    """DELETE /watchlist/<symbol> — 移除自选股（软删除）"""
+    from services.watchlist import remove_from_watchlist
+    removed = remove_from_watchlist(symbol)
+    if removed:
+        return ok(message=f'{symbol} removed from watchlist')
+    return err(f'{symbol} not found in watchlist', 404)
+
+
+@app.route('/watchlist/<symbol>', methods=['PATCH'])
+def patch_watchlist(symbol):
+    """
+    PATCH /watchlist/<symbol>
+    Body: {"alert_pct": 7.0} 或 {"enabled": 0}
+    """
+    if not request.is_json:
+        return err('Content-Type must be application/json', 415)
+    body = request.json or {}
+    from services.watchlist import set_alert_threshold
+    if 'alert_pct' in body:
+        set_alert_threshold(symbol, float(body['alert_pct']))
+    return ok(message=f'{symbol} updated')
+
+
+# ============================================================
+# Alert history endpoints
+# ============================================================
+
+@app.route('/alerts/history', methods=['GET'])
+def alerts_history():
+    """
+    GET /alerts/history
+    Query params:
+        limit      — max rows (default 50)
+        type       — filter by type: INDEX/POSITION/WATCHLIST/SECTOR_FLOW
+        since_hours — only last N hours (e.g. 24)
+        symbol     — filter by symbol (e.g. SH000001)
+    """
+    from services.alert_history import get_alerts
+    limit = int(request.args.get('limit', 50))
+    alert_type = request.args.get('type')
+    since_hours = int(request.args.get('since_hours', 0)) or None
+    symbol = request.args.get('symbol')
+    items = get_alerts(
+        limit=limit,
+        alert_type=alert_type,
+        since_hours=since_hours,
+        symbol=symbol,
+    )
+    return ok(alerts=items, count=len(items))
+
+
+@app.route('/alerts/clear', methods=['POST'])
+def clear_alerts():
+    """
+    POST /alerts/clear
+    Body: {"days": 7}  — 删除 N 天之前的预警（默认7天）
+    """
+    if not request.is_json:
+        body = {}
+    else:
+        body = request.json or {}
+    from services.alert_history import clear_old_alerts
+    days = int(body.get('days', 7))
+    cleared = clear_old_alerts(days)
+    return ok(message=f'Cleared {cleared} alerts older than {days} days')
+
+
+# ============================================================
 # Error handlers
 # ============================================================
 
