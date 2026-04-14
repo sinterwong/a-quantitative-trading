@@ -1,168 +1,165 @@
-# Roadmap & TODO
-> **核心目标：以提升股市实际胜率为导向。**
-> 所有任务按 Win Rate Optimization Roadmap（短期/中期/长期）排列。
-> Phase 1-5 已完成。进行中：Win Rate 优化路线图。
-> *Last updated: 2026-04-12*
-
-
-## Phase 1: Backend Service ✅ DONE
-
-### P0 — Core Backend
-- [x] **Backend skeleton** — `backend/main.py` with werkzeug server
-- [x] **Portfolio Service** — SQLite persistence (positions, trades, cash, signals, orders)
-- [x] **HTTP API** — 16 endpoints with validation + OpenAPI spec at `/docs`
-
-### P1 — Scheduling & Automation
-- [x] **Background scheduler** — 15:10 CST daily analysis trigger
-- [x] **Self-healing** — log rotation + restart on crash
-- [ ] **Service lifecycle** — `start.bat` / `stop.bat` / `status.bat`
-
-### P2 — API Quality
-- [x] **OpenAPI docs** — `GET /docs` (16 endpoints)
-- [x] **Request validation** — `@validate_fields` decorator on all POST
-- [ ] **Rate limiting** — prevent abuse of `/orders` endpoint
+# 量化交易系统 Roadmap
+> **愿景**：成为一个专业的 A 股量化交易系统，具备可验证的期望值为正的交易策略、严格的风控体系、以及稳定的自动化执行能力。
+> 
+> **当前状态（2026-04-14）**：骨架完成（选股→执行→风控→报告全链路打通），但策略未经历史数据验证，尚未进入专业级别。
+> 所有任务完成后，系统应达到：**Sharpe > 1.0、最大回撤 < 15%、胜率 > 55%、实盘小仓位稳定运行 3 个月+**。
+> 
+> *Last updated: 2026-04-14*
 
 ---
 
-## Phase 2: Broker Integration ✅ DONE
+## 第一阶段：策略验证（最优先）
+> **核心问题**：现在的 RSI 参数（35/70）、止盈（25%）、ATR 止损（2x）到底有没有效？不知道就是赌博，不是量化。**
 
-- [x] **Broker abstraction layer** — `backend/services/broker.py`
-- [x] **Paper executor** — VWAP model, order lifecycle (submitted/filled/rejected/cancelled)
-- [x] **Orders API** — `POST /orders/submit`, `GET /orders`, `GET /orders/<id>`, `POST /orders/<id>/cancel`
-- [ ] **Real broker** — Futu/Tiger (awaiting account credentials from Sinter)
+### S1.1 回测引擎搭建
+- [ ] **回测框架** — 选股/择时全量历史回测，支持做多 + 做空信号
+  - 数据源：腾讯/新浪日线历史（`AKShare` 或直接爬取）
+  - 最小回测周期：最近 2 年（覆盖牛熊）
+  - 评价指标：年化收益率、Max Drawdown、Win Rate、Profit Factor、Sharpe Ratio、Calmar Ratio
 
----
+### S1.2 核心策略回测验证
+- [ ] **RSI 策略参数寻优** — RSI_buy/RSI_sell 最优区间 grid search（30-45 / 65-80）
+- [ ] **ATR 止损回测** — 对比固定 % 止损 vs ATR 动态止损（2x / 2.5x / 3x），找出最优参数
+- [ ] **止盈参数回测** — 固定 20%/25%/30% 止盈 vs ATR 移动止盈，对比效果
+- [ ] **信号组合回测** — RSI + 放量共振买入 vs RSI 单独买入，对比减少假信号效果
 
-## Phase 3: Real-time Intelligence ✅ DONE
+**验收标准**：找出最优参数组合，回测夏普 > 0.5（保守标准，因为回测≠实盘）
 
-- [x] **Signal engine v2** — `signals.py`: A-share limit detection + RSI + volume ratio
-- [x] **Bulk price fetch** — Tencent `qt.gtimg.cn` batch API (corrected field indices)
-- [x] **IntradayMonitor** — daemon thread, 5-min polling 9:35-11:30 & 13:00-14:55 CST Mon-Fri
-- [x] **Feishu push** — REST API direct push (appId/appSecret auth, tested ✅)
-- [x] **Cooldown tracking** — 15-min per-symbol to prevent spam
+### S1.3 Walk-Forward 分析
+- [ ] **Walk-Forward 验证** — 将数据切成 N 组（e.g. 6 组 × 3 个月 in-sample + 1 个月 out-of-sample）
+  - In-sample 优化参数 → Out-of-sample 验证
+  - 检验参数是否稳定（参数在不同区间的集中度）
+- [ ] **参数稳定性报告** — 输出 RSI_buy/止盈/ATR 倍数的最优值分布，判断策略是否脆弱
 
-**A-share 专用信号类型：**
-- `LIMIT_UP` / `LIMIT_DOWN` — 涨跌停（含放量/缩量判断）
-- `LIMIT_RISK_UP` / `LIMIT_RISK_DOWN` — 逼近涨跌停（<1%）
-- `WATCH_LIMIT_UP` / `WATCH_LIMIT_DOWN` — 接近涨跌停（<3%）
-- `RSI_BUY` / `RSI_SELL` — RSI 超买超卖 + 动量确认
-- `WATCH_BUY` / `WATCH_SELL` — RSI 极端区域
-- `VOLATILE` — 大幅波动警示（>3%）
-
----
-
-## Phase 4: Research Infrastructure ✅ DONE
-
-### Signal System
-- [x] **Walk-Forward** — `walkforward_job.py` + `walkforward_persistence.py` + 季度自动重训
-- [x] **Market regime** — `MarketRegimeSource` 已有 (MA200)
-- [x] **News quality scoring** — `news_quality.py`（含糊词过滤 + 权威来源加分）
-
-### Data Quality
-- [x] **News quality scoring** — filter vague phrases (有望/或将/知情人士), weight official sources
-- [x] **Volume-Price confirmation** — 内置于 LIMIT_UP 信号（放量=真拉升，缩量=诱多）
-
-### Portfolio
-- [x] **Multi-stock expansion** — `PortfolioEngineV3` 已支持多股 + 行业仓位限制
-- [x] **Stop-loss module** — 日频止损检查（每交易日收盘价 vs 成本价）
-- [x] **A-share circuit breaker** — 15% 组合回撤熔断（PortfolioEngineV3 `max_drawdown_limit=0.15`）
-
-### Backtesting
-- [x] **In-sample / out-of-sample** — `WalkForwardAnalyzer` 强制分离
-- [x] **Monte Carlo simulation** — `monte_carlo.py`（2000次迭代，分位数统计，破产风险）
-- [x] **Benchmark** — `benchmark.py`（沪深300 ETF 510310.SH 对比，Alpha/Beta/信息比率）
+**验收标准**：最优参数在多数 out-of-sample 区间保持有效（>60% 区间正收益）
 
 ---
 
-## Phase 5: Productization
+## 第二阶段：数据与信号升级
+> 第一阶段验证了策略基本有效后，扩大数据维度和信号来源。
 
-- [x] **Web UI** — Streamlit dashboard (streamlit_app.py, 6 pages)
-- [x] **Scheduled reports** — `report_sender.py`: 9:00 早报 + 15:30 晚报（已测试推送成功）
-  - OpenClaw cron 已配置：Morning Report (0 9 * * 1-5) + Closing Report (30 15 * * 1-5)
-- [x] **Strategy plugins** — `strategies/` 插件架构（RSI/MACD/BollingerBand）
-  - `strategies/__init__.py` — 注册中心 `STRATEGY_REGISTRY` + `load_strategy()`
-  - `strategies/base.py` — `BaseStrategy` 基类（含 `compute_rsi/compute_ema`）
-  - `strategies/rsi_strategy.py` — RSI 超买超卖插件
-  - `strategies/macd_strategy.py` — MACD 金叉死叉插件
-  - `strategies/bollinger_strategy.py` — 布林带插件
-  - `backend/services/strategy_loader.py` — 从 `params.json` 动态加载
-  - `params.json` — 策略配置（symbols + params）
-- [ ] **PostgreSQL** — upgrade from SQLite for multi-user
-- [x] **Changelog + License**
+### S2.1 分钟级数据接入
+- [ ] **分钟K线数据** — 15min / 60min 接入（腾讯/新浪）
+- [ ] **多周期 RSI 确认** — 日线 RSI 触发 + 60min RSI 确认，减少日线假信号
+- [ ] **分钟量能系统** — 突破时放量（>5日均量 1.5x）作为二次确认
 
----
+### S2.2 基本面数据集成
+- [ ] **财务数据源** — PE、PB、ROE、营收增速（东方财富 f10 或 AKShare）
+- [ ] **价值因子过滤** — 在技术信号之上增加基本面过滤（PE<50、ROE>5% 等）
+- [ ] **估值异常预警** — 单只股票 PE/ROE 与行业均值偏离过大时预警
 
-## Win Rate Optimization Roadmap
-> 目标：以提升股市实际胜率为导向。所有任务按 "信号质量 × 风控 × 执行" 框架排列。
+### S2.3 新闻与舆情量化
+- [ ] **本地 embedding 语义检索** — 使用 jina-embeddings-small 本地运行，将新闻标题 embedding 后与股票关联
+  - 替代方案：关键词 + 权重打分（更快落地）
+- [ ] **官方来源加权** — 东方财富、新浪财经同一条新闻，官方媒体权重更高
+- [ ] **新闻情绪时滞检测** — 判断新闻是否已被市场消化（Price in/out）
 
-### 短期（1-4 周）— 直接提升信号精度
-> 核心：减少信号噪声，提高每笔交易的期望值
-
-| 优先级 | 任务 | 说明 |
-|--------|------|------|
-| P0 | **WFA 定时化** | 当前 WFA 已能跑，但需手动触发。接入 cron 每季度自动重训，保持参数跟得上市场变化 |
-| P0 | **分钟级信号源** | 日线 RSI 是近似，引入 15min/60min K线作为信号确认层，减少假信号 |
-| P0 | **止损优化（ATR）** | 固定 % 止损在低波动的长江电力上偏大，在高波动的小票上偏小。改用 ATR 动态止损 |
-| P1 | **新闻量化升级** | 关键词 → 语义 embedding 检索（成本可控：使用 BGE-small 或 Jina embeddings 本地运行），减少标题党干扰 |
-| P1 | **放量确认强化** | 当前用腾讯 vol_ratio，是日内代理。用分钟量与 5 日均量对比，放量突破确认更可靠 |
-| P2 | **机构席位数据** | 东方财富主力净流入、大单追踪（Level2 数据暂不需要，先用现有免费接口） |
-
-**短期验收标准：**
-- [ ] WFA 每季度自动运行，最新参数写入 `live_params.json`
-- [ ] RSI + 放量共振作为买入信号（减少日线 RSI 假突破）
-- [ ] ATR 止损 vs 固定 % 止损的回测对比报告（期望：降低极端亏损频率）
+### S2.4 北向资金深度应用
+- [ ] **北向持仓变化监控** — 持股量环比变化 >10% 时触发信号
+- [ ] **北向持仓 TOP 行业** — 追踪聪明钱重仓板块
+- [ ] **北向 + RSI 共振** — 北向资金大幅净流入 + RSI 超卖 = 强买入信号
 
 ---
 
-### 中期（1-3 个月）— 信号 → 交易闭环
-> 核心：把研究信号转化为可执行的交易逻辑，并验证期望值为正
+## 第三阶段：风控体系专业化
+> 风控是专业量化与"炒股的程序"的根本区别。
 
-| 优先级 | 任务 | 说明 |
-|--------|------|------|
-| P0 | **多空信号体系** | 当前仅做多（买入）。引入空头信号（融券/卖出），在 bear market 中也能获利 |
-| P0 | **持仓上限扩展** | 从 2-3 只扩展到 5-8 只，降低单只黑天鹅风险，同时分散 |
-| P1 | **季节性因子** | A 股存在明显季节效应（春节躁动、春季行情、年底博弈）。用历史数据验证，在高胜率季节增加仓位 |
-| P1 | **Market Regime 接入实盘** | MA200 快线/慢线区分牛熊，在 bear market 自动收紧仓位上限 |
-| P1 | **Paper Trade 闭环验证** | 每日记录信号 → 执行 → 结果，对比胜率统计（非回测，是真实样本） |
-| P2 | **Walk-Forward 结果分析** | 从 WFA 输出中提取最优参数分布，判断参数稳定性（方差过大说明策略脆弱） |
-| P2 | **动态选股时效** | 盘中选股结果缓存 5 分钟，超时重新抓取，避免用过期热门板块数据 |
+### S3.1 三层风控架构
+- [ ] **第一层：个股止损** — ATR Chandelier Exit（已有，初步实现）
+- [ ] **第二层：组合止损** — 日内组合总回撤 >8% 自动收紧仓位至 50%，>12% 全部清仓
+- [ ] **第三层：行业集中度** — 单一行业仓位上限 40%，超限强制减仓
 
-**中期验收标准：**
-- [ ] Paper Trade 胜率统计（>50% Sharpe > 0.5）
-- [ ] bear market 中空头信号有效（对冲多头亏损）
-- [ ] 持仓扩展到 5 只以上，最大持仓 <25%
+### S3.2 动态仓位管理
+- [ ] **ATR 动态仓位** — 固定 20% 仓位 → 根据标的 ATR 占价比率调整（高波动物减小仓）
+- [ ] **Kelly 公式参考** — 计算理论最优仓位（按历史胜率/盈亏比），作为上限参考
+- [ ] **市场波动率自适应** — VIX 高时自动降低总仓位（使用沪深300 波动率替代）
 
----
-
-### 长期（3-12 个月）— 专业化与风控升级
-> 核心：逼近专业量化基金水平，降低最大回撤，提升夏普
-
-| 优先级 | 任务 | 说明 |
-|--------|------|------|
-| P0 | **真实券商接入** | Futu OpenAPI 或 Tiger Trade，打通信号 → 订单 → 成交 → 持仓完整链路 |
-| P0 | **动态仓位管理** | Kelly 公式 + ATR 当前仓位，当前为固定 %。升级为根据波动率自适应 |
-| P1 | **事件驱动信号** | 业绩公告、并购重组、政策文件（财政蓝皮书等）纳入信号体系 |
-| P1 | **多因子模型** | 引入 PB、PE、ROE、营收增速等价值因子，与技术信号叠加 |
-| P1 | **回撤控制精细化** | 个股止损（ATR）+ 组合止损（15%熔断）+ 行业止损（单一行业 <40%）三层 |
-| P2 | **Level2 行情** | 十档买卖盘、逐笔委托数据，接入后信号精度再上一个台阶 |
-| P2 | **压力测试** | 对持仓组合做历史极端行情（2015 股灾、2018 贸易战、2022 上海封控）模拟 |
-| P3 | **组合优化器** | 均值-方差优化（MVO），在给定风险上限下最大化预期收益 |
-
-**长期验收标准：**
-- [ ] 实盘（真实资金，小仓位）连续运行 3 个月
-- [ ] Sharpe > 1.0（年化）
-- [ ] 最大回撤 < 15%
-- [ ] 胜率（盈利交易/总交易）> 55%
+### S3.3 压力测试
+- [ ] **历史极端行情回测** — 2015 股灾（6月-9月）、2018 贸易战、2022 上海封控
+- [ ] **黑天鹅场景模拟** — 持仓单日 -10% 时系统表现、流动性枯竭时能否止损
+- [ ] **风控触发记录** — 所有止损/熔断事件写入日志，定期复盘
 
 ---
 
-## Icebox
-- TradingView chart embedding
-- Email reports
-- Dark mode for web UI
-- Multi-language (EN/CN)
-- Mobile push via Server酱
+## 第四阶段：策略多元化
+> 单策略依赖度过高是系统性风险。
+
+### S4.1 多策略并行
+- [ ] **RSI 动量策略**（当前基础）
+- [ ] **MACD 金叉/死叉策略** — 趋势跟踪，与 RSI 低相关
+- [ ] **布林带均值回归策略** — 适用于震荡市，与动量策略互补
+- [ ] **板块动量轮动策略** — 追踪资金流入最强的板块（已有初步框架）
+
+### S4.2 策略选择机制
+- [ ] **Market Regime 检测** — 沪深300 MA200 快线 > 慢线（牛市）/ 空头（熊市）
+- [ ] **策略 - 市场适配表** — 牛市用动量 / 震荡用均值回归 / 熊市用空头
+- [ ] **策略协方差分析** — 避免多个策略同时持有相同信号，增加对冲
+
+### S4.3 季节性因子
+- [ ] **A 股季节性研究** — 春节躁动（1-2月）、春季行情（3-4月）、年底博弈（11-12月）
+- [ ] **季节性仓位调节** — 高胜率季节增加仓位，低胜率季节减少敞口
 
 ---
 
-*Last updated: 2026-04-12*
+## 第五阶段：实盘对接
+> 完成以上所有阶段并通过验证后，进入真实资金执行阶段。
+
+### S5.1 券商 API 对接
+- [ ] **Futu OpenAPI** 或 **Tiger Trade** — 真实下单、查询持仓、获取成交记录
+- [ ] **模拟实盘阶段**（至少 1 个月）— 真实行情、真实订单，但不调动真实资金
+- [ ] **小仓位实盘**（≤ 10% 总资金）— 连续 3 个月跑赢基准后逐步加码
+
+### S5.2 执行层优化
+- [ ] **订单延迟监控** — 记录从信号触发到订单成交的全链路延迟
+- [ ] **滑点估算** — 对比成交价与信号触发价，积累真实滑点数据
+- [ ] **涨跌停熔断** — 涨跌停日无法成交时的处理机制（上一次止损价保留/追价逻辑）
+
+### S5.3 合规与记录
+- [ ] **完整交易日志** — 每笔交易记录信号来源、触发时间、成交时间、成交价、滑点
+- [ ] **税务计算辅助** — A 股红利税、印花税、过户费精确记录
+- [ ] **月度审计报告** — 每月自动生成，包含胜率、持仓天数、费用统计
+
+---
+
+## 第六阶段：系统架构升级
+> 专业级的系统稳定性与性能。
+
+### S6.1 数据库升级
+- [ ] **PostgreSQL** — 从 SQLite 迁移，支持多用户、更大数据量、更强查询能力
+- [ ] **时序数据库（InfluxDB）** — 存储高频 tick 数据，支持快速查询
+
+### S6.2 低延迟架构
+- [ ] **独立行情进程** — 行情接收与策略执行分离，避免互相阻塞
+- [ ] **缓存层（Redis）** — 热点数据（持仓、信号状态）内存缓存
+- [ ] **订单队列** — 高频交易时订单缓冲，防止超发
+
+### S6.3 监控与运维
+- [ ] **系统健康检查** — CPU/内存/网络/行情延迟自动报警
+- [ ] **日志结构化** — JSON 格式日志，统一输出便于分析
+- [ ] **灾难恢复** — Backend 进程崩溃自动拉起（supervisord 或 Windows Service）
+
+---
+
+## Icebox（长期待办）
+- Level2 十档行情数据
+- 组合优化器（均值-方差 MVO）
+- 事件驱动（业绩公告、政策文件纳入信号）
+- 机器学习因子（XGBoost 选股）
+- 多券商并行（A股 + 港股）
+- TradingView 图表嵌入
+- 英文界面
+
+---
+
+## 阶段验收总表
+
+| 阶段 | 核心目标 | 关键指标 | 预计周期 |
+|------|----------|----------|----------|
+| **S1 策略验证** | 证明策略历史有效 | Walk-Forward Sharpe > 0.5 | 2-4 周 |
+| **S2 数据升级** | 信号维度和精度提升 | 假信号率降低 30% | 4-8 周 |
+| **S3 风控专业** | 三层风控 + 压力测试 | 历史极端行情存活 | 2-4 周 |
+| **S4 策略多元** | 3+ 策略并行 + 轮动 | 策略相关性 < 0.5 | 4-8 周 |
+| **S5 实盘对接** | 真实资金 + 券商API | 小仓位连续 3 月跑赢基准 | 8-16 周 |
+| **S6 架构升级** | PostgreSQL + 低延迟 | 支持 100+ 并发持仓 | 4-8 周 |
+
+**系统最终目标**：当以上全部完成，系统达到专业量化基金的自用标准——可解释的期望值为正、严格风控、稳定的自动化执行。
