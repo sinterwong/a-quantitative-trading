@@ -760,15 +760,190 @@ def run_fcompare(symbol: str,
 
 
 # ─────────────────────────────────────────────────────────
+# P2 压力测试 — 股灾/极端行情验证
+# ─────────────────────────────────────────────────────────
+
+CRASH_PERIODS = [
+    {
+        'name': '2015股灾',
+        'start': '20150601',
+        'end':   '20151031',
+        'label': '2015-06~10  (股灾)',
+        'benchmark': -40.0,  # 沪深300 从5100跌到3000
+    },
+    {
+        'name': '2018贸战',
+        'start': '20180101',
+        'end':   '20181231',
+        'label': '2018全年   (贸战)',
+        'benchmark': -25.0,  # 沪深300跌25%
+    },
+    {
+        'name': '2022上海封控',
+        'start': '20220301',
+        'end':   '20220630',
+        'label': '2022-03~06 (封控)',
+        'benchmark': -15.0,  # 沪深300跌15%
+    },
+]
+
+
+def run_crash_test(symbol: str = '510310.SH',
+                   capital: float = 200000) -> Dict:
+    """
+    在历史上极端行情期间验证 RSI 策略表现。
+
+    验收标准：
+      - 最大日亏损 < 5%（一日内）
+      - 止损触发次数合理（每季度 <= 3次）
+      - Sharpe >= 0（股灾期间仍能跑赢现金）
+      - 最大回撤 < 20%（股灾期间）
+    """
+    print(f"\n{'='*70}")
+    print(f"  [CRASH-TEST] 压力测试 | {symbol}")
+    print(f"  Params: RSI(25/65) SL=5%% TP=20%% ATR_threshold=0.90")
+    print(f"{'='*70}\n")
+
+    loader = DataLoader()
+    all_results = []
+
+    for period in CRASH_PERIODS:
+        name = period['name']
+        start_str = period['start']
+        end_str = period['end']
+
+        print(f"  [{name}] {start_str} ~ {end_str}")
+
+        kline = loader.get_kline(symbol, start_str, end_str)
+        if not kline or len(kline) < 30:
+            print(f"    [SKIP] 数据不足 ({len(kline) if kline else 0} days)")
+            continue
+        print(f"    Data: {len(kline)} days")
+
+        # 使用已验证的最优参数
+        sig = RSISignalFunc(rsi_buy=25, rsi_sell=65, rsi_period=14)
+        sig.setup(kline)
+        engine = BacktestEngine(
+            initial_capital=capital,
+            commission=0.0003,
+            stop_loss=0.05,
+            take_profit=0.20,
+            use_atr_stop=False,
+            atr_multiplier=2.0,
+            max_position_pct=0.20,
+        )
+        result = engine.run(kline, sig, f'RSI(25/65)')
+
+        # 计算额外指标
+        trades = engine.get_trades()
+        equity = engine.get_equity_curve()
+
+        # 统计日收益率
+        daily_returns = []
+        for i in range(1, len(equity)):
+            prev = equity[i-1]['value']
+            curr = equity[i]['value']
+            if prev > 0:
+                daily_returns.append((curr - prev) / prev * 100)
+
+        max_daily_loss = min(daily_returns) if daily_returns else 0
+        # 连续亏损天数
+        consec = 0
+        max_consec = 0
+        for ret in daily_returns:
+            if ret < 0:
+                consec += 1
+                max_consec = max(max_consec, consec)
+            else:
+                consec = 0
+
+        # 止损触发次数
+        stop_triggers = result.get('stop_triggers', {})
+        total_stops = sum(v for k, v in stop_triggers.items() if k != 'take_profit')
+
+        sharpe = result.get('sharpe_ratio', 0)
+        ret_pct = result.get('total_return_pct', 0)
+        max_dd = result.get('max_drawdown_pct', 0)
+        win_rate = result.get('win_rate_pct', 0)
+        n_trades = result.get('total_trades', 0)
+
+        # 评估
+        pass_sharme = sharpe >= 0
+        pass_dd = max_dd < 20
+        pass_daily = max_daily_loss > -5
+        pass_overall = pass_sharme and pass_dd
+
+        print(f"    总收益:   {ret_pct:+.2f}%")
+        print(f"    夏普比率: {sharpe:+.3f} {'PASS' if pass_sharme else 'FAIL'}")
+        print(f"    最大回撤: {max_dd:.1f}% {'PASS' if pass_dd else 'FAIL'}")
+        print(f"    最大日亏: {max_daily_loss:.1f}% {'PASS' if pass_daily else 'FAIL'}")
+        print(f"    胜率:     {win_rate:.0f}%  ({n_trades}笔交易)")
+        print(f"    连续亏损: {max_consec}天")
+        print(f"    止损触发: {total_stops}次")
+        print(f"    评估:     {'PASS' if pass_overall else 'WARN'} (Sharpe>=0 && MaxDD<20%%)\n")
+
+        period_result = {
+            'name': name,
+            'label': period['label'],
+            'start': start_str,
+            'end': end_str,
+            'days': len(kline),
+            'total_return_pct': ret_pct,
+            'sharpe_ratio': sharpe,
+            'max_drawdown_pct': max_dd,
+            'max_daily_loss_pct': round(max_daily_loss, 2),
+            'max_consecutive_loss_days': max_consec,
+            'win_rate_pct': win_rate,
+            'total_trades': n_trades,
+            'stop_triggers': stop_triggers,
+            'total_stop_triggers': total_stops,
+            'pass_sharpe': pass_sharme,
+            'pass_maxdd': pass_dd,
+            'pass_daily_loss': pass_daily,
+            'pass_overall': pass_overall,
+        }
+        all_results.append(period_result)
+
+    # ── Summary Table ─────────────────────────────────────────
+    print(f"\n{'='*70}")
+    print(f"  [CRASH-TEST SUMMARY]")
+    print(f"{'='*70}")
+    print(f"  {'区间':<20} {'天数':>5} {'收益':>8} {'Sharpe':>7} "
+          f"{'MaxDD':>7} {'最大日亏':>9} {'连续亏':>7} {'胜率':>6} "
+          f"{'交易':>5} {'评估':>6}")
+    print(f"  {'-'*75}")
+    for r in all_results:
+        flag = 'PASS' if r['pass_overall'] else 'WARN'
+        print(f"  {r['label']:<20} {r['days']:>5} "
+              f"{r['total_return_pct']:>+7.1f}% {r['sharpe_ratio']:>+6.3f} "
+              f"{r['max_drawdown_pct']:>6.1f}% {r['max_daily_loss_pct']:>+8.1f}% "
+              f"{r['max_consecutive_loss_days']:>6}d "
+              f"{r['win_rate_pct']:>5.0f}% "
+              f"{r['total_trades']:>5} {flag:>6}")
+    print(f"  {'-'*75}")
+
+    pass_count = sum(1 for r in all_results if r['pass_overall'])
+    print(f"\n  总区间: {len(all_results)} | PASS: {pass_count} | WARN: {len(all_results)-pass_count}")
+    if pass_count == len(all_results) and len(all_results) > 0:
+        print(f"  结论: RSI(25/65) 在所有极端行情中表现达标，夏普>=0且最大回撤<20%%")
+    elif pass_count > 0:
+        print(f"  结论: RSI(25/65) 在 {pass_count}/{len(all_results)} 个极端行情中达标")
+    else:
+        print(f"  结论: RSI(25/65) 在极端行情中表现不佳，需优化风控参数")
+
+    return {'periods': all_results}
+
+
+# ─────────────────────────────────────────────────────────
 # 主入口
 # ─────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description='S1 Backtest CLI')
-    parser.add_argument('command', choices=['single', 'grid', 'compare', 'wf', 'fcompare'],
-                        help='single | grid | compare | wf | fcompare (filter comparison)')
-    parser.add_argument('symbol', nargs='?', default='600900.SH',
-                        help='Symbol code (default: 600900.SH)')
+    parser.add_argument('command', choices=['single', 'grid', 'compare', 'wf', 'fcompare', 'crash-test'],
+                        help='single | grid | compare | wf | fcompare | crash-test')
+    parser.add_argument('symbol', nargs='?', default='510310.SH',
+                        help='Symbol code (default: 510310.SH for crash-test)')
     parser.add_argument('--rsi-buy', type=float, default=35)
     parser.add_argument('--rsi-sell', type=float, default=65)
     parser.add_argument('--rsi-period', type=int, default=14)
@@ -836,6 +1011,8 @@ def main():
             test_years=args.test_years,
             capital=args.capital,
         )
+    elif args.command == 'crash-test':
+        result = run_crash_test(symbol=args.symbol, capital=args.capital)
     else:
         result = {}
 

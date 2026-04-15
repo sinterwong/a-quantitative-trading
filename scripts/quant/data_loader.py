@@ -193,8 +193,13 @@ class DataLoader:
                     continue
 
             if data:
+                # Client-side date filter (Sina doesn't support server-side date range)
+                if start_date:
+                    data = [d for d in data if d['date'] >= start_date]
+                if end_date:
+                    data = [d for d in data if d['date'] <= end_date]
                 self._save_cache(cache_key, data)
-                print(f"[OK] {symbol}: {len(data)} records via sina")
+                print(f"[OK] {symbol}: {len(data)} records via sina [{start_date}~{end_date}]")
 
             return data
 

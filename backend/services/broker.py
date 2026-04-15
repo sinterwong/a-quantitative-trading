@@ -65,6 +65,8 @@ class OrderResult:
     submitted_shares: int
     filled_shares: int = 0
     avg_price: float = 0.0
+    signal_price: float = 0.0   # 触发信号时的参考价
+    slippage_bps: float = 0.0  # 滑点（基点）：正=贵买/贱卖，负=低价买/高价卖
     submitted_at: str = ''
     filled_at: str = ''
     reason: str = ''
@@ -200,29 +202,36 @@ class PaperBroker(BrokerBase):
         return f'PAPER_{int(time.time()*1000)}_{self._order_id_counter}'
 
     def _simulate_fill(self, symbol: str, direction: str, shares: int,
-                       price: float, price_type: str) -> OrderResult:
+                       price: float, price_type: str,
+                       signal_price: float = 0.0) -> OrderResult:
         """
-        Simulate order fill:
-        - Market orders: fill at current market price (fetched from Tencent) + slippage
-        - Limit orders: fill at specified price if market reaches it
+        Simulate order fill.
+        price: market reference price at time of fill.
+        signal_price: the signal trigger price (for slippage reference). If 0, use price.
         """
         order_id = self._next_order_id()
         now_str = datetime.now().isoformat()
 
+        # Market reference price (before slippage)
+        ref_price = price if price > 0 else self._fetch_market_price(symbol)
+        # Use signal_price if provided, else use ref_price
+        slip_ref = signal_price if signal_price > 0 else ref_price
+
         # ── Resolve fill price ──────────────────────────────────
         if price_type == 'market':
-            # Fetch real market price if not provided
-            if price <= 0:
-                price = self._fetch_market_price(symbol)
             slip = random.uniform(-self.slippage_bps, self.slippage_bps) / 10_000
-            fill_price = round(price * (1 + slip), 2)
+            fill_price = round(ref_price * (1 + slip), 2)
         else:
-            fill_price = price  # limit order fills at specified price
+            fill_price = ref_price  # limit order fills at ref_price
 
-        # Small random delay to simulate exchange processing
+        # Compute actual slippage in bps (vs signal_price)
+        if slip_ref > 0:
+            slip_bps = (fill_price - slip_ref) / slip_ref * 10_000
+        else:
+            slip_bps = 0.0
+
         time.sleep(0.5)
 
-        # Simulate fill: market orders fill fully (simplified)
         order = OrderResult(
             order_id=order_id,
             status='filled',
@@ -231,6 +240,8 @@ class PaperBroker(BrokerBase):
             submitted_shares=shares,
             filled_shares=shares,
             avg_price=fill_price,
+            signal_price=slip_ref,
+            slippage_bps=round(slip_bps, 2),
             submitted_at=now_str,
             filled_at=datetime.now().isoformat(),
         )
@@ -298,7 +309,9 @@ class PaperBroker(BrokerBase):
                 )
 
         # --- Execute fill ---
-        result = self._simulate_fill(symbol, direction, shares, price, price_type)
+        # price param is the market reference price at submission time
+        result = self._simulate_fill(symbol, direction, shares, price, price_type,
+                                     signal_price=price)
 
         # --- Update portfolio ---
         if result.status == 'filled':
@@ -319,14 +332,16 @@ class PaperBroker(BrokerBase):
                 else:
                     self.portfolio.upsert_position(symbol, remaining, pos['entry_price'])
 
-            # Record trade in portfolio
+            # Record trade with slippage tracking
             pnl = None
             if direction == 'SELL' and pos:
                 pnl = (result.avg_price - pos['entry_price']) * shares
-            self.portfolio.record_trade(symbol, direction, shares, result.avg_price, pnl)
+            self.portfolio.record_trade(
+                symbol, direction, shares, result.avg_price, pnl,
+                slippage_bps=result.slippage_bps)
 
-        logger.info('PaperBroker: order %s %s %d @ %.2f => %s',
-                    direction, symbol, shares, result.avg_price, result.status)
+        logger.info('PaperBroker: order %s %s %d @ %.2f [slippage=%.1fbps] => %s',
+                    direction, symbol, shares, result.avg_price, result.slippage_bps, result.status)
         return result
 
     def cancel_order(self, order_id: str) -> bool:

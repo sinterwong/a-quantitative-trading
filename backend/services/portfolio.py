@@ -89,9 +89,16 @@ def init_db():
                 price      REAL    NOT NULL,
                 pnl        REAL,
                 trade_id   TEXT    NOT NULL UNIQUE,
-                executed_at TEXT   NOT NULL
+                executed_at TEXT   NOT NULL,
+                slippage_bps REAL
             )
         ''')
+
+        # Add slippage_bps column if upgrading from older schema (no migration needed)
+        try:
+            cur.execute('ALTER TABLE trades ADD COLUMN slippage_bps REAL')
+        except Exception:
+            pass  # column already exists
 
         # signals
         cur.execute('''
@@ -405,14 +412,15 @@ class PortfolioService:
     # ------------------------------------------------------------
 
     def record_trade(self, symbol: str, direction: str, shares: int,
-                    price: float, pnl: Optional[float] = None) -> str:
+                    price: float, pnl: Optional[float] = None,
+                    slippage_bps: Optional[float] = None) -> str:
         trade_id = f"{symbol}_{direction}_{int(time.time()*1000)}"
         with get_cursor() as cur:
             cur.execute(
                 '''INSERT OR IGNORE INTO trades
-                   (symbol, direction, shares, price, pnl, trade_id, executed_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                (symbol, direction, shares, price, pnl, trade_id, datetime.now().isoformat())
+                   (symbol, direction, shares, price, pnl, trade_id, executed_at, slippage_bps)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                (symbol, direction, shares, price, pnl, trade_id, datetime.now().isoformat(), slippage_bps)
             )
         return trade_id
 
