@@ -169,6 +169,9 @@ class IntradayMonitor:
         # 组合风控参数
         self._dd_warn: float = 0.08    # 8% 回撤警告
         self._dd_stop: float = 0.12    # 12% 回撤清仓
+        # Kelly 仓位
+        self._kelly_pct: float = 0.10   # 默认 10%，每交易日根据历史交易更新
+        self._kelly_last_updated: str = ''  # ISO date string
 
     # ── Public API ────────────────────────────────────────
 
@@ -225,8 +228,8 @@ class IntradayMonitor:
 
     def _calc_shares(self, symbol: str, price: float) -> int:
         """
-        根据可用现金和 max_position_pct 计算可买股数。
-        A 股最小买入单位：100 股（1 手）。
+        根据 Kelly 仓位比例计算可买股数（整手 100 股）。
+        使用 _kelly_pct（0.0~1.0）作为仓位比例。
         """
         try:
             cash = self._svc.get_cash()
@@ -234,10 +237,9 @@ class IntradayMonitor:
             cash = 0
         if cash <= 0 or price <= 0:
             return 0
-        max_cost = cash * self._max_pos_pct
+        max_cost = cash * self._kelly_pct
         raw_shares = int(max_cost / price)
-        # 向下取整到100股的整数倍
-        return (raw_shares // 100) * 100
+        return max(100, (raw_shares // 100) * 100)
 
     # ── 新闻情绪检查（Method A & B 共享）───────────────────────
 
@@ -486,10 +488,37 @@ class IntradayMonitor:
         if self._params_cache_date != today:
             self._params_cache = {}
             self._params_cache_date = today
+            self._refresh_kelly_from_trades()
         if symbol not in self._params_cache:
             from services.signals import load_symbol_params
             self._params_cache[symbol] = load_symbol_params(symbol)
         return self._params_cache[symbol]
+
+    def _refresh_kelly_from_trades(self):
+        """
+        每交易日上午 9:05（params_cache 刷新时）根据历史交易记录更新 Kelly 仓位。
+        从 PortfolioService.get_trades() 获取全部历史交易，计算 P&L 后更新 _kelly_pct。
+        """
+        try:
+            import sys, os
+            for k in list(os.environ.keys()):
+                if 'proxy' in k.lower(): del os.environ[k]
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from scripts.quant.position_sizer import compute_kelly_from_trades
+
+            trades_raw = self._svc.get_trades(limit=500)
+            if not trades_raw:
+                return
+            trades = [{'pnl': float(t.get('pnl', 0))} for t in trades_raw]
+            new_kelly = compute_kelly_from_trades(trades)
+
+            if abs(new_kelly - self._kelly_pct) > 0.005:
+                logger.info('Kelly updated: %.1f%% -> %.1f%% (from %d trades)',
+                           self._kelly_pct * 100, new_kelly * 100, len(trades))
+            self._kelly_pct = new_kelly
+            self._kelly_last_updated = date.today().isoformat()
+        except Exception as e:
+            logger.warning('_refresh_kelly_from_trades failed: %s', e)
 
     def _check_and_push(self, now: datetime):
         """获取持仓 → 检查信号 → 推送飞书 + 自动下单（使用WFA优化参数）"""
