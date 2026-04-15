@@ -110,9 +110,9 @@ def calculate_daily_return(snapshot: dict) -> dict:
     today = date.today().isoformat()
 
     # 尝试从 daily_meta 获取日初净值
-    metas = api_get('/daily_meta') or {}
-    meta_list = metas.get('daily_metas', [])
-    today_meta = next((m for m in meta_list if m.get('date') == today), None)
+    metas = api_get('/portfolio/daily') or {}
+    meta_list = metas.get('daily', [])
+    today_meta = next((m for m in meta_list if m.get('trade_date') == today), None)
 
     if today_meta:
         opening_equity = today_meta.get('equity', snapshot['total_equity'])
@@ -169,7 +169,7 @@ def record_daily_meta(snapshot: dict, return_info: dict):
     """将收盘数据写入 daily_meta 表。"""
     today = date.today().isoformat()
     try:
-        api_post('/daily_meta', {
+        api_post('/portfolio/daily', {
             'date':          today,
             'nav':           return_info.get('closing_equity', 0) / 100000,  # 假设净值基值
             'equity':        return_info['closing_equity'],

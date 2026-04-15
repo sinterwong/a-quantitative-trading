@@ -67,7 +67,7 @@ def build_journal_entry(trade: dict, signal: dict = None) -> dict:
         'entry_price':  trade.get('price', 0),
         'shares':       trade.get('shares', 0),
         'pnl':           trade.get('pnl', 0),
-        'slippage_bps': trade.get('slippage_bps', 0),
+        'slippage_bps': (trade.get('slippage_bps') or 0),
         'signal':       signal.get('signal', '') if signal else '',
         'signal_reason': signal.get('reason', '') if signal else '',
         'regime':       _extract_regime(signal.get('reason', '')) if signal else '',
@@ -115,11 +115,11 @@ def analyze_journal(trades: list, signals: list) -> dict:
 
     # ── 基础统计 ──────────────────────────────────────────────────────────
     total_trades   = len(journal)
-    wins           = sum(1 for j in journal if j['pnl'] > 0)
-    losses         = sum(1 for j in journal if j['pnl'] <= 0)
+    wins           = sum(1 for j in journal if (j['pnl'] or 0) > 0)
+    losses         = sum(1 for j in journal if (j['pnl'] or 0) <= 0)
     win_rate       = wins / total_trades * 100 if total_trades > 0 else 0
-    avg_pnl        = sum(j['pnl'] for j in journal) / total_trades if total_trades > 0 else 0
-    total_pnl      = sum(j['pnl'] for j in journal)
+    avg_pnl        = sum((j['pnl'] or 0) for j in journal) / total_trades if total_trades > 0 else 0
+    total_pnl      = sum((j['pnl'] or 0) for j in journal)
 
     # ── 按信号类型统计 ────────────────────────────────────────────────────
     by_signal: Dict[str, dict] = {}
@@ -128,8 +128,8 @@ def analyze_journal(trades: list, signals: list) -> dict:
         if sig_type not in by_signal:
             by_signal[sig_type] = {'trades': 0, 'wins': 0, 'pnl_sum': 0, 'losses': 0}
         by_signal[sig_type]['trades'] += 1
-        by_signal[sig_type]['pnl_sum'] += j['pnl']
-        if j['pnl'] > 0:
+        by_signal[sig_type]['pnl_sum'] += (j['pnl'] or 0)
+        if (j['pnl'] or 0) > 0:
             by_signal[sig_type]['wins'] += 1
         else:
             by_signal[sig_type]['losses'] += 1
@@ -146,8 +146,8 @@ def analyze_journal(trades: list, signals: list) -> dict:
         if regime not in by_regime:
             by_regime[regime] = {'trades': 0, 'wins': 0, 'pnl_sum': 0}
         by_regime[regime]['trades'] += 1
-        by_regime[regime]['pnl_sum'] += j['pnl']
-        if j['pnl'] > 0:
+        by_regime[regime]['pnl_sum'] += (j['pnl'] or 0)
+        if (j['pnl'] or 0) > 0:
             by_regime[regime]['wins'] += 1
 
     for regime, stats in by_regime.items():
@@ -156,7 +156,7 @@ def analyze_journal(trades: list, signals: list) -> dict:
         stats['avg_pnl']  = stats['pnl_sum'] / n if n > 0 else 0
 
     # ── 滑点统计 ──────────────────────────────────────────────────────────
-    slippage_bps_list = [j['slippage_bps'] for j in journal if j['slippage_bps'] != 0]
+    slippage_bps_list = [(j['slippage_bps'] or 0) for j in journal if j['slippage_bps'] is not None != 0]
     if slippage_bps_list:
         slippage_avg = sum(slippage_bps_list) / len(slippage_bps_list)
         sorted_bps   = sorted(slippage_bps_list)
