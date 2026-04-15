@@ -145,12 +145,19 @@
 
 ## P8 · 数据源稳定化（持续性工程）
 
-### 🔲 — 北向资金接口多源备份
-- 东方财富 KAMT 限流时 → 切换到 Sina 财经北向数据
+### ✅ — KAMT 多源缓存 + Fallback
+- **新建** `backend/services/data_cache.py` + `scripts/quant/data_cache.py`
+- `_SafeCache`: 线程安全单调时间 TTL 缓存（60s KAMT / 60s 分钟K线 / 30s 通用 HTTP）
+- `cached_kamt()`: 三级 Fallback 链：
+  1. eastmoney `push2.eastmoney.com/api/qt/kamt.rtmin`（实时，每分钟更新）
+  2. eastmoney `push2.eastmoney.com/api/qt/kamt/get`（日度摘要，配额数据）
+  3. 过期缓存（返回 `stale=True` 标记）
+- `northbound.py` 的 `fetch_kamt()` 替换为 `cached_kamt()` 包装，60s 内重复调用走缓存
 
-### 🔲 — 日内数据缓存优化
-- 分钟 K 线数据（腾讯接口）缓存 1 分钟
-- 避免同一分钟重复请求造成限流
+### ✅ — 分钟 K 线缓存（60s TTL）
+- `cached_minute_kline(symbol, fetch_fn)`: 防止同一分钟内重复请求导致限流
+- 适用于腾讯/新浪分钟K线数据源
+- `cached_get(url)`: 通用 HTTP GET 缓存（默认 30s TTL）
 
 ---
 

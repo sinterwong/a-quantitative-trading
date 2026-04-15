@@ -20,6 +20,7 @@ import urllib.request
 import urllib.error
 from datetime import datetime, date
 from typing import Optional, List, Dict
+from services.data_cache import cached_kamt  # P8: KAMT cache + fallback
 
 logger = logging.getLogger('northbound')
 
@@ -63,75 +64,13 @@ def _get(url: str) -> Optional[str]:
 # s2n = south to north = 南向（沪深投资人买港股）
 # n2s = north to south = 北向（港资买A股）
 
-def fetch_kamt() -> Optional[dict]:
+def fetch_kamt(force_refresh: bool = False) -> Optional[dict]:
     """
-    获取当前交易日 KAMT 实时数据。
-    Returns: {
-        's2n': {'quota_used': float, 'quota_total': float, 'last_time': str},
-        'n2s': {'quota_used': float, 'quota_total': float, 'last_time': str},
-        'today_date': str,
-    }
+    P8 wrapper: delegates to cached_kamt (60s TTL + eastmoney fallback).
+    force_refresh=True bypasses cache.
     """
-    url = (
-        'https://push2.eastmoney.com/api/qt/kamt.rtmin/get'
-        '?fields1=f1,f2,f3,f4'
-        '&fields2=f51,f52,f53,f54,f55,f56'
-        '&ut=b2884a393a59ad64002292a3e90d46a5'
-    )
-    raw = _get(url)
-    if not raw:
-        return None
+    return cached_kamt(force_refresh=force_refresh)
 
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-
-    kamt = data.get('data', {})
-    if not kamt:
-        return None
-
-    s2n_raw = kamt.get('s2n', [])  # 南向（沪深买港股）
-    n2s_raw = kamt.get('n2s', [])  # 北向（港资买A股）
-
-    today = date.today().isoformat()
-
-    # 取最后一条非空记录
-    def parse_last(series: list) -> dict:
-        for entry in reversed(series):
-            parts = entry.split(',')
-            if len(parts) >= 6:
-                # [0]=time, [2]=quota_used_shares?, [4]=quota_total_shares
-                try:
-                    quota_used = float(parts[2]) if parts[2] else 0.0
-                    quota_total = float(parts[4]) if parts[4] else 0.0
-                    # 成交额字段
-                    amount = float(parts[3]) if parts[3] else 0.0
-                    cum_amount = float(parts[5]) if parts[5] else 0.0
-                    return {
-                        'quota_used': quota_used,
-                        'quota_total': quota_total,
-                        'amount': amount,       # 当笔成交额（元）
-                        'cum_amount': cum_amount,  # 累计成交额（元）
-                        'last_time': parts[0],
-                    }
-                except (ValueError, IndexError):
-                    continue
-        return {'quota_used': 0.0, 'quota_total': 0.0, 'amount': 0.0, 'cum_amount': 0.0, 'last_time': ''}
-
-    s2n = parse_last(s2n_raw)
-    n2s = parse_last(n2s_raw)
-
-    # 判断南北向：用成交额判断（amount>0 表示有实际成交）
-    # cum_amount = 累计成交额（元）
-    net_north_cny = n2s.get('cum_amount', 0) - s2n.get('cum_amount', 0)  # 北向净流入 = 北向累计 - 南向累计
-
-    return {
-        's2n': s2n,
-        'n2s': n2s,
-        'today_date': today,
-        'net_north_cny': net_north_cny,
-    }
 
 
 def format_kamt_summary(kamt_data: dict) -> str:
