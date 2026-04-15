@@ -261,7 +261,21 @@ PAPER ──► SIMULATED ──► LIVE
 
 ---
 
-## Phase 4 · Tick 数据 + 订单簿因子（下一步）
+## Phase 4 · Tick 数据 + 订单簿因子 ✅ 完成
+
+> **状态**：完成，6/6 测试通过，已提交 `fd2b968`
+
+### 已实现组件
+
+**`core/level2.py`** — Level2 核心
+- `Level2DataSource`: 新浪5档买卖盘口轮询（免费）
+- `OrderBook`: 盘口数据模型（bid5/ask5）
+- `TickBarAggregator`: tick→规则K线（time/volume/tick）
+- `OrderImbalanceFactor`: OI订单不平衡度
+- `BidAskSpreadFactor`: 买卖价差因子
+- `MidPriceDriftFactor`: 中间价漂移
+- `VolumeRateFactor`: 量比
+- `AmihudIlliquidityFactor`: 非流动性（学术因子）
 
 ```python
 class OrderFlowFactor(Factor):
