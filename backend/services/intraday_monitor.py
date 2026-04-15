@@ -607,23 +607,6 @@ class IntradayMonitor:
         drawdown = (self._peak_equity - current_equity) / self._peak_equity
         now_str = datetime.now().strftime("%H:%M")
 
-        # 12pct stop: full liquidation
-        if drawdown >= self._dd_stop and not self._risk_stop_fired:
-            self._risk_stop_fired = True
-            msg = "[EMERGENCY] Portfolio cascade STOP! DD: %.1f%% (threshold %.0f%%)\n" % (
-                   drawdown * 100, self._dd_stop * 100)
-            msg += " Equity: %.2f  Peak: %.2f  Time: %s\n" % (
-                   current_equity, self._peak_equity, now_str)
-            msg += " ACTION: FULL LIQUIDATION"
-            self._deliver_alert(msg)
-            if self._broker:
-                for pos in positions:
-                    sym = pos.get("symbol")
-                    shares = pos.get("shares", 0)
-                    if shares > 0:
-                        self._submit_market_sell(sym, shares, reason="portfolio_cascade_stop")
-            return
-
         # 8pct warning: reduce to 50pct
         if drawdown >= self._dd_warn and not self._risk_warn_fired:
             self._risk_warn_fired = True
@@ -641,6 +624,24 @@ class IntradayMonitor:
                         half = shares // 2
                         if half > 0:
                             self._submit_market_sell(sym, half, reason="portfolio_risk_reduce")
+            # Return after warn action - stop will be checked on next poll if DD grows
+            return
+
+        # 12pct stop: full liquidation
+        if drawdown >= self._dd_stop and not self._risk_stop_fired:
+            self._risk_stop_fired = True
+            msg = "[EMERGENCY] Portfolio cascade STOP! DD: %.1f%% (threshold %.0f%%)\n" % (
+                   drawdown * 100, self._dd_stop * 100)
+            msg += " Equity: %.2f  Peak: %.2f  Time: %s\n" % (
+                   current_equity, self._peak_equity, now_str)
+            msg += " ACTION: FULL LIQUIDATION"
+            self._deliver_alert(msg)
+            if self._broker:
+                for pos in positions:
+                    sym = pos.get("symbol")
+                    shares = pos.get("shares", 0)
+                    if shares > 0:
+                        self._submit_market_sell(sym, shares, reason="portfolio_cascade_stop")
             return
 
         logger.debug("Portfolio DD=%.1f%% warn_fired=%s", drawdown * 100, self._risk_warn_fired)
