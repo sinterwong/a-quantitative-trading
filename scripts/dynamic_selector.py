@@ -485,6 +485,52 @@ class DynamicStockSelectorV2:
         else:
             _log('WARNING', 'fetch_sectors: eastmoney API returned empty (rate limited or network error)')
 
+
+        # 3. Sina 财经板块数据（东方财富限流时的备用）
+        try:
+            import ssl as _ssl, urllib.request as _urllib, re as _re, json as _json
+            _ctx = _ssl.create_default_context()
+            _ctx.check_hostname = False
+            _ctx.verify_mode = _ssl.CERT_NONE
+            _sina_url = 'https://vip.stock.finance.sina.com.cn/q/view/newFLJK.php?param=class'
+            _req = _urllib.Request(_sina_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with _urllib.urlopen(_req, context=_ctx, timeout=8) as _resp:
+                _raw = _resp.read().decode('gbk', errors='replace')
+            _m = _re.search(r'= ({.+?})', _raw, _re.DOTALL)
+            if _m:
+                _sina_data = _json.loads(_m.group(1))
+                _sina_sectors = []
+                for _k, _v in _sina_data.items():
+                    _parts = _v.split(',')
+                    if len(_parts) < 7:
+                        continue
+                    try:
+                        _change_pct = float(_parts[4])
+                    except (ValueError, IndexError):
+                        _change_pct = 0.0
+                    try:
+                        _amount = float(_parts[6])
+                    except (ValueError, IndexError):
+                        _amount = 0.0
+                    _synth_bk = 'SINA_' + _k.replace('gn_', 'GN')
+                    _sina_sectors.append({
+                        'f12': _synth_bk,
+                        'f14': _parts[1],
+                        'f3': _change_pct,
+                        'f6': _amount,
+                        'f62': 0,
+                        '_source': 'sina'
+                    })
+                if _sina_sectors:
+                    self.sectors_raw = _sina_sectors
+                    self._last_source = 'sina'
+                    _write_file_cache('sectors.json', self.sectors_raw)
+                    self._sectors_fetched = True
+                    _log('INFO', 'fetch_sectors: Sina ok (%d sectors)' % len(_sina_sectors))
+                    return self.sectors_raw
+        except Exception as _e:
+            _log('WARNING', 'fetch_sectors: Sina fallback failed: %s' % str(_e))
+
         # 3. 无备用数据源，依赖文件缓存；标记失败状态
         self._sectors_fetched = True
         self._last_source = 'failed'
