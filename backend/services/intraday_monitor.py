@@ -162,6 +162,13 @@ class IntradayMonitor:
         # 新闻情绪缓存：{symbol: (sentiment, confidence, summary, date)}  每天刷新
         self._sentiment_cache: dict = {}
         self._sentiment_cache_date: str = ''
+        # 组合熔断追踪
+        self._peak_equity: float = 0.0
+        self._risk_warn_fired: bool = False   # 8% 熔断已触发（当天不重复推送）
+        self._risk_stop_fired: bool = False   # 12% 熔断已触发
+        # 组合风控参数
+        self._dd_warn: float = 0.08    # 8% 回撤警告
+        self._dd_stop: float = 0.12    # 12% 回撤清仓
 
     # ── Public API ────────────────────────────────────────
 
@@ -514,7 +521,13 @@ class IntradayMonitor:
 
         if not positions:
             logger.debug('No positions, skipping signal check')
+            self._peak_equity = self._svc.get_portfolio_summary().get('total_equity', 0) or self._peak_equity
+            self._risk_warn_fired = False
+            self._risk_stop_fired = False
             return
+
+        # ── 组合熔断检查 ─────────────────────────────────
+        self._check_portfolio_risk(positions)
 
         # 使用 WFA 优化参数逐个检查持仓信号
         from services.signals import evaluate_signal, format_feishu_message
@@ -565,6 +578,73 @@ class IntradayMonitor:
         # ── 止盈检查（ATR移动止盈 + 固定止盈）──────────────
         if self._broker:
             self._check_take_profits(positions, now)
+
+    def _submit_market_sell(self, sym, shares, reason=""):
+        """Helper: market sell for portfolio risk exits."""
+        class _F:
+            def __init__(self, s, sh, r):
+                self.symbol = s; self.shares = sh; self.signal = "RSI_SELL"
+                self.price = 0.0; self.reason = r; self.direction = "SELL"
+        self._submit_order_for_signal(_F(sym, shares, reason))
+
+
+    def _check_portfolio_risk(self, positions):
+        """DD cascade: 8pct warn, 12pct stop."""
+        try:
+            summary = self._svc.get_portfolio_summary(refresh_prices_now=True)
+        except Exception as e:
+            logger.warning("get_portfolio_summary failed: %s", e)
+            return
+        current_equity = summary.get("total_equity", 0)
+        if not current_equity or current_equity <= 0:
+            return
+        if current_equity > self._peak_equity:
+            self._peak_equity = current_equity
+            self._risk_warn_fired = False
+            self._risk_stop_fired = False
+            logger.debug("Portfolio peak updated: %.2f", self._peak_equity)
+            return
+        drawdown = (self._peak_equity - current_equity) / self._peak_equity
+        now_str = datetime.now().strftime("%H:%M")
+
+        # 12pct stop: full liquidation
+        if drawdown >= self._dd_stop and not self._risk_stop_fired:
+            self._risk_stop_fired = True
+            msg = "[EMERGENCY] Portfolio cascade STOP! DD: %.1f%% (threshold %.0f%%)\n" % (
+                   drawdown * 100, self._dd_stop * 100)
+            msg += " Equity: %.2f  Peak: %.2f  Time: %s\n" % (
+                   current_equity, self._peak_equity, now_str)
+            msg += " ACTION: FULL LIQUIDATION"
+            self._deliver_alert(msg)
+            if self._broker:
+                for pos in positions:
+                    sym = pos.get("symbol")
+                    shares = pos.get("shares", 0)
+                    if shares > 0:
+                        self._submit_market_sell(sym, shares, reason="portfolio_cascade_stop")
+            return
+
+        # 8pct warning: reduce to 50pct
+        if drawdown >= self._dd_warn and not self._risk_warn_fired:
+            self._risk_warn_fired = True
+            msg = "[WARNING] Portfolio DD warning DD: %.1f%% (threshold %.0f%%)\n" % (
+                   drawdown * 100, self._dd_warn * 100)
+            msg += " Equity: %.2f  Peak: %.2f  Time: %s\n" % (
+                   current_equity, self._peak_equity, now_str)
+            msg += " ACTION: Reduce position to 50pct"
+            self._deliver_alert(msg)
+            if self._broker:
+                for pos in positions:
+                    sym = pos.get("symbol")
+                    shares = pos.get("shares", 0)
+                    if shares > 0:
+                        half = shares // 2
+                        if half > 0:
+                            self._submit_market_sell(sym, half, reason="portfolio_risk_reduce")
+            return
+
+        logger.debug("Portfolio DD=%.1f%% warn_fired=%s", drawdown * 100, self._risk_warn_fired)
+
 
     def _check_take_profits(self, positions, now: datetime):
         """
