@@ -865,18 +865,26 @@ def evaluate_signal(symbol: str,
                 signal = 'RSI_BUY'
                 reason = f'RSI={prev_rsi:.0f}≤{rsi_buy}超卖区间｜现价{price}'
 
-            # ── 北向共振检查 ───────────────────────────────
+            # --- Northbound resonance: continuous vs impulse ---
             nb_fetch = _get_northbound_check()
             north_boost = ''
             if nb_fetch:
                 try:
                     nb_data = nb_fetch()
-                    net_cny = nb_data.get('net_north_cny', 0) if nb_data else 0
-                    net_billions = abs(net_cny) / 1e8
-                    if net_cny > 0 and net_billions >= NORTH_BUY_BOOST_THRESHOLD:
-                        # 北向大幅净流入 → 信号强化
-                        north_boost = f'｜北向共振+{net_billions:.0f}亿'
-                        reason = reason.replace('｜现价{price}', f'{north_boost}｜现价{price}')
+                    record_today_north_from_kamt(nb_data)
+                    if nb_data:
+                        net_cny = nb_data.get('net_north_cny', 0)
+                        net_billions = abs(net_cny) / 1e8
+                        if net_cny > 0 and net_billions >= NORTH_BUY_BOOST_THRESHOLD:
+                            from services.northbound import get_north_flow_direction
+                            direction = get_north_flow_direction(threshold_yi=NORTH_BUY_BOOST_THRESHOLD)
+                            if direction['strength'] == 2:
+                                north_boost = (f'|北向持续共振({direction["days"]}日)+{direction["trend_yi"]:.0f}亿')
+                            elif direction['strength'] == 1:
+                                north_boost = f'|北向脉冲+{net_billions:.0f}亿'
+                            if north_boost:
+                                reason = reason.replace('|现价{price}',
+                                                     f'{north_boost}|现价{price}')
                 except Exception:
                     pass
 

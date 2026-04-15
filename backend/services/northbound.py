@@ -250,6 +250,103 @@ def fetch_bulk_northbound(symbols: List[str]) -> Dict[str, dict]:
 
 # ─── 北向资金大幅波动检测 ─────────────────────────────────────────────────
 
+
+
+# --- North Flow Direction Tracker ---
+# Track 3-day north flow trend vs single-day impulse
+
+NORTH_HISTORY_FILE = os.path.join(THIS_DIR, 'north_flow_history.json')
+NORTH_HISTORY_DAYS = 10
+
+
+def _load_north_history() -> dict:
+    try:
+        if os.path.exists(NORTH_HISTORY_FILE):
+            with open(NORTH_HISTORY_FILE, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+                return {k: float(v) for k, v in raw.items()
+                        if isinstance(k, str) and len(k) == 10 and '-' in k}
+    except Exception:
+        pass
+    return {}
+
+
+def _save_north_history(history: dict) -> None:
+    try:
+        with open(NORTH_HISTORY_FILE, 'w', encoding='utf-8') as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning('_save_north_history failed: %s', e)
+
+
+def _record_north_flow(net_north_cny: float, date_str: str = None) -> None:
+    if date_str is None:
+        date_str = date.today().isoformat()
+    history = _load_north_history()
+    if date_str not in history:
+        history[date_str] = net_north_cny
+        sorted_dates = sorted(history.keys())
+        while len(sorted_dates) > NORTH_HISTORY_DAYS:
+            oldest = sorted_dates.pop(0)
+            history.pop(oldest, None)
+        _save_north_history(history)
+
+
+def get_north_flow_direction(threshold_yi: float = 50.0) -> dict:
+    history = _load_north_history()
+    today_str = date.today().isoformat()
+    sorted_dates = sorted(history.keys(), reverse=True)
+    today_net_yi = history.get(today_str, 0.0) / 1e8
+    positive_days = 0
+    total_3day = 0.0
+    for d in sorted_dates[:3]:
+        val_yi = history.get(d, 0.0) / 1e8
+        total_3day += val_yi
+        if val_yi >= threshold_yi:
+            positive_days += 1
+        else:
+            break
+
+    if today_net_yi < 0:
+        direction = 'south'
+        strength = 0
+        reason = f'North outflow {today_net_yi:.0f}B (3-day {total_3day:.0f}B)'
+    elif positive_days >= 3:
+        direction = 'continuous'
+        strength = 2
+        reason = f'North {positive_days}-day continuous inflow (3-day {total_3day:.0f}B)'
+    elif positive_days == 1:
+        direction = 'impulse'
+        strength = 1
+        reason = f'North single-day impulse {today_net_yi:.0f}B (3-day {total_3day:.0f}B)'
+    elif positive_days == 2:
+        direction = 'impulse'
+        strength = 1
+        reason = f'North {positive_days}-day inflow (3-day {total_3day:.0f}B)'
+    else:
+        direction = 'neutral'
+        strength = 0
+        reason = f'North below threshold ({today_net_yi:.0f}B < {threshold_yi}B)'
+
+    return {
+        'direction': direction,
+        'days': positive_days,
+        'today_yi': round(today_net_yi, 1),
+        'trend_yi': round(total_3day, 1),
+        'strength': strength,
+        'reason': reason,
+    }
+
+
+def record_today_north_from_kamt(kamt_data: dict) -> None:
+    if not kamt_data:
+        return
+    net = kamt_data.get('net_north_cny', 0)
+    if net != 0:
+        _record_north_flow(net)
+
+
+
 class NorthBoundAlertChecker:
     """
     检测北向资金是否出现大幅异动。

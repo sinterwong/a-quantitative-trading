@@ -145,12 +145,15 @@ class PaperBroker(BrokerBase):
     """
 
     def __init__(self, portfolio_service: PortfolioService,
-                 slippage_bps: int = 15):
+                 slippage_bps: int = 15,
+                 max_position_pct: float = 0.25):
         """
         slippage_bps: slippage in basis points (15 = 0.15%)
+        max_position_pct: single position max as pct of total equity (0.25 = 25%%)
         """
         super().__init__(portfolio_service)
         self.slippage_bps = slippage_bps
+        self.max_position_pct = max_position_pct
         self._connected = False
         self._order_id_counter = 0
         # In-memory order book
@@ -294,6 +297,43 @@ class PaperBroker(BrokerBase):
                 filled_shares=0,
                 reason=f'Insufficient cash: need {cost:.2f}, have {cash:.2f}'
             )
+
+        # --- Single-position limit check (BUY only) ---
+        if direction == 'BUY':
+            existing_pos = self.portfolio.get_position(symbol)
+            existing_shares = existing_pos['shares'] if existing_pos else 0
+            new_shares = existing_shares + shares
+            # Resolve reference price
+            ref_price = price if price > 0 else self._fetch_market_price(symbol) if price_type == 'market' else price
+            if ref_price <= 0:
+                ref_price = 26.0  # fallback
+            new_pos_value = new_shares * ref_price
+            # Get total equity
+            total_equity = self.portfolio.get_total_equity()
+            max_allowed = total_equity * self.max_position_pct
+            if new_pos_value > max_allowed:
+                # Reduce to max allowed
+                max_shares = int(max_allowed / ref_price)
+                actual_shares = max(0, max_shares)
+                if actual_shares <= existing_shares:
+                    return OrderResult(
+                        order_id=self._next_order_id(),
+                        status='rejected',
+                        symbol=symbol,
+                        direction=direction,
+                        submitted_shares=shares,
+                        filled_shares=0,
+                        reason=(f'Single position limit: {self.max_position_pct*100:.0f}% of equity '
+                                f'({max_allowed:.0f}) = max {max_shares} shares @ {ref_price}, '
+                                f'tried to buy {shares}')
+                    )
+                shares = actual_shares - existing_shares  # reduce to fit limit
+                reason_brief = (f'Single pos limit: reduced {existing_shares}+{shares} -> '
+                               f'{existing_shares}+{shares} (max {self.max_position_pct*100:.0f}%)')
+            else:
+                reason_brief = None
+        else:
+            reason_brief = None
 
         if direction == 'SELL':
             pos = self.portfolio.get_position(symbol)
