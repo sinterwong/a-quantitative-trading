@@ -316,8 +316,20 @@ Sharpe: 0.217, Vol: 15.8%
 Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 5
 EventBus       外盘数据    真实券商    Tick因子     组合优化
 FactorExpr     多因子共振              订单簿因子
-当前开始                                    组合VaR
+
+新增：HKStockDataSource (港股实时行情)
 ```
+
+### 港股数据已接入 ✅
+
+**`core/hk_data_source.py`** — 港股实时行情（新浪 hkXXXXX）
+- 支持：腾讯(00700)/小米(01810)/阿里(09988)/美团/理想/恒指/恒科
+- `HKStockDataSource('hk01810')` → 小米实时快照
+- `to_orderBook()` → 兼容 Level2 订单簿因子（OI/Amihud等）
+- 批量获取：`fetch_batch(['hk00700','hk01810'])`
+- 轮询订阅：`subscribe(handler)` / `start_polling()`
+
+**已知限制**：新浪港股历史K线返回 null，需后续接入专有数据源（TuShare Pro / Wind）
 
 ---
 
