@@ -51,7 +51,7 @@ class _SentimentScorerWrapper:
             cls._instance = cls()
         return cls._instance
 
-    def __init__(self):
+    def __init__(self, regime: str = 'CALM'):
         self._scorer = None
 
     def get_scorer(self):
@@ -369,8 +369,9 @@ class DynamicStockSelectorV2:
         # 数据来源追踪: 'cache' | 'eastmoney' | 'ths' | 'failed'
         self._last_source: str = 'not_tried'
         self._last_news_source: str = 'not_tried'
+        self.regime: str = regime  # BULL / BEAR / VOLATILE / CALM
 
-    # ----------------------------------------------------------
+    # ---------------------------------------------------------
     # 数据获取
     # ----------------------------------------------------------
 
@@ -866,7 +867,7 @@ class DynamicStockSelectorV2:
                 sentiment_bonus
             )
 
-            bk_final[bk] = {
+            base_info = {
                 'name': bk_name,
                 'total': total,
                 'news': news_score,
@@ -878,6 +879,7 @@ class DynamicStockSelectorV2:
                 'change_pct': info['change_pct'],
                 'net_flow': info['net_flow'],
             }
+            bk_final[bk] = _regime_modulate(base_info, getattr(self, 'regime', 'CALM'))
 
         self.sector_scores = bk_final
         return bk_final
@@ -894,7 +896,7 @@ class DynamicStockSelectorV2:
         )
         return sorted_sectors[:top_n]
 
-    def select_stocks(self, top_n: int = 5) -> List[str]:
+    def select_stocks(self, top_n: int = 5, regime: str = None) -> List[str]:
         """
         最终选股入口
         1. 获取TOP板块
@@ -1034,6 +1036,39 @@ class DynamicStockSelectorV2:
             )
 
         return '\n'.join(lines)
+
+
+
+# ─── P6.3 环境感知 ───────────────────────────────────────────────────────
+
+DEFENSIVE_SECTORS = {'电力', '医药', '医疗', '消费', '银行', '食品', '家电', '农业'}
+MOMENTUM_SECTORS = {'AI', '芯片', '半导体', '5G', '新能源', '军工', '新能源汽车',
+                    '人工智能', 'eVTOL', '机器人', '算力', '光模块', '游戏'}
+
+def _regime_modulate(score_dict: dict, regime: str) -> dict:
+    """Modulate sector score based on market regime."""
+    import copy
+    d = copy.copy(score_dict)
+    total = d.get('total', 0)
+    boost = 0
+
+    if regime == 'BULL':
+        for m in MOMENTUM_SECTORS:
+            if m in d.get('name', ''):
+                total *= 1.2
+                boost = 1
+                break
+    elif regime == 'BEAR':
+        defended = any(ds in d.get('name', '') for ds in DEFENSIVE_SECTORS)
+        total *= 1.2 if defended else 0.85
+        boost = 1 if defended else -1
+    elif regime == 'VOLATILE':
+        total *= 0.80
+        boost = -1
+
+    d['total'] = total
+    d['regime_boost'] = boost
+    return d
 
 
 if __name__ == '__main__':
