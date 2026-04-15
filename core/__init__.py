@@ -4,6 +4,8 @@ EventBus + FactorExpression + OMS + RiskEngine + DataSources
 
 Phase 1 (✅): EventBus + FactorExpression + SignalEngine
 Phase 2 (✅): DataSources (SP期货/VIX/恒指/北向) + OMS抽象层 + RiskEngine
+Phase 3 (✅): BrokerFactory + SafetyMode + 真实券商 STUB
+Phase 4 (✅): Level2 数据源 + 订单簿因子
 """
 
 from core.event_bus import (
@@ -40,4 +42,8 @@ __all__ = [
     'SPFuturesDataSource', 'VIXDataSource', 'HSIFuturesDataSource',
     'TencentMinuteDataSource', 'NorthBoundDataSource',
     'CompositeMarketDataSource', 'MarketSnapshot',
+    # Level2
+    'Level2DataSource', 'OrderBook', 'TickBarAggregator', 'TickBar',
+    'OrderImbalanceFactor', 'BidAskSpreadFactor', 'MidPriceDriftFactor',
+    'VolumeRateFactor', 'AmihudIlliquidityFactor',
 ]
