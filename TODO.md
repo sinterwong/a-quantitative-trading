@@ -289,23 +289,33 @@ class OrderFlowFactor(Factor):
 
 ---
 
-## Phase 5 · 组合优化器 ✅ 完成
+## Phase 6 · 回测引擎 + 因子研究框架 ✅ 完成
 
-> **状态**：完成，10/10 测试通过，已提交 `4ba04a6`
+> **状态**：完成，5/5 测试通过，已提交 `f6169f3`
 
 ### 已实现组件
 
-**`core/portfolio.py`**
-- `BlackLittermanModel`: 均衡收益 π=δΣw_mkt + 主观观点合并（绝对/相对观点）
-- `MeanVarianceOptimizer`: Markowitz 均值方差（max_sharpe/min_vol/equal_weight）
-- `RiskParityOptimizer`: 风险平价组合（Newton迭代）
-- `SignalWeighter`: 因子信号→组合权重（strength/rank/blend）
+**`core/backtest_engine.py`**
+- `BacktestEngine`: 事件驱动回测（三步API: load_data → add_strategy → run）
+- `BacktestConfig`: commission/slippage/max_position 配置
+- `BacktestResult`: Sharpe/Calmar/Sortino/最大回撤/胜率/IC/IR
+- `PerformanceAnalyzer`: 因子绩效归因（按信号来源分层）
 
-端到端示例（港股三标的 BL→MaxSharpe）：
-```
-观点：小米(H01810) 比 腾讯(00700) 多跌 5%
-结果：腾讯51% / 阿里39% / 小米10%
-Sharpe: 0.217, Vol: 15.8%
+**`core/research.py`**
+- `FactorResearcher`: 单因子多参数网格搜索（训练/测试分割）
+- `WalkForwardAnalyzer`: WFA滚动窗口验证
+- `FactorAnalysisResult`: IC/IR评估 + 状态分类（promising/stable/rejected）
+
+用法：
+```python
+from core.research import FactorResearcher
+researcher = FactorResearcher()
+results = researcher.research(
+    factor_class=RSIFactor,
+    data={'TEST': df},
+    param_grid={'period': [7,14,21], 'buy_threshold': [20,25,30]},
+    train_days=504, test_days=252,
+)
 ```
 
 ---
@@ -313,9 +323,9 @@ Sharpe: 0.217, Vol: 15.8%
 ## 架构里程碑
 
 ```
-Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 5
-EventBus       外盘数据    真实券商    Tick因子     组合优化
-FactorExpr     多因子共振              订单簿因子
+Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 5 ──► Phase 6
+EventBus       外盘数据    真实券商    Tick因子     组合优化   回测研究
+FactorExpr     多因子共振              订单簿因子              因子研究
 
 新增：HKStockDataSource (港股实时行情)
 ```
