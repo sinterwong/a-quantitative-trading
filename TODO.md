@@ -1,165 +1,170 @@
-# 量化交易系统 Roadmap
-> **愿景**：成为一个专业的 A 股量化交易系统，具备可验证的期望值为正的交易策略、严格的风控体系、以及稳定的自动化执行能力。
-> 
-> **当前状态（2026-04-14）**：骨架完成（选股→执行→风控→报告全链路打通），但策略未经历史数据验证，尚未进入专业级别。
-> 所有任务完成后，系统应达到：**Sharpe > 1.0、最大回撤 < 15%、胜率 > 55%、实盘小仓位稳定运行 3 个月+**。
-> 
-> *Last updated: 2026-04-14*
+# TODO — 开发任务
+
+> 最后更新：2026-04-15
+> 当前基线：回测框架完成（backtest_cli.py），RSI WFA 验证通过（沪深300 Sharpe=0.467）
 
 ---
 
-## 第一阶段：策略验证（最优先）
-> **核心问题**：现在的 RSI 参数（35/70）、止盈（25%）、ATR 止损（2x）到底有没有效？不知道就是赌博，不是量化。**
+## P0 · 策略验证
 
-### S1.1 回测引擎搭建
-- [ ] **回测框架** — 选股/择时全量历史回测，支持做多 + 做空信号
-  - 数据源：腾讯/新浪日线历史（`AKShare` 或直接爬取）
-  - 最小回测周期：最近 2 年（覆盖牛熊）
-  - 评价指标：年化收益率、Max Drawdown、Win Rate、Profit Factor、Sharpe Ratio、Calmar Ratio
+### ✅ done — 回测引擎 CLI
+- `scripts/quant/backtest_cli.py` — single / grid / compare / wf / fcompare 命令
 
-### S1.2 核心策略回测验证
-- [ ] **RSI 策略参数寻优** — RSI_buy/RSI_sell 最优区间 grid search（30-45 / 65-80）
-- [ ] **ATR 止损回测** — 对比固定 % 止损 vs ATR 动态止损（2x / 2.5x / 3x），找出最优参数
-- [ ] **止盈参数回测** — 固定 20%/25%/30% 止盈 vs ATR 移动止盈，对比效果
-- [ ] **信号组合回测** — RSI + 放量共振买入 vs RSI 单独买入，对比减少假信号效果
+### ✅ done — RSI 参数验证（沪深300）
+- 最优：RSI(25/65)，SL=5%，TP=20%，ATR_threshold=0.85
+- WFA 10 窗口 avg_sharpe=0.466，正收益窗口 60%
 
-**验收标准**：找出最优参数组合，回测夏普 > 0.5（保守标准，因为回测≠实盘）
+### 🔲 — ATR 阈值 WFA 精确化
+- **新建** `scripts/quant/atr_wfa_scan.py`
+- 对阈值 0.80/0.85/0.88/0.90/0.92 跑完整 WFA，取最优
+- 更新 `params.json` 和 `backend/services/live_params.json`
 
-### S1.3 Walk-Forward 分析
-- [ ] **Walk-Forward 验证** — 将数据切成 N 组（e.g. 6 组 × 3 个月 in-sample + 1 个月 out-of-sample）
-  - In-sample 优化参数 → Out-of-sample 验证
-  - 检验参数是否稳定（参数在不同区间的集中度）
-- [ ] **参数稳定性报告** — 输出 RSI_buy/止盈/ATR 倍数的最优值分布，判断策略是否脆弱
-
-**验收标准**：最优参数在多数 out-of-sample 区间保持有效（>60% 区间正收益）
+### 🔲 — 宽基 ETF 泛化验证
+- `python backtest_cli.py wf 159915.SZ`（创业板）
+- `python backtest_cli.py wf 512690.SH`（酒ETF）
+- 验收：Sharpe > 0.4 且正收益窗口 > 60%，否则记录失败原因
 
 ---
 
-## 第二阶段：数据与信号升级
-> 第一阶段验证了策略基本有效后，扩大数据维度和信号来源。
+## P0 · 盘中信号引擎
 
-### S2.1 分钟级数据接入
-- [ ] **分钟K线数据** — 15min / 60min 接入（腾讯/新浪）
-- [ ] **多周期 RSI 确认** — 日线 RSI 触发 + 60min RSI 确认，减少日线假信号
-- [ ] **分钟量能系统** — 突破时放量（>5日均量 1.5x）作为二次确认
+### ✅ done — ATR ratio 计算
+- `backend/services/signals.py` — `_compute_atr_ratio(symbol, period=14, lookback=20)`
 
-### S2.2 基本面数据集成
-- [ ] **财务数据源** — PE、PB、ROE、营收增速（东方财富 f10 或 AKShare）
-- [ ] **价值因子过滤** — 在技术信号之上增加基本面过滤（PE<50、ROE>5% 等）
-- [ ] **估值异常预警** — 单只股票 PE/ROE 与行业均值偏离过大时预警
+### ✅ done — RSI BUY 高波动屏蔽
+- `evaluate_signal()` — ATR ratio > 0.85 时 RSI BUY 变为 HOLD，reason 说明原因
 
-### S2.3 新闻与舆情量化
-- [ ] **本地 embedding 语义检索** — 使用 jina-embeddings-small 本地运行，将新闻标题 embedding 后与股票关联
-  - 替代方案：关键词 + 权重打分（更快落地）
-- [ ] **官方来源加权** — 东方财富、新浪财经同一条新闻，官方媒体权重更高
-- [ ] **新闻情绪时滞检测** — 判断新闻是否已被市场消化（Price in/out）
+### 🔲 — intraday_monitor 传入 atr_threshold
+- `backend/services/intraday_monitor.py` — 从 `load_symbol_params()` 读取 atr_threshold 并传入 evaluate_signal
 
-### S2.4 北向资金深度应用
-- [ ] **北向持仓变化监控** — 持股量环比变化 >10% 时触发信号
-- [ ] **北向持仓 TOP 行业** — 追踪聪明钱重仓板块
-- [ ] **北向 + RSI 共振** — 北向资金大幅净流入 + RSI 超卖 = 强买入信号
+### 🔲 — ATR_ratio 字段暴露
+- `evaluate_signal()` 返回值中 `SignalAlert` 增加 `atr_ratio: float` 字段，飞书推送时显示当前波动状态
 
 ---
 
-## 第三阶段：风控体系专业化
-> 风控是专业量化与"炒股的程序"的根本区别。
+## P1 · 信号质量
 
-### S3.1 三层风控架构
-- [ ] **第一层：个股止损** — ATR Chandelier Exit（已有，初步实现）
-- [ ] **第二层：组合止损** — 日内组合总回撤 >8% 自动收紧仓位至 50%，>12% 全部清仓
-- [ ] **第三层：行业集中度** — 单一行业仓位上限 40%，超限强制减仓
+### 🔲 — confirm_signal_minute 集成
+- `backend/services/intraday_monitor.py` — WATCH_BUY / RSI_BUY 信号调用 `confirm_signal_minute()` 二次确认
+- 参数：minute_scale（默认 15），配置化
 
-### S3.2 动态仓位管理
-- [ ] **ATR 动态仓位** — 固定 20% 仓位 → 根据标的 ATR 占价比率调整（高波动物减小仓）
-- [ ] **Kelly 公式参考** — 计算理论最优仓位（按历史胜率/盈亏比），作为上限参考
-- [ ] **市场波动率自适应** — VIX 高时自动降低总仓位（使用沪深300 波动率替代）
+### 🔲 — 基本面过滤
+- **新建** `backend/services/fundamentals.py`
+- `fetch_fundamentals(symbol)` → `{'pe', 'pb', 'roe', 'revenue_growth'}`
+- `evaluate_signal()` 前置：PE > 80 或 ROE < 0 标的跳过
 
-### S3.3 压力测试
-- [ ] **历史极端行情回测** — 2015 股灾（6月-9月）、2018 贸易战、2022 上海封控
-- [ ] **黑天鹅场景模拟** — 持仓单日 -10% 时系统表现、流动性枯竭时能否止损
-- [ ] **风控触发记录** — 所有止损/熔断事件写入日志，定期复盘
+### 🔲 — 北向共振信号
+- `backend/services/northbound.py` — `check_northbound_crossover(symbol)` → (bool, float)
+- `evaluate_signal()` 中 RSI_BUY + 北向单日净流入 > 50亿 → 信号强度 ×1.5
+- 配置项：`northbound_threshold`（默认 50亿）
 
----
-
-## 第四阶段：策略多元化
-> 单策略依赖度过高是系统性风险。
-
-### S4.1 多策略并行
-- [ ] **RSI 动量策略**（当前基础）
-- [ ] **MACD 金叉/死叉策略** — 趋势跟踪，与 RSI 低相关
-- [ ] **布林带均值回归策略** — 适用于震荡市，与动量策略互补
-- [ ] **板块动量轮动策略** — 追踪资金流入最强的板块（已有初步框架）
-
-### S4.2 策略选择机制
-- [ ] **Market Regime 检测** — 沪深300 MA200 快线 > 慢线（牛市）/ 空头（熊市）
-- [ ] **策略 - 市场适配表** — 牛市用动量 / 震荡用均值回归 / 熊市用空头
-- [ ] **策略协方差分析** — 避免多个策略同时持有相同信号，增加对冲
-
-### S4.3 季节性因子
-- [ ] **A 股季节性研究** — 春节躁动（1-2月）、春季行情（3-4月）、年底博弈（11-12月）
-- [ ] **季节性仓位调节** — 高胜率季节增加仓位，低胜率季节减少敞口
+### 🔲 — 新闻情绪打分
+- **新建** `scripts/quant/news_scorer.py`
+- `score_news(news_list)` → `[{title, score, grade}]`，grade: A/B/C/D
+- 关键词：利好/超预期 → 正；风险/减持 → 负；标题含数字 +8-40字 → 加分
+- 集成进 `dynamic_selector.py` `calc_news_score()`
 
 ---
 
-## 第五阶段：实盘对接
-> 完成以上所有阶段并通过验证后，进入真实资金执行阶段。
+## P1 · 风控
 
-### S5.1 券商 API 对接
-- [ ] **Futu OpenAPI** 或 **Tiger Trade** — 真实下单、查询持仓、获取成交记录
-- [ ] **模拟实盘阶段**（至少 1 个月）— 真实行情、真实订单，但不调动真实资金
-- [ ] **小仓位实盘**（≤ 10% 总资金）— 连续 3 个月跑赢基准后逐步加码
+### 🔲 — 组合熔断
+- `backend/services/intraday_monitor.py` — `check_portfolio_risk(portfolio_value, peak)`
+- 回撤 8% → 飞书警告 + 仓位收紧至 50%；回撤 12% → 清仓
+- 配置项：`portfolio_max_drawdown_warn=0.08`，`portfolio_max_drawdown_stop=0.12`
 
-### S5.2 执行层优化
-- [ ] **订单延迟监控** — 记录从信号触发到订单成交的全链路延迟
-- [ ] **滑点估算** — 对比成交价与信号触发价，积累真实滑点数据
-- [ ] **涨跌停熔断** — 涨跌停日无法成交时的处理机制（上一次止损价保留/追价逻辑）
+### 🔲 — 行业集中度
+- **新建** `scripts/quant/sector_map.json` — `{代码前缀: 行业名}` 手动映射
+- `backend/services/portfolio.py` — `check_sector_concentration(positions)`
+- 单一行业 > 40% → 强制减仓至 40%
+- 配置项：`max_sector_pct=0.40`
 
-### S5.3 合规与记录
-- [ ] **完整交易日志** — 每笔交易记录信号来源、触发时间、成交时间、成交价、滑点
-- [ ] **税务计算辅助** — A 股红利税、印花税、过户费精确记录
-- [ ] **月度审计报告** — 每月自动生成，包含胜率、持仓天数、费用统计
+### 🔲 — Kelly 仓位
+- **新建** `scripts/quant/position_sizer.py`
+- `compute_kelly(win_rate, avg_win, avg_loss) → float`（半 Kelly = Kelly × 0.5）
+- 最小仓位 5%，最大 30%
+- `intraday_monitor.py` 开仓前调用，更新 `max_position_pct`
 
----
+### 🔲 — 压力测试
+- `scripts/quant/backtest_cli.py` 新增 `crash-test` 命令
+- 测试区间：2015-06 ~ 2015-09（股灾）、2018 全年（贸易战）、2022-03 ~ 2022-06（上海封控）
+- 输出：最大日亏损、连续亏损天数、RSI 假信号率
 
-## 第六阶段：系统架构升级
-> 专业级的系统稳定性与性能。
-
-### S6.1 数据库升级
-- [ ] **PostgreSQL** — 从 SQLite 迁移，支持多用户、更大数据量、更强查询能力
-- [ ] **时序数据库（InfluxDB）** — 存储高频 tick 数据，支持快速查询
-
-### S6.2 低延迟架构
-- [ ] **独立行情进程** — 行情接收与策略执行分离，避免互相阻塞
-- [ ] **缓存层（Redis）** — 热点数据（持仓、信号状态）内存缓存
-- [ ] **订单队列** — 高频交易时订单缓冲，防止超发
-
-### S6.3 监控与运维
-- [ ] **系统健康检查** — CPU/内存/网络/行情延迟自动报警
-- [ ] **日志结构化** — JSON 格式日志，统一输出便于分析
-- [ ] **灾难恢复** — Backend 进程崩溃自动拉起（supervisord 或 Windows Service）
+### 🔲 — 风控触发日志
+- `backend/services/alert_history.py` — 新增风控事件类型 `stop_triggered` / `portfolio_cascade` / `sector_violation`
+- 定期（每周）推送飞书风控复盘
 
 ---
 
-## Icebox（长期待办）
-- Level2 十档行情数据
-- 组合优化器（均值-方差 MVO）
-- 事件驱动（业绩公告、政策文件纳入信号）
-- 机器学习因子（XGBoost 选股）
-- 多券商并行（A股 + 港股）
-- TradingView 图表嵌入
-- 英文界面
+## P2 · 策略多元化
+
+### 🔲 — MACD 策略验证
+- `scripts/quant/backtest_cli.py` 新增 `macd-compare` 命令
+- 参数网格：fast(8,10,12) / slow(20,26,30) / signal(7,9,12)
+- 对比：纯 RSI vs RSI+MACD 共振（两个信号同时 BUY 才开仓）
+- 结果写入 `live_params.json`
+
+### 🔲 — 布林带策略验证
+- 同 MACD，参数：period(20) / std_mult(1.5, 2.0, 2.5)
+- 对比布林带均值回归 vs RSI 动量
+
+### 🔲 — 板块轮动策略
+- `scripts/quant/backtest_cli.py` 新增 `sector-rotate` 命令
+- 逻辑：资金流入最强板块 ETF 等权持有，每月 rebalance
+- 对比：板块轮动 vs 沪深300 买入持有
 
 ---
 
-## 阶段验收总表
+## P2 · 实盘对接
 
-| 阶段 | 核心目标 | 关键指标 | 预计周期 |
-|------|----------|----------|----------|
-| **S1 策略验证** | 证明策略历史有效 | Walk-Forward Sharpe > 0.5 | 2-4 周 |
-| **S2 数据升级** | 信号维度和精度提升 | 假信号率降低 30% | 4-8 周 |
-| **S3 风控专业** | 三层风控 + 压力测试 | 历史极端行情存活 | 2-4 周 |
-| **S4 策略多元** | 3+ 策略并行 + 轮动 | 策略相关性 < 0.5 | 4-8 周 |
-| **S5 实盘对接** | 真实资金 + 券商API | 小仓位连续 3 月跑赢基准 | 8-16 周 |
-| **S6 架构升级** | PostgreSQL + 低延迟 | 支持 100+ 并发持仓 | 4-8 周 |
+### 🔲 — 涨跌停熔断
+- `backend/services/signals.py` — `evaluate_signal()` 增加 LIMIT_UP / LIMIT_DOWN 语义
+  - 涨停日已有持仓 → WATCH_SELL（不等开板）；无持仓 → 禁止追
+  - 跌停日已有持仓 → WATCH_SELL（逃生）；无持仓 → 禁止抄
+- `backend/services/broker.py` — 订单提交时拦截涨跌停标的
 
-**系统最终目标**：当以上全部完成，系统达到专业量化基金的自用标准——可解释的期望值为正、严格风控、稳定的自动化执行。
+### 🔲 — 滑点监控
+- `backend/services/broker.py` — 订单成交后对比「信号触发价 vs 实际成交价」
+- `daily_journal.py` — 记录滑点到交易日志
+
+### 🔲 — 完整交易日志
+- 字段：signal_src / triggered_at / filled_at / fill_price / slippage_bps / commission
+- `daily_journal.py` → `monthly_audit.py` 自动生成月度审计
+
+---
+
+## P3 · 架构
+
+### 🔲 — PostgreSQL 迁移
+- 设计 Schema（参考 `portfolio.db` 当前表）
+- **新建** `scripts/migrate_sqlite_to_pg.py`
+- `backend/services/portfolio.py` — SQLAlchemy + PostgreSQL
+
+### 🔲 — Backend 崩溃自动拉起
+- Windows Service（`pywin32` + `nssm`）
+- 或 supervisord 跨平台
+- `GET /health` → 非 200 则自动重启
+
+### 🔲 — Redis 缓存层
+- `backend/services/portfolio.py` — 持仓/信号状态缓存
+- TTL：信号状态 5 分钟，持仓 1 分钟
+
+---
+
+## 任务状态总览
+
+| 优先级 | 任务 | 文件 |
+|---------|------|------|
+| P0 | ATR 阈值 WFA 精确化 | `scripts/quant/atr_wfa_scan.py` |
+| P0 | 宽基 ETF 泛化验证 | `backtest_cli.py wf` |
+| P0 | intraday_monitor 集成 ATR | `backend/services/intraday_monitor.py` |
+| P1 | 组合熔断（8%/12%回撤） | `backend/services/intraday_monitor.py` |
+| P1 | 基本面过滤（PE/ROE） | `backend/services/fundamentals.py` |
+| P1 | 涨跌停熔断 | `backend/services/signals.py` + `broker.py` |
+| P1 | 行业集中度 | `sector_map.json` + `portfolio.py` |
+| P2 | Kelly 仓位 | `scripts/quant/position_sizer.py` |
+| P2 | 压力测试 | `backtest_cli.py crash-test` |
+| P2 | MACD 策略验证 | `backtest_cli.py macd-compare` |
+| P2 | 滑点监控 | `backend/services/broker.py` |
+| P3 | PostgreSQL 迁移 | `scripts/migrate_sqlite_to_pg.py` |
+| P3 | Backend 崩溃拉起 | Windows Service / supervisord |
