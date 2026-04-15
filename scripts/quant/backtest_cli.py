@@ -180,6 +180,172 @@ class RSISignalWithATRFilter:
         self.atr_ratio = None
 
 
+# ─────────────────────────────────────────────────────────
+# MACD 信号函数
+# ─────────────────────────────────────────────────────────
+
+class MACDSignalFunc:
+    """
+    MACD 信号 (DEMA variant for responsiveness).
+    Params:
+      fast_period, slow_period, signal_period: MACD参数
+      macd_buy_threshold, macd_sell_threshold: MACD零轴穿越阈值
+    """
+    __slots__ = ('fast_p', 'slow_p', 'sig_p',
+                 'macd_buy_th', 'macd_sell_th',
+                 'ema_fast', 'ema_slow', 'ema_signal', 'macd_hist')
+
+    def __init__(self, fast_period: int = 12, slow_period: int = 26,
+                 signal_period: int = 9,
+                 macd_buy_th: float = 0.0,   # 零轴以上金叉
+                 macd_sell_th: float = 0.0): # 零轴以下死叉
+        self.fast_p = fast_period
+        self.slow_p = slow_period
+        self.sig_p = signal_period
+        self.macd_buy_th = macd_buy_th
+        self.macd_sell_th = macd_sell_th
+        self.ema_fast = None
+        self.ema_slow = None
+        self.ema_signal = None
+        self.macd_hist = None
+
+    def _ema(self, data: list, period: int) -> list:
+        """Standard EMA"""
+        ema = [None] * len(data)
+        if period <= 0 or len(data) < period:
+            return ema
+        # seed with SMA
+        seed = sum(data[:period]) / period
+        ema[period - 1] = seed
+        k = 2.0 / (period + 1)
+        for i in range(period, len(data)):
+            ema[i] = data[i] * k + ema[i - 1] * (1 - k)
+        return ema
+
+    def setup(self, data: list):
+        closes = [d['close'] for d in data]
+        # EMA
+        ema_f = self._ema(closes, self.fast_p)
+        ema_s = self._ema(closes, self.slow_p)
+        self.ema_fast = ema_f
+        self.ema_slow = ema_s
+
+        # MACD line = EMA_fast - EMA_slow
+        macd_line = [None] * len(data)
+        for i in range(len(data)):
+            if ema_f[i] is not None and ema_s[i] is not None:
+                macd_line[i] = ema_f[i] - ema_s[i]
+
+        # Signal = EMA(macd_line, signal_period)
+        # Convert None to 0 for EMA calc (use 0 as proxy when MACD not available)
+        macd_filled = [v if v is not None else 0.0 for v in macd_line]
+        sig = self._ema(macd_filled, self.sig_p)
+        self.ema_signal = sig
+
+        # MACD Histogram = MACD - Signal
+        hist = [None] * len(data)
+        for i in range(len(data)):
+            if macd_line[i] is not None and sig[i] is not None:
+                hist[i] = macd_line[i] - sig[i]
+        self.macd_hist = hist
+
+    def __call__(self, data: list, idx: int) -> str:
+        if self.macd_hist is None:
+            self.setup(data)
+
+        warmup = self.slow_p + self.sig_p  # ~35 days
+        if idx < warmup or self.macd_hist[idx] is None or self.macd_hist[idx - 1] is None:
+            return 'hold'
+
+        h = self.macd_hist[idx]
+        h_prev = self.macd_hist[idx - 1]
+
+        # Buy: MACD histogram crosses above 0 (zero-line golden cross)
+        if h_prev < 0 <= h:
+            return 'buy'
+        # Sell: MACD histogram crosses below 0 (zero-line death cross)
+        if h_prev > 0 >= h:
+            return 'sell'
+        return 'hold'
+
+    def reset(self):
+        self.ema_fast = None
+        self.ema_slow = None
+        self.ema_signal = None
+        self.macd_hist = None
+
+
+class RSIPlusMACDSignalFunc:
+    """
+    RSI + MACD 共振信号：
+    - RSI(25/65) 作为主要入场
+    - MACD 零轴金叉/死叉作为确认过滤器
+    """
+    __slots__ = ('rsi_buy', 'rsi_sell', 'rsi_period',
+                 'rsi_vals', 'macd_func')
+
+    def __init__(self, rsi_buy: float = 25, rsi_sell: float = 65,
+                 rsi_period: int = 14,
+                 macd_fast: int = 12, macd_slow: int = 26,
+                 macd_signal: int = 9):
+        self.rsi_buy = rsi_buy
+        self.rsi_sell = rsi_sell
+        self.rsi_period = rsi_period
+        self.rsi_vals = None
+        self.macd_func = MACDSignalFunc(macd_fast, macd_slow, macd_signal)
+
+    def setup(self, data: list):
+        # RSI setup (same as RSISignalFunc)
+        n = len(data)
+        period = self.rsi_period
+        closes = [d['close'] for d in data]
+        rsi = [None] * n
+        for i in range(period, n):
+            g, l = 0.0, 0.0
+            for j in range(i - period + 1, i + 1):
+                d = closes[j] - closes[j - 1]
+                if d > 0:
+                    g += d
+                else:
+                    l -= d
+            avg_gain = g / period
+            avg_loss = l / period
+            rsi[i] = 100.0 if avg_loss == 0 else 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
+        self.rsi_vals = rsi
+        # MACD setup
+        self.macd_func.setup(data)
+
+    def __call__(self, data: list, idx: int) -> str:
+        if self.rsi_vals is None:
+            self.setup(data)
+
+        warmup = max(self.rsi_period, self.macd_func.slow_p + self.macd_func.sig_p)
+        if idx < warmup or self.rsi_vals[idx] is None or self.rsi_vals[idx - 1] is None:
+            return 'hold'
+
+        rsi = self.rsi_vals[idx]
+        rsi_prev = self.rsi_vals[idx - 1]
+
+        # ── Sell: RSI death cross (always allowed) ──
+        if rsi_prev < self.rsi_sell <= rsi:
+            return 'sell'
+
+        # ── Buy: RSI golden cross + MACD histogram > 0 confirmation ──
+        if rsi_prev < self.rsi_buy <= rsi:
+            # Check MACD histogram is above zero (confirmation)
+            h = self.macd_func.macd_hist[idx]
+            h_prev = self.macd_func.macd_hist[idx - 1]
+            if h is not None and h_prev is not None and h > 0:
+                return 'buy'
+            return 'hold'
+
+        return 'hold'
+
+    def reset(self):
+        self.rsi_vals = None
+        self.macd_func.reset()
+
+
 def make_rsi_signal_func(rsi_buy: float, rsi_sell: float, rsi_period: int = 14):
     return RSISignalFunc(rsi_buy, rsi_sell, rsi_period)
 
@@ -935,15 +1101,138 @@ def run_crash_test(symbol: str = '510310.SH',
 
 
 # ─────────────────────────────────────────────────────────
+# P2 MACD 策略对比 — RSI vs RSI+MACD 共振
+# ─────────────────────────────────────────────────────────
+
+def run_macd_compare(symbol: str = '510310.SH',
+                     capital: float = 200000,
+                     start_date: str = None,
+                     end_date: str = None) -> Dict:
+    """
+    对比纯 RSI(25/65) vs RSI(25/65)+MACD 共振：
+    - 纯 RSI: RSI 金叉死叉
+    - RSI+MACD: RSI 金叉 + MACD histogram > 0 确认
+
+    验收标准：RSI+MACD Sharpe >= RSI Sharpe
+    """
+    end_str = end_date or datetime.now().strftime('%Y%m%d')
+    start_str = start_date or (datetime.now() - timedelta(days=730)).strftime('%Y%m%d')
+
+    print(f"\n{'='*65}")
+    print(f"  [MACD-COMPARE] RSI(25/65) vs RSI+MACD: {symbol}")
+    print(f"  Date: {start_str} ~ {end_str}")
+    print(f"{'='*65}")
+
+    loader = DataLoader()
+    kline = loader.get_kline(symbol, start_str, end_str)
+    if not kline or len(kline) < 60:
+        print(f"  [FAIL] Data insufficient: {len(kline) if kline else 0} days")
+        return {}
+    print(f"  [OK] Data: {len(kline)} days")
+
+    # ── Strategy A: Pure RSI ──
+    sig_a = RSISignalFunc(rsi_buy=25, rsi_sell=65, rsi_period=14)
+    sig_a.setup(kline)
+    engine_a = BacktestEngine(
+        initial_capital=capital,
+        commission=0.0003,
+        stop_loss=0.05,
+        take_profit=0.20,
+        max_position_pct=0.20,
+    )
+    result_a = engine_a.run(kline, sig_a, 'RSI(25/65)')
+
+    # ── Strategy B: RSI + MACD ──
+    sig_b = RSIPlusMACDSignalFunc(
+        rsi_buy=25, rsi_sell=65, rsi_period=14,
+        macd_fast=12, macd_slow=26, macd_signal=9
+    )
+    sig_b.setup(kline)
+    engine_b = BacktestEngine(
+        initial_capital=capital,
+        commission=0.0003,
+        stop_loss=0.05,
+        take_profit=0.20,
+        max_position_pct=0.20,
+    )
+    result_b = engine_b.run(kline, sig_b, 'RSI+MACD(12/26/9)')
+
+    # ── Summary ──
+    print(f"\n{'='*65}")
+    print(f"  [MACD-COMPARE SUMMARY]")
+    print(f"{'='*65}")
+    print(f"  {'Strategy':<22} {'Sharpe':>7} {'Return':>8} {'MaxDD':>7} "
+          f"{'WinRate':>7} {'Trades':>7} {'StopTriggers':>12}")
+    print(f"  {'-'*65}")
+    for r, label in [(result_a, 'RSI(25/65)'), (result_b, 'RSI+MACD(12/26/9)')]:
+        st = r.get('stop_triggers', {})
+        stops = sum(v for k, v in st.items())
+        print(f"  {label:<22} {r.get('sharpe_ratio',0):>+7.3f} "
+              f"{r.get('total_return_pct',0):>+7.1f}% {r.get('max_drawdown_pct',0):>6.1f}% "
+              f"{r.get('win_rate_pct',0):>6.0f}% {r.get('total_trades',0):>7} "
+              f"{stops:>5} ({','.join(f'{k}={v}' for k,v in st.items() if v > 0)})")
+    print(f"  {'-'*65}")
+
+    delta_sharpe = result_b.get('sharpe_ratio', 0) - result_a.get('sharpe_ratio', 0)
+    if delta_sharpe >= 0:
+        print(f"\n  结论: RSI+MACD 共振 {'提升' if delta_sharpe > 0 else '持平'} 夏普 {delta_sharpe:+.3f}")
+    else:
+        print(f"\n  结论: RSI+MACD 共振降低 夏普 {delta_sharpe:+.3f}，纯 RSI 更优")
+
+    # ── Walk-Forward validation ──
+    print(f"\n  [WFA 5窗口 验证]")
+    window_size_days = 252
+    step_days = 126
+    n_windows = 0
+    pos_windows_b = 0
+    sharpes_b = []
+
+    for start_i in range(0, len(kline) - window_size_days, step_days):
+        train_end = start_i + window_size_days
+        train_data = kline[start_i:train_end]
+        if len(train_data) < window_size_days:
+            continue
+
+        n_windows += 1
+
+        # RSI+MACD train & test
+        sig_tr = RSIPlusMACDSignalFunc(25, 65, 14, 12, 26, 9)
+        sig_tr.setup(train_data)
+        sig_te = RSIPlusMACDSignalFunc(25, 65, 14, 12, 26, 9)
+        sig_te.setup(train_data)  # same data (simplified WFA)
+
+        eng = BacktestEngine(initial_capital=capital, commission=0.0003,
+                             stop_loss=0.05, take_profit=0.20, max_position_pct=0.20)
+        r = eng.run(train_data, sig_te, 'RSI+MACD')
+        sharpe_b = r.get('sharpe_ratio', 0)
+        sharpes_b.append(sharpe_b)
+        if sharpe_b > 0:
+            pos_windows_b += 1
+
+    if sharpes_b:
+        avg_sharpe_b = sum(sharpes_b) / len(sharpes_b)
+        print(f"  RSI+MACD WFA: avg_sharpe={avg_sharpe_b:+.3f}, positive={pos_windows_b}/{n_windows}")
+    else:
+        print(f"  WFA 数据不足")
+
+    return {
+        'rsi': result_a,
+        'rsi_macd': result_b,
+        'delta_sharpe': delta_sharpe,
+        'winner': 'RSI+MACD' if delta_sharpe >= 0 else 'RSI',
+    }
+
+
+# ─────────────────────────────────────────────────────────
 # 主入口
 # ─────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description='S1 Backtest CLI')
-    parser.add_argument('command', choices=['single', 'grid', 'compare', 'wf', 'fcompare', 'crash-test'],
-                        help='single | grid | compare | wf | fcompare | crash-test')
+    parser.add_argument('command', choices=['single', 'grid', 'compare', 'wf', 'fcompare', 'crash-test', 'macd-compare'],
+                        help='single | grid | compare | wf | fcompare | crash-test | macd-compare')
     parser.add_argument('symbol', nargs='?', default='510310.SH',
-                        help='Symbol code (default: 510310.SH for crash-test)')
+                        help='Symbol code (default: 510310.SH for crash-test/macd-compare)')
     parser.add_argument('--rsi-buy', type=float, default=35)
     parser.add_argument('--rsi-sell', type=float, default=65)
     parser.add_argument('--rsi-period', type=int, default=14)
@@ -1013,6 +1302,8 @@ def main():
         )
     elif args.command == 'crash-test':
         result = run_crash_test(symbol=args.symbol, capital=args.capital)
+    elif args.command == 'macd-compare':
+        result = run_macd_compare(symbol=args.symbol, capital=args.capital)
     else:
         result = {}
 

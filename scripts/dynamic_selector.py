@@ -34,6 +34,42 @@ except ImportError:
     def score_news_item(title): return 0.5  # fallback
     def score_and_filter_news(news, **kw): return news
 
+# 新闻情绪打分（基于关键词+真实新闻）
+try:
+    from quant.news_scorer import NewsSentimentScorer
+except ImportError:
+    NewsSentimentScorer = None
+
+
+class _SentimentScorerWrapper:
+    """延迟实例化+单例封装 NewsSentimentScorer，避免网络请求拖慢启动"""
+    _instance = None
+
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def __init__(self):
+        self._scorer = None
+
+    def get_scorer(self):
+        if self._scorer is None and NewsSentimentScorer:
+            self._scorer = NewsSentimentScorer(cache_minutes=10)
+        return self._scorer
+
+    def get_sector_sentiment(self) -> Dict[str, float]:
+        """返回 {板块名: 情绪分数 -100~100} 用于评分增强"""
+        scorer = self.get_scorer()
+        if not scorer:
+            return {}
+        try:
+            sentiment = scorer.get_market_sentiment()
+            return sentiment.get('sector_scores', {})  # {sector: avg_score}
+        except Exception:
+            return {}
+
 # 日志级别: DEBUG / INFO / WARNING / ERROR
 LOG_LEVEL = 'INFO'
 
@@ -740,6 +776,13 @@ class DynamicStockSelectorV2:
         news = self.calc_news_score()
         bk_data = self.calc_sector_scores_from_bk()
 
+        # 获取新闻情绪分数（基于关键词+真实新闻）
+        sentiment_scores = {}
+        try:
+            sentiment_scores = _SentimentScorerWrapper.get_sector_sentiment()
+        except Exception:
+            pass
+
         # 为每个BK板块计算技术分和综合分
         bk_final = {}
         for bk, info in bk_data.items():
@@ -759,12 +802,22 @@ class DynamicStockSelectorV2:
                 if news_score > 0:
                     break
 
+            # 情绪分数：新闻情绪打分器提供额外情绪信号
+            sentiment_bonus = 0.0
+            for sector, sent_score in sentiment_scores.items():
+                for kw in SECTOR_NEWS_KEYWORDS.get(sector, []):
+                    if kw in bk_name:
+                        # 情绪分数标准化到 ±10 分（新闻权重15%中的一部分）
+                        sentiment_bonus += sent_score * 0.10
+                        break
+
             total = (
                 news_score * self.WEIGHT_NEWS +
                 perf * self.WEIGHT_SECTOR +
                 flow * self.WEIGHT_FLOW +
                 tech * self.WEIGHT_TECH +
-                consistency * self.WEIGHT_CONSISTENCY
+                consistency * self.WEIGHT_CONSISTENCY +
+                sentiment_bonus
             )
 
             bk_final[bk] = {
@@ -775,6 +828,7 @@ class DynamicStockSelectorV2:
                 'flow': flow,
                 'tech': tech,
                 'consistency': consistency,
+                'sentiment': round(sentiment_bonus, 2),
                 'change_pct': info['change_pct'],
                 'net_flow': info['net_flow'],
             }
