@@ -39,6 +39,30 @@ def _get_fundamentals_check():
             pass
     return _fundamentals_check
 
+# Lazy import northbound
+_northbound_check = None
+def _get_northbound_check():
+    global _northbound_check
+    if _northbound_check is None:
+        try:
+            from services.northbound import fetch_kamt
+            _northbound_check = fetch_kamt
+        except Exception:
+            pass
+    return _northbound_check
+
+# 北向资金阈值（亿元）
+NORTH_BUY_BOOST_THRESHOLD = 50.0  # 北向净流入 > 50亿 → RSI_BUY 信号强化
+def _get_fundamentals_check():
+    global _fundamentals_check
+    if _fundamentals_check is None:
+        try:
+            from services.fundamentals import check_fundamentals_filter as f
+            _fundamentals_check = f
+        except Exception:
+            pass
+    return _fundamentals_check
+
 # A股盘中时间段（UTC+8）
 MARKET_MORNING_START    = (9, 35)   # 9:35 开盘后可检查
 MARKET_MORNING_END      = (11, 30)
@@ -840,6 +864,21 @@ def evaluate_signal(symbol: str,
             else:
                 signal = 'RSI_BUY'
                 reason = f'RSI={prev_rsi:.0f}≤{rsi_buy}超卖区间｜现价{price}'
+
+            # ── 北向共振检查 ───────────────────────────────
+            nb_fetch = _get_northbound_check()
+            north_boost = ''
+            if nb_fetch:
+                try:
+                    nb_data = nb_fetch()
+                    net_cny = nb_data.get('net_north_cny', 0) if nb_data else 0
+                    net_billions = abs(net_cny) / 1e8
+                    if net_cny > 0 and net_billions >= NORTH_BUY_BOOST_THRESHOLD:
+                        # 北向大幅净流入 → 信号强化
+                        north_boost = f'｜北向共振+{net_billions:.0f}亿'
+                        reason = reason.replace('｜现价{price}', f'{north_boost}｜现价{price}')
+                except Exception:
+                    pass
 
             return SignalAlert(
                 symbol=symbol, signal=signal,

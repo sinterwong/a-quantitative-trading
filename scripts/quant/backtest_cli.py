@@ -346,6 +346,169 @@ class RSIPlusMACDSignalFunc:
         self.macd_func.reset()
 
 
+# ─────────────────────────────────────────────────────────
+# 布林带信号函数
+# ─────────────────────────────────────────────────────────
+
+class BBANDSFunc:
+    """
+    Bollinger Bands 信号：
+    - 中轨：N日简单均线（SMA）
+    - 上轨：中轨 + K×标准差
+    - 下轨：中轨 - K×标准差
+
+    买入信号：价格下穿下轨（RSI 辅助过滤噪音）
+    卖出信号：价格上穿上轨（RSI 辅助过滤噪音）
+
+    Parameters:
+      period: SMA 周期（默认20）
+      std_mult: 标准差倍数（默认2.0）
+    """
+    __slots__ = ('period', 'std_mult', '_sma', '_std', '_upper', '_lower')
+
+    def __init__(self, period: int = 20, std_mult: float = 2.0):
+        self.period = period
+        self.std_mult = std_mult
+        self._sma = None
+        self._std = None
+        self._upper = None
+        self._lower = None
+
+    def setup(self, data: list):
+        n = len(data)
+        closes = [d['close'] for d in data]
+        p = self.period
+
+        sma = [None] * n
+        upper = [None] * n
+        lower = [None] * n
+
+        for i in range(p - 1, n):
+            window = closes[i - p + 1:i + 1]
+            mean = sum(window) / p
+            variance = sum((x - mean) ** 2 for x in window) / p
+            std = variance ** 0.5
+            sma[i] = mean
+            upper[i] = mean + self.std_mult * std
+            lower[i] = mean - self.std_mult * std
+
+        self._sma = sma
+        self._upper = upper
+        self._lower = lower
+
+    def __call__(self, data: list, idx: int) -> str:
+        if self._sma is None:
+            self.setup(data)
+
+        if idx < self.period:
+            return 'hold'
+
+        closes = [d['close'] for d in data]
+        c = closes[idx]
+        c_prev = closes[idx - 1]
+
+        lower = self._lower[idx]
+        upper = self._upper[idx]
+        lower_prev = self._lower[idx - 1]
+        upper_prev = self._upper[idx - 1]
+
+        if lower is None or upper is None:
+            return 'hold'
+
+        # Buy: price crosses below lower band
+        if c_prev >= lower_prev and c < lower:
+            return 'buy'
+        # Sell: price crosses above upper band
+        if c_prev <= upper_prev and c > upper:
+            return 'sell'
+        return 'hold'
+
+    def reset(self):
+        self._sma = None
+        self._upper = None
+        self._lower = None
+
+
+class RSIPlusBBANDSFunc:
+    """
+    RSI + 布林带共振：
+    - 布林带下轨附近出现 RSI 超卖（RSI <= 35） → 共振买入
+    - 布林带上轨附近出现 RSI 超买（RSI >= 65） → 共振卖出
+
+    参数:
+      rsi_buy / rsi_sell: RSI 阈值
+      rsi_period: RSI 周期
+      boll_period: 布林带周期
+      std_mult: 布林带标准差倍数
+    """
+    __slots__ = ('rsi_buy', 'rsi_sell', 'rsi_period',
+                 'boll_period', 'std_mult',
+                 'rsi_vals', 'bb_func')
+
+    def __init__(self, rsi_buy: float = 35, rsi_sell: float = 65,
+                 rsi_period: int = 14,
+                 boll_period: int = 20, std_mult: float = 2.0):
+        self.rsi_buy = rsi_buy
+        self.rsi_sell = rsi_sell
+        self.rsi_period = rsi_period
+        self.boll_period = boll_period
+        self.std_mult = std_mult
+        self.rsi_vals = None
+        self.bb_func = BBANDSFunc(boll_period, std_mult)
+
+    def setup(self, data: list):
+        # RSI
+        n = len(data)
+        closes = [d['close'] for d in data]
+        p = self.rsi_period
+        rsi = [None] * n
+        for i in range(p, n):
+            g, l = 0.0, 0.0
+            for j in range(i - p + 1, i + 1):
+                d = closes[j] - closes[j - 1]
+                if d > 0: g += d
+                else:     l -= d
+            avg_gain = g / p
+            avg_loss = l / p
+            rsi[i] = 100.0 if avg_loss == 0 else 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
+        self.rsi_vals = rsi
+        # BB setup
+        self.bb_func.setup(data)
+
+    def __call__(self, data: list, idx: int) -> str:
+        if self.rsi_vals is None:
+            self.setup(data)
+
+        warmup = max(self.rsi_period, self.boll_period)
+        if idx < warmup:
+            return 'hold'
+
+        closes = [d['close'] for d in data]
+        c = closes[idx]
+        c_prev = closes[idx - 1]
+        rsi = self.rsi_vals[idx]
+
+        lower = self.bb_func._lower[idx]
+        upper = self.bb_func._upper[idx]
+        lower_prev = self.bb_func._lower[idx - 1]
+        upper_prev = self.bb_func._upper[idx - 1]
+
+        # Sell: RSI death cross (always allowed)
+        if rsi >= self.rsi_sell and self.rsi_vals[idx - 1] < self.rsi_sell:
+            return 'sell'
+
+        # Buy: price at/below lower band + RSI <= rsi_buy
+        if (lower is not None and c <= lower and
+                rsi is not None and rsi <= self.rsi_buy):
+            return 'buy'
+
+        return 'hold'
+
+    def reset(self):
+        self.rsi_vals = None
+        self.bb_func.reset()
+
+
 def make_rsi_signal_func(rsi_buy: float, rsi_sell: float, rsi_period: int = 14):
     return RSISignalFunc(rsi_buy, rsi_sell, rsi_period)
 
@@ -1229,10 +1392,10 @@ def run_macd_compare(symbol: str = '510310.SH',
 
 def main():
     parser = argparse.ArgumentParser(description='S1 Backtest CLI')
-    parser.add_argument('command', choices=['single', 'grid', 'compare', 'wf', 'fcompare', 'crash-test', 'macd-compare'],
-                        help='single | grid | compare | wf | fcompare | crash-test | macd-compare')
+    parser.add_argument('command', choices=['single', 'grid', 'compare', 'wf', 'fcompare', 'crash-test', 'macd-compare', 'boll-compare'],
+                        help='single | grid | compare | wf | fcompare | crash-test | macd-compare | boll-compare')
     parser.add_argument('symbol', nargs='?', default='510310.SH',
-                        help='Symbol code (default: 510310.SH for crash-test/macd-compare)')
+                        help='Symbol code (default: 510310.SH)')
     parser.add_argument('--rsi-buy', type=float, default=35)
     parser.add_argument('--rsi-sell', type=float, default=65)
     parser.add_argument('--rsi-period', type=int, default=14)
@@ -1304,6 +1467,8 @@ def main():
         result = run_crash_test(symbol=args.symbol, capital=args.capital)
     elif args.command == 'macd-compare':
         result = run_macd_compare(symbol=args.symbol, capital=args.capital)
+    elif args.command == 'boll-compare':
+        result = run_boll_compare(symbol=args.symbol, capital=args.capital)
     else:
         result = {}
 
@@ -1316,6 +1481,88 @@ def main():
         print(f"\n  [SAVE] Results saved: {output_path}")
 
     print(f"\n  [DONE] Elapsed: {elapsed:.1f}s")
+
+
+# ─────────────────────────────────────────────────────────
+# P2 布林带策略对比 — RSI vs RSI+布林带共振
+# ─────────────────────────────────────────────────────────
+
+def run_boll_compare(symbol: str = '510310.SH',
+                     capital: float = 200000,
+                     start_date: str = None,
+                     end_date: str = None) -> Dict:
+    """
+    对比纯 RSI(25/65) vs RSI+布林带共振：
+    - 纯 RSI: RSI 金叉死叉
+    - RSI+BB: 价格触及布林带下轨 + RSI<=35 → 买入；价格触及上轨 + RSI>=65 → 卖出
+
+    布林带参数: period=20, std_mult=2.0
+    验收标准：RSI+BB Sharpe >= RSI Sharpe
+    """
+    end_str = end_date or datetime.now().strftime('%Y%m%d')
+    start_str = start_date or (datetime.now() - timedelta(days=730)).strftime('%Y%m%d')
+
+    print(f"\n{'='*65}")
+    print(f"  [BOLL-COMPARE] RSI(25/65) vs RSI+BB(20,2.0): {symbol}")
+    print(f"  Date: {start_str} ~ {end_str}")
+    print(f"{'='*65}")
+
+    loader = DataLoader()
+    kline = loader.get_kline(symbol, start_str, end_str)
+    if not kline or len(kline) < 60:
+        print(f"  [FAIL] Data insufficient: {len(kline) if kline else 0} days")
+        return {}
+    print(f"  [OK] Data: {len(kline)} days")
+
+    # ── Strategy A: Pure RSI ──
+    sig_a = RSISignalFunc(rsi_buy=25, rsi_sell=65, rsi_period=14)
+    sig_a.setup(kline)
+    engine_a = BacktestEngine(
+        initial_capital=capital, commission=0.0003,
+        stop_loss=0.05, take_profit=0.20, max_position_pct=0.20,
+    )
+    result_a = engine_a.run(kline, sig_a, 'RSI(25/65)')
+
+    # ── Strategy B: RSI + BBANDS ──
+    sig_b = RSIPlusBBANDSFunc(
+        rsi_buy=35, rsi_sell=65, rsi_period=14,
+        boll_period=20, std_mult=2.0,
+    )
+    sig_b.setup(kline)
+    engine_b = BacktestEngine(
+        initial_capital=capital, commission=0.0003,
+        stop_loss=0.05, take_profit=0.20, max_position_pct=0.20,
+    )
+    result_b = engine_b.run(kline, sig_b, 'RSI+BB(20,2.0)')
+
+    # ── Summary ──
+    print(f"\n{'='*65}")
+    print(f"  [BOLL-COMPARE SUMMARY]")
+    print(f"{'='*65}")
+    print(f"  {'Strategy':<22} {'Sharpe':>7} {'Return':>8} {'MaxDD':>7} "
+          f"{'WinRate':>7} {'Trades':>7} {'StopTriggers':>12}")
+    print(f"  {'-'*65}")
+    for r, label in [(result_a, 'RSI(25/65)'), (result_b, 'RSI+BB(20,2.0)')]:
+        st = r.get('stop_triggers', {})
+        stops = sum(v for k, v in st.items())
+        print(f"  {label:<22} {r.get('sharpe_ratio',0):>+7.3f} "
+              f"{r.get('total_return_pct',0):>+7.1f}% {r.get('max_drawdown_pct',0):>6.1f}% "
+              f"{r.get('win_rate_pct',0):>6.0f}% {r.get('total_trades',0):>7} "
+              f"{stops:>5}")
+    print(f"  {'-'*65}")
+
+    delta_sharpe = result_b.get('sharpe_ratio', 0) - result_a.get('sharpe_ratio', 0)
+    if delta_sharpe >= 0:
+        print(f"\n  结论: RSI+BB 共振 {'提升' if delta_sharpe > 0 else '持平'} 夏普 {delta_sharpe:+.3f}")
+    else:
+        print(f"\n  结论: RSI+BB 共振降低 夏普 {delta_sharpe:+.3f}，纯 RSI 更优")
+
+    return {
+        'rsi': result_a,
+        'rsi_bb': result_b,
+        'delta_sharpe': delta_sharpe,
+        'winner': 'RSI+BB' if delta_sharpe >= 0 else 'RSI',
+    }
 
 
 if __name__ == '__main__':

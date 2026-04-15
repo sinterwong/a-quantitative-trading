@@ -74,16 +74,21 @@
   - 板块情绪识别（银行/电力/电子/医药/新能源等14个板块）
   - 集成进 `dynamic_selector.py` — `calc_all_scores()` 增加情绪分数加成
 
-### 🔲 — 布林带策略验证
-- 同 MACD，参数：period(20) / std_mult(1.5, 2.0, 2.5)
+### ✅ done — 布林带策略验证
+- `scripts/quant/backtest_cli.py` 新增 `boll-compare` 命令
+- `BBANDSFunc` — 价格下穿上轨=卖出，下穿下轨=买入
+- `RSIPlusBBANDSFunc` — RSI<=35 布林下轨共振买入 / RSI>=65 布林上轨共振卖出
 
-### ✅ done — 北向共振信号（部分）
-- `backend/services/northbound.py` — `check_northbound_crossover(symbol)` 已存在
-- RSI_BUY + 北向单日净流入 > 50亿 → 信号强度 ×1.5（待集成进 signals.py）
+### ✅ done — 北向共振信号
+- `signals.py` — `_get_northbound_check()` 懒加载 `fetch_kamt`
+- `evaluate_signal()` 中 RSI_BUY 触发时检测北向净流入
+- 北向净流入 > 50亿 → 信号原因后附加 `｜北向共振+X亿`
 
-### 🔲 — 新闻情绪打分集成进早报
-- `morning_runner.py` — 盘中加入 news_sentiment 模块
-- `scripts/morning_report.py` — 报告中显示市场综合情绪
+### ✅ done — 新闻情绪打分集成进早报
+- **新建** `scripts/morning_report.py` — 独立早报生成模块
+- 支持：【市场情绪】【大盘指数】【关注标的】【精选资讯】四大模块
+- 集成 `news_scorer.py` 的 `NewsSentimentScorer` 获取实时情绪 + 板块情绪
+- 盘中推送时网络异常不影响板块/选股数据（降级处理）
 
 ---
 
