@@ -400,6 +400,9 @@ class PortfolioService:
             row = cur.fetchone()
             return float(row['amount']) if row else 0.0
 
+    def get_total_equity(self) -> float:
+        return self.get_portfolio_summary()['total_equity']
+
     def set_cash(self, amount: float):
         with get_cursor() as cur:
             cur.execute(
