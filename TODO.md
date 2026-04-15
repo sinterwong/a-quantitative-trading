@@ -60,30 +60,29 @@
 
 > **目标**：每日 9:00 启动后，完全零人工干预运行至收盘
 
-### 🔲 — 早盘自动化（morning_runner.py 升级）
+### ✅ — 早盘自动化（morning_runner.py 升级）
 - 9:00 动态选股 → 输出 watchlist
-- 9:05 对 watchlist 每只运行 `evaluate_signal()` → RSI_BUY 确认
-- 9:06 对确认标的计算 Kelly 仓位 → 发出 BUY 市价单
+- 9:05 对 watchlist 每只运行 `evaluate_signal()` → RSI_BUY 确认（环境感知参数）
+- 9:06 分钟级 RSI 二次确认 → Kelly 仓位（市价单）
 - 9:10 同步日初净值 → Backend API
+- `evaluate_watchlist_and_submit()`: 全流程自动化
+- `log_opening_state()`: 记录完整开盘状态到 daily_meta notes
 
-### 🔲 — 持仓追踪升级
-- `intraday_monitor.py` — 持仓触发 WATCH_SELL 时记录信号原因
-- 持仓触发止损/止盈时记录完整日志（触发价格、时间、信号强度）
+### ✅ — 持仓追踪升级
+- `_check_stop_losses` / `_check_take_profits` 已完整实现
+- WATCH_SELL 触发飞书预警（包含信号原因）
+- 止损/止盈成交后自动记录 trade + signal
 
-### 🔲 — 收盘自动化（afternoon_report.py 升级）
-- 15:00 触发：
-  1. 查询所有今日持仓 → 计算浮动盈亏
-  2. 查询所有今日成交 → 计算已实现盈亏
-  3. 计算当日收益 → 记录 `daily_meta`
-  4. 生成收盘晚报（持仓状态 + 全天信号回顾）
+### ✅ — 收盘自动化
+- **新建** `scripts/afternoon_report.py`
+- 15:00 触发：持仓快照 → 浮动/已实现盈亏 → daily_meta → 飞书晚报
+- `build_closing_report()`: 生成收盘晚报（持仓+成交+信号回顾）
 
-### 🔲 — 日志分析模块
+### ✅ — 日志分析模块
 - **新建** `scripts/quant/daily_journal.py`
 - 字段：date / symbol / direction / entry_price / exit_price / shares / pnl / signal_reason / regime / slippage_bps
-- 功能：
-  - 统计各信号触发频率（RSI vs MACD vs BBANDS）
-  - 统计各环境下胜率（Bull vs Bear vs Volatile）
-  - 统计滑点分布（avg, p95）
+- `analyze_journal()`: 统计各信号胜率 / 各环境胜率 / 滑点分布（avg, p95）
+- `format_journal_summary()`: 生成可读文本报告
 
 ---
 
