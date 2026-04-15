@@ -6,6 +6,8 @@ Phase 1 (✅): EventBus + FactorExpression + SignalEngine
 Phase 2 (✅): DataSources (SP期货/VIX/恒指/北向) + OMS抽象层 + RiskEngine
 Phase 3 (✅): BrokerFactory + SafetyMode + 真实券商 STUB
 Phase 4 (✅): Level2 数据源 + 订单簿因子
+Phase 5 (✅): 组合优化器 (BL + MeanVariance + RiskParity)
+Phase 6 (✅): 回测引擎 + 因子研究框架
 """
 
 from core.event_bus import (
@@ -23,6 +25,18 @@ from core.data_sources import (
     TencentMinuteDataSource, NorthBoundDataSource,
     CompositeMarketDataSource, MarketSnapshot,
 )
+from core.level2 import (
+    Level2DataSource, OrderBook, TickBarAggregator, TickBar,
+    OrderImbalanceFactor, BidAskSpreadFactor, MidPriceDriftFactor,
+    VolumeRateFactor, AmihudIlliquidityFactor,
+)
+from core.backtest_engine import (
+    BacktestEngine, BacktestConfig, BacktestResult,
+    PerformanceAnalyzer, TradeRecord, PositionSnapshot,
+)
+from core.research import (
+    FactorResearcher, WalkForwardAnalyzer, FactorAnalysisResult,
+)
 
 __all__ = [
     # EventBus
@@ -31,6 +45,8 @@ __all__ = [
     # Factors
     'Factor', 'FactorCategory', 'Signal',
     'RSIFactor', 'BollingerFactor', 'MACDFactor', 'ATRFactor',
+    'OrderImbalanceFactor', 'BidAskSpreadFactor', 'MidPriceDriftFactor',
+    'VolumeRateFactor', 'AmihudIlliquidityFactor',
     # Strategies
     'SignalEngine', 'CompositeSignalEngine',
     # OMS
@@ -44,6 +60,9 @@ __all__ = [
     'CompositeMarketDataSource', 'MarketSnapshot',
     # Level2
     'Level2DataSource', 'OrderBook', 'TickBarAggregator', 'TickBar',
-    'OrderImbalanceFactor', 'BidAskSpreadFactor', 'MidPriceDriftFactor',
-    'VolumeRateFactor', 'AmihudIlliquidityFactor',
+    # Backtest
+    'BacktestEngine', 'BacktestConfig', 'BacktestResult',
+    'PerformanceAnalyzer', 'TradeRecord', 'PositionSnapshot',
+    # Research
+    'FactorResearcher', 'WalkForwardAnalyzer', 'FactorAnalysisResult',
 ]
