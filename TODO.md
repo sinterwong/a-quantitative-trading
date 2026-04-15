@@ -1,229 +1,310 @@
-# TODO — 开发任务
+# TODO — 量化交易系统开发路线图
 
 > 最后更新：2026-04-15
-> 当前基线：回测框架完成，RSI WFA Sharpe=0.467，70分级别
-> 目标：专业级个人量化系统 → 85分
+> 当前综合评分：**68/100**（工程 85 + 策略 55 ÷ 2）
+> 目标：商用级量化系统 → **85+/100**
 
 ---
 
-## 📊 目标分解：从 70 → 85 分
+## 当前系统评分卡
 
-| 维度 | 当前(70) | 目标(85) | 核心任务 |
-|------|---------|---------|---------|
-| 策略稳健性 | 单一 RSI，Sharpe=0.467 | 动态切换多策略，Sharpe≥0.8 | 市场环境识别 + 多策略组合 |
-| 策略执行力 | 手动确认信号 | 全自动闭环，零干预 | 盘中自动化 + 实盘对接 |
-| 参数适应性 | 固定参数 | 市场环境自适应 | WFA 定期自动更新参数 |
-| 绩效分析 | 无 | 完整归因 + 周报 | 日志分析 + 归因报告 |
-| 数据质量 | 东方财富为主 | 多源共振，更稳定 | 北向共振精细化 |
-
----
-
-## P4 · 市场环境识别 + 多策略组合（核心突破）
-
-> **目标**：Sharpe 从 0.467 提升至 ≥ 0.8
-> **核心思路**：不同市场环境使用不同策略参数
-
-### ✅ — 市场环境识别引擎
-- **新建** `scripts/quant/regime_detector.py`
-- 四种环境：
-  - **BULL** — 上证站上 20日均线 AND 均线多头排列
-  - **BEAR** — 上证跌破 20日均线 AND 均线空头排列
-  - **VOLATILE** — ATR ratio > 0.85（高波动，均值回归失效）
-  - **CALM** — ATR ratio ≤ 0.85 AND 趋势不明朗
-- 每日缓存全天（`regime_today.json`）
-- AkShare `stock_zh_index_daily` 获取上证指数数据
-- CLI: `python regime_detector.py` 快速检测当前环境
-
-### ✅ — 策略参数表（按环境）
-- **Bull**: RSI(25/65) + ATR_threshold 0.90
-- **Bear**: RSI(40/70) + ATR_threshold 0.80（更严格，避免抄底）
-- **Volatile**: RSI(30/60) + ATR_threshold 0.80（保守）
-- **Calm**: RSI(25/65) + ATR_threshold 0.85（标准）
-- 参数表：REGIME_PARAMS 字典（regime_detector.py）
-
-### ✅ — 多策略组合器
-- **新建** `scripts/quant/strategy_ensemble.py`
-- `StrategyEnsemble` 类：detect() / get_params() / evaluate()
-- 根据当前环境返回对应参数 + 允许策略列表
-
-### ✅ — WFA 验证
-- `backtest_cli.py` 新增 `regime-wfa` 命令
-- 对比固定 RSI(25/65) vs 环境自适应策略
-- 注意：当前数据仅支持 1 个 WFA 窗口，需补充更多历史数据才能得出统计结论
-- 结论框架已就绪，Sharpe ≥ 0.8 目标待更长数据验证
-- 对比：单策略 RSI(25/65) vs 环境自适应策略
-- 验收：Sharpe 提升 ≥ 30%，正收益窗口 ≥ 80%
+| 维度 | 得分 | 说明 |
+|------|------|------|
+| 工程完整性 | 85/100 | 模块化好，EventBus 除外 |
+| 策略质量 | 55/100 | RSI 单因子，历史验证不足 |
+| 数据质量 | 60/100 | 日线为主，缺 Tick/外盘 |
+| 风险管理 | 75/100 | 止损/Kelly/熔断三层 |
+| 可扩展性 | 65/100 | 函数耦合，难加新策略 |
+| **综合** | **68/100** | 工程扎实，策略单薄 |
 
 ---
 
-## P5 · 全自动 Paper Trade 闭环（实盘对接第一阶段）
+## 已完成里程碑
 
-> **目标**：每日 9:00 启动后，完全零人工干预运行至收盘
-
-### ✅ — 早盘自动化（morning_runner.py 升级）
-- 9:00 动态选股 → 输出 watchlist
-- 9:05 对 watchlist 每只运行 `evaluate_signal()` → RSI_BUY 确认（环境感知参数）
-- 9:06 分钟级 RSI 二次确认 → Kelly 仓位（市价单）
-- 9:10 同步日初净值 → Backend API
-- `evaluate_watchlist_and_submit()`: 全流程自动化
-- `log_opening_state()`: 记录完整开盘状态到 daily_meta notes
-
-### ✅ — 持仓追踪升级
-- `_check_stop_losses` / `_check_take_profits` 已完整实现
-- WATCH_SELL 触发飞书预警（包含信号原因）
-- 止损/止盈成交后自动记录 trade + signal
-
-### ✅ — 收盘自动化
-- **新建** `scripts/afternoon_report.py`
-- 15:00 触发：持仓快照 → 浮动/已实现盈亏 → daily_meta → 飞书晚报
-- `build_closing_report()`: 生成收盘晚报（持仓+成交+信号回顾）
-
-### ✅ — 日志分析模块
-- **新建** `scripts/quant/daily_journal.py`
-- 字段：date / symbol / direction / entry_price / exit_price / shares / pnl / signal_reason / regime / slippage_bps
-- `analyze_journal()`: 统计各信号胜率 / 各环境胜率 / 滑点分布（avg, p95）
-- `format_journal_summary()`: 生成可读文本报告
+| 阶段 | 内容 | 核心文件 |
+|------|------|---------|
+| P0 | RSI WFA + ATR 过滤 | `backtest_cli.py` `signals.py` |
+| P1 | Kelly 仓位 + 熔断机制 | `broker.py` `intraday_monitor.py` |
+| P2 | 涨跌停 + 行业集中度 + 压力测试 | `signals.py` `broker.py` |
+| P3 | 北向资金追踪 | `northbound.py` |
+| P4 | 市场环境识别 + 策略组合 | `regime_detector.py` `strategy_ensemble.py` |
+| P5 | 全自动 PaperTrade 闭环 | `morning_runner.py` `afternoon_report.py` |
+| P6 | 绩效归因 + 参数自适应 WFA | `performance_report.py` `regime_wfa.py` |
+| P7 | Chandelier Exit + 仓位上限 | `signals.py` `broker.py` |
+| P8 | KAMT 多源缓存 | `data_cache.py` |
 
 ---
 
-## P6 · 绩效归因 + 参数自适应
+## 核心问题诊断
 
-### ✅ — 绩效归因报告
-- **新建** `scripts/quant/performance_report.py`
-- 周度运行（每周一推送上周报告）：
-  - 总收益 / 年化收益 / 夏普比率 / 最大回撤（日线数据计算）
-  - 盈利来源：按信号类型（RSI/MACD/BBANDS）统计胜率/均值
-  - 亏损分析：轻度/中度/重度亏损分层 + 最大亏损标的
-  - 滑点总结（avg / P95 / max）
-  - 行业集中度：交易分布 + 风险预警（>50%触发提示）
-  - 格式：飞书文本推送
-- 周一 cron 触发：`python scripts/quant/performance_report.py --days 7`
+**策略端（最急需解决的）：**
+- 只有 RSI 一个因子，无法多信号共振
+- 没有外盘数据（S&P 期货 / VIX → A 股开盘跳空方向）
+- 回测用日线，盘中用日线 → "偷价"嫌疑
+- 没有 Tick 数据，订单簿信息完全缺失
 
-### ✅ — 参数自适应更新
-- **新建** `scripts/regime_wfa.py`
-- 每月第一个交易日自动运行 WFA 分析（2年训练/1年测试窗口）
-- 对 watchlist 每个标的执行 RSI 网格搜索，统计最优 RSI 参数
-- 决策逻辑：
-  - Sharpe 提升 ≥ 0.10 且 RSI 差值 ≤ 5 → **自动批准**
-  - Sharpe 提升 ≥ 0.10 但 RSI 差值 > 5 → **人工审批**
-  - Sharpe 无提升 → **拒绝变更**
-- 变更时推送飞书审批通知（`FEISHU_WEBHOOK`）
-- 通过 `--auto-approve` 标志自动写入 `live_params.json`
-
-### ✅ — 动态选股环境感知
-- **修改** `scripts/dynamic_selector.py`（P6.3 patch）
-- `DynamicStockSelectorV2.__init__(regime='CALM')` 接受市场环境参数
-- `_regime_modulate(score_dict, regime)` 根据环境调制板块评分：
-  - **BULL**: 动量板块（AI/芯片/5G/军工/新能源）× 1.2
-  - **BEAR**: 防御板块（电力/医药/消费/银行）× 1.2，非防御 × 0.85
-  - **VOLATILE**: 全部分数 × 0.80（降低敏感度）
-  - **CALM**: 不变
-- `select_stocks(top_n, regime=None)` 支持传入当前环境参数
-- `morning_runner.py` 调用时传入 `get_regime_params()['regime']`
+**工程端（架构性缺陷）：**
+- `signals.py` 硬编码 RSI/MACD → 加新策略要改核心
+- `morning_runner.py` / `intraday_monitor.py` 通过函数调用耦合
+- `PaperBroker` 内置在 OMS 逻辑里 → 接真实券商要重写
+- 没有因子库，新策略不可复用
 
 ---
 
-## P7 · 风险管理精细化
+## Phase 1 · EventBus + FactorExpression（当前最优先级）✅ 进行中
 
-### ✅ — 单一标的仓位上限（25%）
-- `broker.py` submit_order 内置前检查：
-  - 新开仓：超出 25% 权益上限 → 自动压缩至上限
-  - 已有持仓超标 → 拒绝开仓
+> **目标**：把策略/风控/执行全部事件化，新策略注册即用，不碰核心
+> **架构文件**：`core/event_bus.py` + `core/factors/` + `core/strategies/signal_engine.py`
+> **状态**：✅ 完成（13/13 测试通过），已提交 `d150d85`
 
-### ✅ — Chandelier Exit（3×ATR）
-- `signals.py` check_atr_trailing_stop() 已完整实现（最高价 - 3×ATR）
-- `intraday_monitor.py` 止盈循环中优先执行 ATR 移动止盈
+### ✅ 架构骨架（已实现）
 
-### ✅ — 北向共振精细化（持续 vs 脉冲）
-- `northbound.py` 新增三个函数：
-  - get_north_flow_direction(threshold_yi=50.0) → strength=2(持续)/1(脉冲)/0(中性)
-  - get_north_flow_history() → 读取/写入 north_flow_history.json
-  - NorthBoundAlertChecker → 大幅净流入/出推送
-- `signals.py` evaluate_signal() 集成：strength=2 → 北向持续共振+XXX亿；strength=1 → 北向脉冲+XXX亿
+**`core/event_bus.py`** — 事件总线（新增）
+```python
+class Event:
+    type: str
+
+class MarketEvent(Event): pass    # tick/bar 行情
+class SignalEvent(Event): pass    # 因子信号
+class OrderEvent(Event): pass     # 订单请求
+class FillEvent(Event): pass      # 成交回报
+class RiskEvent(Event): pass      # 风控预警
+
+class EventBus:
+    """单例模式，所有组件通过事件通信"""
+    _handlers: Dict[str, List[Callable]]
+
+    def emit(self, event: Event): ...
+    def on(self, event_type, handler): ...
+    def pipeline(self, *handlers): ...  # 链式处理
+```
+
+**`core/__init__.py`** — 新包入口
+```
+quant_repo/core/           # 新包根目录
+  __init__.py
+  event_bus.py
+  oms.py
+  risk_engine.py
+  data_layer.py
+  backtester.py
+  factors/
+    __init__.py
+    base.py          # Factor 基类
+    rsi.py
+    macd.py
+    atr.py
+    bollinger.py
+    north_flow.py
+  strategies/
+    __init__.py
+    base.py          # Strategy 基类
+    mean_reversion.py
+    momentum.py
+```
+
+### ✅ Factor 基类
+
+```python
+class Factor(Protocol):
+    """因子基类，所有因子实现此接口"""
+    name: str
+    category: FactorCategory  # PRICE_MOMENTUM / REGIME / FUNDAMENTAL / SENTIMENT / EXTERNAL
+
+    def evaluate(self, data: pd.DataFrame) -> pd.Series:
+        """返回因子值序列，索引 = data.index"""
+        ...
+
+class RSI(Factor):
+    name = 'RSI'
+    category = FactorCategory.PRICE_MOMENTUM
+    def __init__(self, period: int = 14, buy: float = 30, sell: float = 70):
+        ...
+
+    def evaluate(self, data) -> pd.Series:
+        return ...  # 返回 z-score 归一化的因子值
+
+    def signals(self, factor_values: pd.Series) -> List[Signal]:
+        """从因子值生成信号列表"""
+        ...
+```
+
+### ✅ Signal 标准格式
+
+```python
+@dataclass
+class Signal:
+    timestamp: datetime
+    symbol: str
+    direction: Literal['BUY', 'SELL']
+    strength: float           # 因子信号强度 0~1
+    factor_name: str         # 来源因子
+    metadata: dict           # 自由扩展
+
+    @property
+    def signal_key(self) -> str:
+        return f"{self.symbol}:{self.direction}:{self.timestamp}"
+```
+
+### ✅ OMS 抽象层
+
+```python
+class BrokerAdapter(Protocol):
+    """券商适配器接口，当前 PaperBroker 实现"""
+    def send(self, order: Order) -> Fill: ...
+    def cancel(self, order_id: str): ...
+    def quote(self, symbol: str) -> Quote: ...
+
+class PaperBroker(BrokerAdapter):
+    """保留当前 PaperBroker 逻辑"""
+
+class FutuBroker(BrokerAdapter):
+    """富途适配器（Phase 2）"""
+
+class OMS:
+    def __init__(self, broker: BrokerAdapter):
+        self.broker = broker
+        self.event_bus = EventBus.global_bus()
+
+    def submit(self, signal: Signal) -> Optional[Fill]:
+        # PreTrade 风控检查 → broker.send → emit(FillEvent)
+```
+
+### ✅ RiskEngine 三层
+
+```python
+class RiskEngine:
+    """三层风控：PreTrade / InTrade / PostTrade"""
+    def check(self, signal: Signal) -> RiskResult: ...
+
+    def check_pre_trade(self, signal, book) -> RiskResult:
+        return RiskResult(
+            passed=True,
+            position_limit=book.position_pct(signal.symbol) < 0.25,   # 仓位上限
+            loss_limit=book.today_pnl > -0.02,                    # 日亏 2% 熔断
+            correlation=book.correlation(signal.symbol) < 0.7,      # 相关性
+        )
+```
 
 ---
 
-## P8 · 数据源稳定化（持续性工程）
+## Phase 2 · 外盘数据 + OMS抽象层 ✅ 完成
 
-### ✅ — KAMT 多源缓存 + Fallback
-- **新建** `backend/services/data_cache.py` + `scripts/quant/data_cache.py`
-- `_SafeCache`: 线程安全单调时间 TTL 缓存（60s KAMT / 60s 分钟K线 / 30s 通用 HTTP）
-- `cached_kamt()`: 三级 Fallback 链：
-  1. eastmoney `push2.eastmoney.com/api/qt/kamt.rtmin`（实时，每分钟更新）
-  2. eastmoney `push2.eastmoney.com/api/qt/kamt/get`（日度摘要，配额数据）
-  3. 过期缓存（返回 `stale=True` 标记）
-- `northbound.py` 的 `fetch_kamt()` 替换为 `cached_kamt()` 包装，60s 内重复调用走缓存
+> **状态**：完成，测试通过，已提交 `d150d85`
+> **注意**：yfinance 在当前 IP 存在限速，外盘数据需等待解限或接入商业数据源（Bloomberg/Wind）
 
-### ✅ — 分钟 K 线缓存（60s TTL）
-- `cached_minute_kline(symbol, fetch_fn)`: 防止同一分钟内重复请求导致限流
-- 适用于腾讯/新浪分钟K线数据源
-- `cached_get(url)`: 通用 HTTP GET 缓存（默认 30s TTL）
+### 外盘数据源（DataSource 接口）
 
----
+### 外部 Alpha 信号（A股最大缺失）
 
-## 已完成 → 85 分目标达成 ✅
-
-### P6 已完成
-| 任务 | 文件 |
-|------|------|
-| 周度绩效归因报告 | `scripts/quant/performance_report.py` |
-| 参数自适应 WFA | `scripts/regime_wfa.py` |
-| 动态选股环境感知 | `scripts/dynamic_selector.py` (P6.3 patch) |
-
-### P7 已完成
-| 任务 | 文件 |
-|------|------|
-| 单标的仓位上限 25% | `broker.py` |
-| Chandelier Exit 3×ATR | `signals.py` + `intraday_monitor.py` |
-| 北向共振精细化 | `northbound.py` |
-
-### P8 已完成
-| 任务 | 文件 |
-|------|------|
-| KAMT多源缓存+Fallback | `backend/services/data_cache.py` |
-| 分钟K线/HTTP缓存（60s/30s TTL） | `backend/services/data_cache.py` |
-
-## 历史已完成
-
-| 任务 | 优先级 | 文件 |
+| 信号 | 数据源 | 逻辑 |
 |------|--------|------|
-| RSI WFA 参数验证 | P0 | `backtest_cli.py` |
-| ATR ratio + RSI BUY 屏蔽 | P0 | `signals.py` |
-| Kelly 仓位管理 | P1 | `scripts/quant/position_sizer.py` |
-| 组合熔断（8%/12%）| P1 | `intraday_monitor.py` |
-| 基本面 PE/PB 过滤 | P1 | `services/fundamentals.py` |
-| 分钟 RSI 二次确认 | P1 | `intraday_monitor.py` |
-| 涨跌停熔断（position-aware）| P2 | `signals.py` |
-| 行业集中度检查 | P2 | `portfolio.py` + `sector_map.json` |
-| 滑点监控 | P2 | `broker.py` + `portfolio.py` |
-| 压力测试（crash-test）| P2 | `backtest_cli.py` |
-| MACD 策略验证 | P2 | `backtest_cli.py` |
-| 布林带策略验证 | P2 | `backtest_cli.py` |
-| 新闻情绪打分 | P2 | `news_scorer.py` |
-| 北向共振信号 | P2 | `signals.py` |
-| 早报生成模块 | P2 | `morning_report.py` |
-| 东方财富多源 fallback | P2 | `dynamic_selector.py`（Sina 备用）|
-| 飞书推送安全处理 | 安全 | `intraday_monitor.py` |
-| Credentials 移除 | 安全 | `.env` 外置 |
+| S&P 期货隔夜领先 | CME futures API | S&P 涨跌 → A 股开盘方向 |
+| VIX 波动率预警 | CBOE API（fallback yfinance） | VIX>25 → A 股波动加大 |
+| 恒指期货 | HKEX futures | 港股 → A 股情绪 |
+| 北向分钟级 | cached_kamt() | 10:00 / 14:00 净流入 → 领先 30min |
+
+### 已实现组件
+
+**`core/data_sources.py`** — 统一数据源接口
+**`core/oms.py`** — BrokerAdapter + PaperBroker + OMS（含 Kelly 仓位）
+**`core/risk_engine.py`** — 三层风控（PreTrade/InTrade/PostTrade）
+
+### 北向分钟级因子
+
+```python
+class NorthBoundMinuteFactor(Factor):
+    """北向资金分钟粒度因子（当前只有日度，需要升级到分钟）"""
+    category = FactorCategory.FUNDAMENTAL
+
+    def evaluate(self, data: pd.DataFrame) -> pd.Series:
+        # KAMT 每分钟北向累计净流入
+        # → z-score 归一化
+        # → 信号方向：>0 = 外资净买入 A 股
+```
 
 ---
 
-## 系统已达成 85 分目标 ✅
+## Phase 3 · Broker 抽象层 + SafetyMode ✅ 完成
+
+> **状态**：框架完成，真实券商为 STUB（不可调用），已提交 `ba2198f`
+
+### Broker 架构
+
+**SafetyMode 三级安全**：
+```
+PAPER ──► SIMULATED ──► LIVE
+（当前）   （同PAPER）  （需三步解锁）
+
+三步解锁 LIVE：
+  1. config/brokers.json: {safety_mode: LIVE, broker: futu}
+  2. env QUANT_LIVE_CONFIRM=1
+  3. 文件 config/live_armed 存在
+```
+
+**已实现组件**：
+- `core/brokers/facade.py` — BrokerFactory + SafetyMode
+- `core/brokers/paper.py` — PaperBroker（生产可用）
+- `core/brokers/futu.py` — 富途 STUB
+- `core/brokers/tiger.py` — 老虎 STUB
+- `core/brokers/ibkr.py` — IBKR STUB
+
+**Phase 3 真实券商对接（预留）**
+
+| 券商 | 状态 | 接口 |
+|------|------|------|
+| Futu OpenAPI | STUB | 港股 + A股通 |
+| Tiger OpenAPI | STUB | A股通 |
+| Interactive Brokers | STUB | 全球期货 |
+
+接入条件：SafetyMode=LIVE + 三步解锁
+
+---
+
+## Phase 4 · Tick 数据 + 订单簿因子（下一步）
+
+```python
+class OrderFlowFactor(Factor):
+    """订单簿因子（Level2 数据）：
+    - 委托单不平衡度 (Order Imbalance)
+    - VWAP 偏离度
+    - 盘口价差因子
+    当前系统缺失，这是 A 股最强的 alpha 源之一
+    """
+```
+
+---
+
+## Phase 5 · 组合优化器
+
+```python
+class MeanVarianceOptimizer:
+    """Black-Litterman + 均值方差优化"""
+    def optimize(self, signals, cov_matrix, risk_aversion=1.0) -> Dict[str, float]:
+        # max Sharpe 或 min Variance 目标权重
+```
+
+---
+
+## 架构里程碑
 
 ```
-全部 P1-P8 已完成：
-  P0  回测框架 + WFA 参数验证
-  P1  ATR过滤 + Kelly仓位 + RSI二次确认 + 熔断机制
-  P2  涨跌停 + 行业集中度 + 滑点监控 + 压力测试
-  P3  北向资金追踪（KAMT）
-  P4  市场环境识别 + 策略组合
-  P5  全自动 PaperTrade 闭环
-  P6  绩效归因 + 参数自适应 WFA
-  P7  风险管理精细化（仓位上限 + Chandelier Exit + 北向共振）
-  P8  数据源稳定化（KAMT多源缓存 + 分钟K线TTL缓存）
+Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 5
+EventBus       外盘数据    真实券商    Tick因子     组合优化
+FactorExpr     多因子共振              订单簿因子
+当前开始                                    组合VaR
 ```
 
-### 下一步建议
-- 接入真实证券账户（Futu / Tiger）替代 Paper Trade
-- 多标的组合优化（均值方差前沿）
-- 夜盘/外盘期货联动（纳斯达克/商品）
+---
+
+## 开发原则
+
+1. **不重写已有稳定代码** — `core/` 是新增包，`scripts/` / `backend/` 完全不动
+2. **EventBus 单例模式** — 全局 `EventBus.global_bus()` 广播，零配置集成
+3. **Factor.evaluate() 返回 z-score** — 所有因子可比较、可加权
+4. **回测代码 = 实盘代码** — 同一 Factor 接口，历史因子生成信号
+5. **先有真实数据才有 alpha** — Phase 2 外盘数据优先于 Phase 1 工程
+
+---
+
+> 核心目标：6 个月从 68 分 → 80 分，核心路径是 EventBus 化 + 外盘数据。
