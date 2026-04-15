@@ -81,15 +81,19 @@
 
 ## P2 · 实盘对接
 
-### 🔲 — 涨跌停熔断
-- `signals.py` — 涨停日已有持仓 → WATCH_SELL；无持仓 → 禁止追
-- 跌停日已有持仓 → WATCH_SELL（逃生）；无持仓 → 禁止抄
-- `broker.py` — 订单提交时拦截涨跌停标的
+### ✅ done — 涨跌停熔断（position-aware）
+- `signals.py` — `evaluate_signal()` 新增 `positions` 参数
+  - LIMIT_UP + 有持仓 → WATCH_SELL（止盈预警）
+  - LIMIT_UP + 无持仓 → LIMIT_UP（禁止追涨）
+  - LIMIT_DOWN + 有持仓 → RSI_SELL（紧急逃生）
+  - LIMIT_DOWN + 无持仓 → LIMIT_DOWN（禁止抄底）
+- `intraday_monitor.py` — 两处 evaluate_signal 均传入 positions
 
-### 🔲 — 行业集中度
-- **新建** `scripts/quant/sector_map.json` — `{代码前缀: 行业名}`
-- `portfolio.py` — `check_sector_concentration(positions)`
-- 单一行业 > 40% → 强制减仓至 40%
+### ✅ done — 行业集中度
+- `backend/services/sector_map.json` — 88 个 A 股代码映射
+- `portfolio.py` — `check_sector_concentration(positions, max_sector_pct=0.40)`
+- `intraday_monitor.py` — `_check_sector_concentration()` 自动减仓
+- 单一行业 > 40% → 飞书警告 + 自动减半
 
 ### 🔲 — 滑点监控
 - `broker.py` — 订单成交后对比「信号触发价 vs 实际成交价」
