@@ -354,12 +354,13 @@ class IntradayMonitor:
                 params = self._get_params(sym)
                 alert = evaluate_signal(
                     sym,
-                    rsi_buy=int(params.get('rsi_buy', 35)),
-                    rsi_sell=int(params.get('rsi_sell', 70)),
+                    rsi_buy=int(params.get('rsi_buy', 25)),
+                    rsi_sell=int(params.get('rsi_sell', 65)),
+                    atr_threshold=float(params.get('atr_threshold', 0.90)),
                 )
                 if not alert:
                     continue
-                if alert.signal not in ('RSI_BUY', 'WATCH_BUY'):
+                if alert.signal not in ('RSI_BUY', 'WATCH_BUY', 'HOLD'):
                     continue
                 # 分钟确认
                 confirmed, m_rsi, reason = confirm_signal_minute(sym, 'BUY')
@@ -525,8 +526,9 @@ class IntradayMonitor:
             params = self._get_params(sym)
             alert = evaluate_signal(
                 sym,
-                rsi_buy=int(params.get('rsi_buy', 35)),
-                rsi_sell=int(params.get('rsi_sell', 70)),
+                rsi_buy=int(params.get('rsi_buy', 25)),
+                rsi_sell=int(params.get('rsi_sell', 65)),
+                atr_threshold=float(params.get('atr_threshold', 0.90)),
             )
             if alert:
                 alerts.append(alert)

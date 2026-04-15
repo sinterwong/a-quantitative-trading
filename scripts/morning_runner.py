@@ -40,8 +40,8 @@ WORKSPACE   = os.path.dirname(os.path.dirname(os.path.dirname(SCRIPT_FILE)))  # 
 BACKEND_DIR = os.path.join(WORKSPACE, 'quant_repo', 'backend')
 SCRIPTS_DIR = os.path.join(WORKSPACE, 'scripts')  # workspace/scripts/
 sys.path.insert(0, BACKEND_DIR)
+# quant_repo/scripts is already sys.path[0] when run as script; add workspace/scripts before it
 sys.path.insert(0, SCRIPTS_DIR)
-sys.path.insert(0, os.path.join(WORKSPACE, 'quant_repo', 'scripts'))  # quant_repo/scripts/
 
 _log = logging.getLogger('morning_runner')
 
@@ -74,13 +74,13 @@ def feishu_push(text: str, to_user: str = 'user:ou_b8add658ac094464606af32933a02
 
 
 def get_feishu_client():
-    """Load FeishuClient from utils.feishu"""
-    try:
-        from utils.feishu import FeishuClient
-        return FeishuClient()
-    except ImportError:
-        from utils.feishu_webhook import FeishuWebhook
-        return FeishuWebhook()
+    """Load FeishuClient from report_sender"""
+    from services.report_sender import get_feishu_token, send_feishu
+    token = get_feishu_token()
+    class _Client:
+        def send_text(self, user_id, text):
+            return send_feishu(text, token)
+    return _Client()
 
 
 def fetch_selected_stocks(n: int = 5) -> list:
@@ -89,7 +89,9 @@ def fetch_selected_stocks(n: int = 5) -> list:
     返回: [{symbol, name, reason, score}, ...]
     """
     try:
-        from scripts.dynamic_selector import DynamicStockSelectorV2
+        # Avoid namespace conflict with win32.scripts by importing directly
+        import dynamic_selector
+        DynamicStockSelectorV2 = dynamic_selector.DynamicStockSelectorV2
         sel = DynamicStockSelectorV2()
 
         _log.info('Fetching market news...')
@@ -106,7 +108,7 @@ def fetch_selected_stocks(n: int = 5) -> list:
         result = []
         for s in stocks[:n]:
             result.append({
-                'symbol': s.get('symbol', ''),
+                'symbol': s.get('code', ''),
                 'name': s.get('name', ''),
                 'reason': s.get('reason', ''),
                 'score': s.get('total', 0),
@@ -173,9 +175,9 @@ def build_morning_report(stocks: list, equity: float) -> str:
     """
     生成早报文本（不依赖LLM，直接用格式化的结构化文本）。
     """
-    from scripts.morning_report import build_report
-    # morning_report.py 生成完整早报
-    report = build_report()
+    import morning_report
+    # morning_report.py generates the complete morning report
+    report = morning_report.build_report()
     return report
 
 
@@ -216,8 +218,8 @@ def run():
     # Step 4: 生成早报并推送
     _log.info('Step 4: Building morning report...')
     try:
-        from scripts.morning_report import build_report
-        report = build_report()
+        import morning_report
+        report = morning_report.build_report()
         _log.info('Morning report built (%d chars)', len(report))
     except Exception as e:
         _log.error('morning_report build failed: %s', e)

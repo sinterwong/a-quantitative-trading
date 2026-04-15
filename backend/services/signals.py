@@ -336,6 +336,62 @@ def _compute_atr(symbol: str, period: int = 14) -> Optional[float]:
     return round(atr, 4)
 
 
+def _compute_atr_ratio(symbol: str, period: int = 14, lookback: int = 20) -> Optional[float]:
+    """
+    计算 ATR 比率：当前 ATR(period) / 近 lookback 日 ATR 最高值。
+    - ratio > 0.85: 当前波动率处于近 20 日 85% 以上高位（市场顶部/底部预警）
+    - ratio <= 0.85: 正常波动，可开仓
+    用于过滤 RSI 均值回归策略在高波动期的假信号。
+    返回 None 表示计算失败。
+    """
+    bars = _fetch_history_tencent(symbol, days=period + lookback + 5)
+    if not bars or len(bars) < period + lookback:
+        return None
+    closes = [b['close'] for b in bars]
+    highs  = [b['high']  for b in bars]
+    lows   = [b['low']   for b in bars]
+    n = len(closes)
+
+    # Compute ATR(period) for each day
+    atr_history = [None] * n
+    for i in range(1, n):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
+        if i >= period:
+            if atr_history[i - 1] is not None:
+                atr_history[i] = (atr_history[i - 1] * (period - 1) + tr) / period
+            else:
+                atr_history[i] = sum(
+                    max(
+                        highs[j] - lows[j],
+                        abs(highs[j] - closes[j - 1]),
+                        abs(lows[j] - closes[j - 1]),
+                    ) for j in range(i - period + 1, i + 1)
+                ) / period
+
+    # Current ATR = most recent valid value
+    current_atr = None
+    for i in range(n - 1, -1, -1):
+        if atr_history[i] is not None:
+            current_atr = atr_history[i]
+            break
+    if current_atr is None or current_atr <= 0:
+        return None
+
+    # ATR high over lookback window
+    valid_atrs = [v for v in atr_history[n - lookback:] if v is not None]
+    if not valid_atrs:
+        return None
+    atr_max = max(valid_atrs)
+    if atr_max <= 0:
+        return None
+
+    return round(current_atr / atr_max, 4)
+
+
 def get_atr_stop_loss(symbol: str, entry_price: float,
                       atr_period: int = 14, multiplier: float = 2.0) -> Optional[float]:
     """
@@ -628,14 +684,16 @@ def check_limit_status(snap: dict, limit_pct: float) -> tuple[Optional[str], flo
 
 # ─── 信号评估（A 股专用）────────────────────────────────────
 
-RSI_BUY_THRESHOLD  = 35
-RSI_SELL_THRESHOLD = 70
+RSI_BUY_THRESHOLD  = 25
+RSI_SELL_THRESHOLD = 65
 MOMENTUM_THRESHOLD = 0.01    # 价格变动 >1% 视为有效动量
+DEFAULT_ATR_THRESH = 0.85     # ATR ratio > 0.85 时为高波动，禁止开仓
 
 
 def evaluate_signal(symbol: str,
-                    rsi_buy:  int = RSI_BUY_THRESHOLD,
-                    rsi_sell: int = RSI_SELL_THRESHOLD) -> Optional[SignalAlert]:
+                    rsi_buy:     int = RSI_BUY_THRESHOLD,
+                    rsi_sell:    int = RSI_SELL_THRESHOLD,
+                    atr_threshold: float = DEFAULT_ATR_THRESH) -> Optional[SignalAlert]:
     """
     评估单只股票的全部信号。
     优先级：
@@ -687,16 +745,32 @@ def evaluate_signal(symbol: str,
 
     # ── 2. RSI 超买超卖 ──────────────────────────────
     if prev_rsi is not None:
+        # 计算 ATR ratio（用于过滤高波动期买入信号）
+        atr_ratio = _compute_atr_ratio(symbol, period=14, lookback=20)
+        vol_high = (atr_ratio is not None) and (atr_ratio > atr_threshold)
+        atr_note = f' | [ATRratio={atr_ratio:.2f}>0.85 高波动屏蔽]' if vol_high else ''
+
         if prev_rsi <= rsi_buy:
+            if vol_high:
+                # 高波动期：RSI 超卖信号被屏蔽，不发买入
+                return SignalAlert(
+                    symbol=symbol, signal='HOLD',
+                    price=price, pct=pct, prev_rsi=prev_rsi,
+                    volume_ratio=vol_ratio, day_chg=day_chg or 0.0,
+                    reason=(f'RSI={prev_rsi:.0f}≤{rsi_buy}超卖+ATRratio={atr_ratio:.2f}>0.85 '
+                            f'高波动期，RSI均值回归策略失效，屏蔽买入｜现价{price}'),
+                    emitted_at=datetime.now().strftime('%H:%M:%S'),
+                )
+
             if day_chg is not None and day_chg < -MOMENTUM_THRESHOLD:
                 signal = 'WATCH_BUY'
-                reason = f"RSI={prev_rsi:.0f}≤{rsi_buy}超卖，当日下跌{'%.1f'%(day_chg*100)}%，关注低吸｜现价{price}"
+                reason = f'RSI={prev_rsi:.0f}≤{rsi_buy}超卖，当日下跌{'%.1f'%(day_chg*100)}%，关注低吸｜现价{price}'
             elif day_chg is not None and day_chg > MOMENTUM_THRESHOLD:
                 signal = 'RSI_BUY'
-                reason = f"RSI={prev_rsi:.0f}≤{rsi_buy}超卖+价格已反弹{'%.1f'%(day_chg*100)}%，强势｜现价{price}"
+                reason = f'RSI={prev_rsi:.0f}≤{rsi_buy}超卖+价格已反弹{'%.1f'%(day_chg*100)}%，强势｜现价{price}'
             else:
                 signal = 'RSI_BUY'
-                reason = f"RSI={prev_rsi:.0f}≤{rsi_buy}超卖区间｜现价{price}"
+                reason = f'RSI={prev_rsi:.0f}≤{rsi_buy}超卖区间｜现价{price}'
 
             return SignalAlert(
                 symbol=symbol, signal=signal,
@@ -760,6 +834,7 @@ def check_portfolio_signals(positions: list[dict]) -> list[SignalAlert]:
             sym,
             rsi_buy= int(pos.get('rsi_buy',  RSI_BUY_THRESHOLD)),
             rsi_sell=int(pos.get('rsi_sell', RSI_SELL_THRESHOLD)),
+            atr_threshold=float(pos.get('atr_threshold', DEFAULT_ATR_THRESH)),
         )
         if alert:
             alerts.append(alert)
@@ -841,9 +916,10 @@ def format_feishu_message(alerts: list[SignalAlert], check_time: str) -> str:
 # ─── 参数加载器（WFA 优化参数优先）───────────────────────────────
 
 _DEFAULTS = dict(
-    rsi_period=14, rsi_buy=35, rsi_sell=70,
-    stop_loss=0.08, take_profit=0.25,
+    rsi_period=14, rsi_buy=25, rsi_sell=65,
+    stop_loss=0.05, take_profit=0.20,
     atr_period=14, atr_multiplier=2.0,
+    atr_threshold=0.85,
     min_hold_days=3,
 )
 
@@ -877,6 +953,7 @@ def load_symbol_params(symbol: str) -> dict:
                     result['stop_loss']   = p.get('stop_loss',  result['stop_loss'])
                     result['take_profit'] = p.get('take_profit', result['take_profit'])
                     result['min_hold_days'] = p.get('min_hold_days', result['min_hold_days'])
+                    result['atr_threshold'] = p.get('atr_threshold', result['atr_threshold'])
                     break
         except Exception:
             pass
