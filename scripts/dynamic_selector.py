@@ -357,7 +357,7 @@ class DynamicStockSelectorV2:
     WEIGHT_TECH = 0.15     # 技术趋势（成分股涨跌信号）
     WEIGHT_CONSISTENCY = 0.10  # 成分股一致性（板块内部联动强度）
 
-    def __init__(self):
+    def __init__(self, regime: str = 'CALM'):
         self.news_cache: List[Dict] = []
         self.sectors_raw: List[Dict] = []     # 东方财富原始板块数据
         self.sector_scores: Dict = {}         # 最终综合评分 {板块名: score_dict}
@@ -377,7 +377,7 @@ class DynamicStockSelectorV2:
 
     def fetch_market_news(self, limit: int = 30) -> List[Dict]:
         """获取市场资讯，依次尝试：缓存 -> 东方财富 -> 同花顺"""
-        if self._news_fetched and self.news_cache:
+        if sself.news_cache:
             return self.news_cache[:limit]
 
         # 1. 文件缓存（30分钟内有效）
