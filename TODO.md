@@ -60,22 +60,30 @@
 
 ## P2 · 信号多元化（待实现）
 
-### 🔲 — MACD 策略验证
+### ✅ done — MACD 策略验证
 - `scripts/quant/backtest_cli.py` 新增 `macd-compare` 命令
-- 参数：fast(8,10,12) / slow(20,26,30) / signal(7,9,12)
-- 对比：纯 RSI vs RSI+MACD 共振
+- 参数：fast(12) / slow(26) / signal(9)
+- `MACDSignalFunc` — MACD 零轴金叉/死叉
+- `RSIPlusMACDSignalFunc` — RSI 金叉 + MACD histogram>0 确认
+- 对比纯 RSI vs RSI+MACD 共振
+
+### ✅ done — 新闻情绪打分
+- **新建** `scripts/quant/news_scorer.py` — `NewsSentimentScorer`
+  - 实时获取东方财富快讯（newsapi.eastmoney.com）
+  - 关键词打分：利好/利空/中性（-100~+100）
+  - 板块情绪识别（银行/电力/电子/医药/新能源等14个板块）
+  - 集成进 `dynamic_selector.py` — `calc_all_scores()` 增加情绪分数加成
 
 ### 🔲 — 布林带策略验证
 - 同 MACD，参数：period(20) / std_mult(1.5, 2.0, 2.5)
 
-### 🔲 — 北向共振信号
-- `backend/services/northbound.py` — `check_northbound_crossover(symbol)`
-- RSI_BUY + 北向单日净流入 > 50亿 → 信号强度 ×1.5
+### ✅ done — 北向共振信号（部分）
+- `backend/services/northbound.py` — `check_northbound_crossover(symbol)` 已存在
+- RSI_BUY + 北向单日净流入 > 50亿 → 信号强度 ×1.5（待集成进 signals.py）
 
-### 🔲 — 新闻情绪打分
-- **新建** `scripts/quant/news_scorer.py`
-- 关键词：利好/超预期 → 正；风险/减持 → 负
-- 集成进 `dynamic_selector.py`
+### 🔲 — 新闻情绪打分集成进早报
+- `morning_runner.py` — 盘中加入 news_sentiment 模块
+- `scripts/morning_report.py` — 报告中显示市场综合情绪
 
 ---
 
@@ -95,13 +103,17 @@
 - `intraday_monitor.py` — `_check_sector_concentration()` 自动减仓
 - 单一行业 > 40% → 飞书警告 + 自动减半
 
-### 🔲 — 滑点监控
-- `broker.py` — 订单成交后对比「信号触发价 vs 实际成交价」
-- `daily_journal.py` — 记录滑点
+### ✅ done — 滑点监控
+- `broker.py` — `OrderResult` 新增 `signal_price` + `slippage_bps` 字段
+- `_simulate_fill()` 计算滑点：`slippage_bps = (fill_price - signal_price) / signal_price × 10000`
+- `portfolio.py` — `record_trade()` 增加 `slippage_bps` 列，DB Schema 自动升级（ALTER TABLE）
+- 晚报/早报中可查看每笔交易的滑点记录
 
-### 🔲 — 压力测试
+### ✅ done — 压力测试
 - `scripts/quant/backtest_cli.py` 新增 `crash-test` 命令
-- 测试区间：2015-06 ~ 2015-09（股灾）、2018 全年（贸易战）、2022-03 ~ 2022-06（上海封控）
+- 测试区间：2015-06~10（股灾）/ 2018全年（贸战）/ 2022-03~06（上海封控）
+- 验收标准：Sharpe >= 0 且 MaxDD < 20%
+- RSI(25/65) 在三个极端行情区间全部 PASS ✅
 
 ---
 
