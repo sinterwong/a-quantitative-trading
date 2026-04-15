@@ -1392,7 +1392,7 @@ def run_macd_compare(symbol: str = '510310.SH',
 
 def main():
     parser = argparse.ArgumentParser(description='S1 Backtest CLI')
-    parser.add_argument('command', choices=['single', 'grid', 'compare', 'wf', 'fcompare', 'crash-test', 'macd-compare', 'boll-compare'],
+    parser.add_argument('command', choices=['single', 'grid', 'compare', 'wf', 'fcompare', 'crash-test', 'macd-compare', 'boll-compare', 'regime-wfa'],
                         help='single | grid | compare | wf | fcompare | crash-test | macd-compare | boll-compare')
     parser.add_argument('symbol', nargs='?', default='510310.SH',
                         help='Symbol code (default: 510310.SH)')
@@ -1469,6 +1469,13 @@ def main():
         result = run_macd_compare(symbol=args.symbol, capital=args.capital)
     elif args.command == 'boll-compare':
         result = run_boll_compare(symbol=args.symbol, capital=args.capital)
+    elif args.command == 'regime-wfa':
+        result = run_regime_wfa(
+            symbol=args.symbol,
+            train_years=args.train_years,
+            test_years=args.test_years,
+            capital=args.capital,
+        )
     else:
         result = {}
 
@@ -1562,6 +1569,248 @@ def run_boll_compare(symbol: str = '510310.SH',
         'rsi_bb': result_b,
         'delta_sharpe': delta_sharpe,
         'winner': 'RSI+BB' if delta_sharpe >= 0 else 'RSI',
+    }
+
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P4 市场环境自适应 WFA — RSI(25/65) 固定 vs 环境自适应
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _detect_historical_regime(kline: list, lookback: int = 60) -> str:
+    """
+    根据 kline 末 lookback 天数据判断环境。
+    逻辑与 regime_detector.py 一致，但基于历史 K 线。
+    """
+    import numpy as np
+    import pandas as pd
+    if len(kline) < lookback + 5:
+        return 'CALM'
+    closes = np.array([float(k['close']) for k in kline[-lookback:]], dtype=float)
+    highs  = np.array([float(k['high'])  for k in kline[-lookback:]], dtype=float)
+    lows   = np.array([float(k['low'])   for k in kline[-lookback:]], dtype=float)
+
+    ma20 = pd.Series(closes).rolling(20).mean().iloc[-1]
+    ma60 = pd.Series(closes).rolling(60).mean().iloc[-1] if len(closes) >= 60 else ma20
+    close = closes[-1]
+
+    trs = np.maximum(highs[1:] - lows[1:], np.abs(highs[1:] - closes[:-1]), np.abs(lows[1:] - closes[:-1]))
+    atr_arr = pd.Series(trs).rolling(14).mean().dropna().values
+    if len(atr_arr) < 30:
+        return 'CALM'
+    current_atr = atr_arr[-1]
+    max_atr = np.max(atr_arr[-30:])
+    atr_ratio = current_atr / max_atr if max_atr > 0 else 0.0
+
+    if close > ma20 and ma20 > ma60:
+        return 'BULL'
+    elif close < ma20 and ma20 < ma60:
+        return 'BEAR'
+    elif atr_ratio > 0.85:
+        return 'VOLATILE'
+    else:
+        return 'CALM'
+
+
+REGIME_RSI_PARAMS = {
+    'BULL':     {'rsi_buy': 25, 'rsi_sell': 65, 'atr_threshold': 0.90},
+    'BEAR':     {'rsi_buy': 40, 'rsi_sell': 70, 'atr_threshold': 0.80},
+    'VOLATILE': {'rsi_buy': 30, 'rsi_sell': 60, 'atr_threshold': 0.80},
+    'CALM':     {'rsi_buy': 25, 'rsi_sell': 65, 'atr_threshold': 0.85},
+}
+
+
+def run_regime_wfa(symbol: str = '510310.SH',
+                   train_years: int = 2,
+                   test_years: int = 1,
+                   capital: float = 200000) -> Dict:
+    """
+    对比测试：固定 RSI(25/65) vs 市场环境自适应 RSI
+    - 固定策略：全程 RSI(25/65)
+    - 自适应策略：根据历史检测到的市场环境选择对应 RSI 参数
+    验收标准：自适应 Sharpe >= 固定 Sharpe × 1.30
+    """
+    from collections import Counter
+
+    end_date   = datetime.now().strftime('%Y%m%d')
+    start_date = (datetime.now() - timedelta(days=train_years * 365 + test_years * 365 + 120)).strftime('%Y%m%d')
+
+    print(f"\n{'='*65}")
+    print(f"  [REGIME-WFA] 市场环境自适应 WFA: {symbol}")
+    print(f"  Train: {train_years}y | Test: {test_years}y | Period: {start_date}~{end_date}")
+    print(f"{'='*65}")
+
+    loader = DataLoader()
+    kline = loader.get_kline(symbol, start_date, end_date)
+    if not kline:
+        print("  [FAIL] Data load failed")
+        return {}
+
+    print(f"  [OK] Data: {len(kline)} days ({kline[0]['date'][:10]} ~ {kline[-1]['date'][:10]})")
+
+    # ── A. 固定策略 RSI(25/65) ─────────────────────────────────────────────
+    print(f"\n  [A] 固定策略 RSI(25/65)...")
+
+    def fixed_strategy(data, params):
+        sig = RSISignalFunc(rsi_buy=25, rsi_sell=65, rsi_period=14)
+        sig.setup(data)
+        return sig
+
+    wfa_fixed = WalkForwardAnalyzer(
+        data=kline, strategy_func=fixed_strategy,
+        param_grid={}, train_years=train_years, test_years=test_years,
+    )
+    fixed_results = wfa_fixed.run(stop_loss=0.05, take_profit=0.20, trailing_stop=None, min_trades=4)
+    fixed_summary = wfa_fixed.summarize(fixed_results) if fixed_results else {}
+
+    # ── B. 环境自适应策略 ────────────────────────────────────────────────────
+    print(f"  [B] 环境自适应策略...")
+
+    # 检测整个数据集每个窗口训练期末的 Regime
+    def get_test_period_regime(test_kline: list) -> str:
+        if not test_kline:
+            return 'CALM'
+        return _detect_historical_regime(test_kline, lookback=60)
+
+    # WalkForwardAnalyzer splits: train = [:split_idx], test = [split_idx:]
+    # We use last 60 days of train to detect regime for that window
+    regime_counter = Counter()
+    window_regimes = []
+
+    # We need to manually walk through the split points
+    total_days = len(kline)
+    # Approximate: 1 year ~ 244 trading days
+    train_days = int(train_years * 244)
+    test_days  = int(test_years * 244)
+    step_days  = test_days
+
+    n_windows = 0
+    split_points = []
+    split = train_days
+    while split + test_days <= total_days:
+        split_points.append((split, split + test_days))
+        n_windows += 1
+        split += step_days
+
+    print(f"  Windows detected: {n_windows}")
+
+    adaptive_sharpes = []
+    adaptive_returns = []
+    adaptive_maxdds  = []
+
+    for w_idx, (train_end, test_end) in enumerate(split_points):
+        train_kline = kline[:train_end]
+        test_kline  = kline[train_end:test_end]
+
+        if len(train_kline) < 60 or len(test_kline) < 20:
+            continue
+
+        regime = _detect_historical_regime(train_kline, lookback=min(60, len(train_kline) // 2))
+        window_regimes.append(regime)
+        regime_counter[regime] += 1
+
+        params = REGIME_RSI_PARAMS.get(regime, REGIME_RSI_PARAMS['CALM'])
+
+        # Run single backtest on test period
+        test_start = test_kline[0]['date'][:10]
+        test_end_str = test_kline[-1]['date'][:10]
+
+        from backtest import BacktestEngine
+        bt = BacktestEngine(
+            initial_capital=capital,
+            stop_loss=params.get('stop_loss', 0.05),
+            take_profit=params.get('take_profit', 0.20),
+            trailing_stop=None,
+            atr_multiplier=0,
+            max_position_pct=0.3,
+        )
+        sig = RSISignalFunc(rsi_buy=params['rsi_buy'], rsi_sell=params['rsi_sell'], rsi_period=14)
+        sig.setup(test_kline)  # compute RSI on TEST data (not train data)
+        test_result = bt.run(test_kline, sig)
+
+        sharpe = test_result.get('sharpe_ratio', 0) or 0.0
+        ret    = test_result.get('total_return_pct', 0) or 0.0
+        maxdd  = test_result.get('max_drawdown_pct', 0) or 0.0
+        n_trades = test_result.get('total_trades', 0)
+
+        adaptive_sharpes.append(sharpe)
+        adaptive_returns.append(ret)
+        adaptive_maxdds.append(maxdd)
+
+    # ── 对比结果 ─────────────────────────────────────────────────────────────
+    avg_fixed_sharpe   = fixed_summary.get('avg_sharpe', 0) or 0.0
+    avg_fixed_return   = fixed_summary.get('avg_return', 0) or 0.0
+    avg_fixed_maxdd    = fixed_summary.get('avg_maxdd', 0) or 0.0
+    avg_fixed_winrate  = fixed_summary.get('win_rate_pct', 0) or 0.0
+    fixed_pos_pct      = fixed_summary.get('win_rate_pct', 0) or 0.0
+
+    if adaptive_sharpes:
+        avg_adapt_sharpe  = sum(adaptive_sharpes) / len(adaptive_sharpes)
+        avg_adapt_return  = sum(adaptive_returns) / len(adaptive_returns)
+        avg_adapt_maxdd   = sum(adaptive_maxdds) / len(adaptive_maxdds)
+        adaptive_pos_pct  = sum(1 for s in adaptive_sharpes if s > 0) / len(adaptive_sharpes) * 100
+        n_adapt_windows   = len(adaptive_sharpes)
+    else:
+        avg_adapt_sharpe = avg_adapt_return = avg_adapt_maxdd = 0
+        adaptive_pos_pct = n_adapt_windows = 0
+
+    improvement = (avg_adapt_sharpe - avg_fixed_sharpe) / abs(avg_fixed_sharpe) if avg_fixed_sharpe != 0 else 0
+    improvement_pct = improvement * 100
+
+    print(f"\n{'='*65}")
+    print(f"  [SUMMARY] Regime-WFA Results ({n_windows} windows)")
+    print(f"{'='*65}")
+    print(f"  {'Metric':<22} {'Fixed RSI(25/65)':>18} {'Regime-Adaptive':>18} {'Diff':>10}")
+    print(f"  {'-'*68}")
+    print(f"  {'Avg Sharpe':<22} {avg_fixed_sharpe:>+18.3f} {avg_adapt_sharpe:>+18.3f} {avg_adapt_sharpe-avg_fixed_sharpe:>+10.3f}")
+    print(f"  {'Avg Return':<22} {avg_fixed_return:>+17.1f}% {avg_adapt_return:>+17.1f}% {avg_adapt_return-avg_fixed_return:>+9.1f}%")
+    print(f"  {'Avg MaxDD':<22} {avg_fixed_maxdd:>+18.1f}% {avg_adapt_maxdd:>+18.1f}% {avg_adapt_maxdd-avg_fixed_maxdd:>+10.1f}%")
+    print(f"  {'Positive Windows':<22} {fixed_pos_pct:>17.0f}% {adaptive_pos_pct:>17.0f}% {adaptive_pos_pct-fixed_pos_pct:>+9.0f}%")
+
+    print(f"\n  Regime distribution: {dict(regime_counter)}")
+    print(f"  Regime params used: {dict(REGIME_RSI_PARAMS)}")
+
+    print(f"\n  验收标准:")
+    print(f"    自适应 Sharpe >= 固定 Sharpe x 1.30: ", end='')
+    target = avg_fixed_sharpe * 1.30
+    if avg_adapt_sharpe >= target:
+        print(f"[PASS] {avg_adapt_sharpe:+.3f} >= {target:+.3f}")
+    else:
+        print(f"[FAIL] {avg_adapt_sharpe:+.3f} < {target:+.3f} (固定基准 {avg_fixed_sharpe:+.3f})")
+
+    print(f"    自适应正收益窗口 >= 80%: ", end='')
+    if adaptive_pos_pct >= 80:
+        print(f"[PASS] {adaptive_pos_pct:.0f}%")
+    else:
+        print(f"[FAIL] {adaptive_pos_pct:.0f}%")
+
+    print(f"\n  相对固定策略提升:")
+    if improvement_pct >= 30:
+        print(f"    Sharpe 提升: {improvement_pct:+.1f}% [PASS]")
+    elif improvement_pct >= 0:
+        print(f"    Sharpe 提升: {improvement_pct:+.1f}% [WEAK]")
+    else:
+        print(f"    Sharpe 变化: {improvement_pct:+.1f}% [REGRESSION]")
+
+    return {
+        'fixed': {
+            'avg_sharpe': avg_fixed_sharpe,
+            'avg_return': avg_fixed_return,
+            'avg_maxdd': avg_fixed_maxdd,
+            'positive_pct': fixed_pos_pct,
+            'windows': len(fixed_results) if fixed_results else 0,
+        },
+        'adaptive': {
+            'avg_sharpe': avg_adapt_sharpe,
+            'avg_return': avg_adapt_return,
+            'avg_maxdd': avg_adapt_maxdd,
+            'positive_pct': adaptive_pos_pct,
+            'n_windows': n_adapt_windows,
+            'regime_dist': dict(regime_counter),
+        },
+        'improvement_pct': improvement_pct,
+        'target_met': avg_adapt_sharpe >= target and adaptive_pos_pct >= 80,
     }
 
 
