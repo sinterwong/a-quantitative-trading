@@ -88,47 +88,58 @@
 
 ## P6 · 绩效归因 + 参数自适应
 
-### 🔲 — 绩效归因报告
+### ✅ — 绩效归因报告
 - **新建** `scripts/quant/performance_report.py`
 - 周度运行（每周一推送上周报告）：
-  - 总收益 / 夏普 / 最大回撤
-  - 盈利来源：RSI 信号贡献 vs MACD 信号贡献 vs BBANDS 信号贡献
-  - 亏损分析：止损 vs 回撤熔断 vs 高波动屏蔽（是否正确）
-  - 滑点总结（avg / max）
-  - 行业集中度回顾
-- 格式：飞书文本推送
+  - 总收益 / 年化收益 / 夏普比率 / 最大回撤（日线数据计算）
+  - 盈利来源：按信号类型（RSI/MACD/BBANDS）统计胜率/均值
+  - 亏损分析：轻度/中度/重度亏损分层 + 最大亏损标的
+  - 滑点总结（avg / P95 / max）
+  - 行业集中度：交易分布 + 风险预警（>50%触发提示）
+  - 格式：飞书文本推送
+- 周一 cron 触发：`python scripts/quant/performance_report.py --days 7`
 
-### 🔲 — 参数自适应更新
-- `walkforward.py` 每月第一个交易日运行
-- 输出：`live_params.json` 自动更新 RSI 参数
-- 保留人工审核步骤（更新前输出变更内容，人工确认后写入）
-- 推送飞书通知：`参数更新：RSI(25/65) → RSI(30/68)，原因：WFA 10窗口平均 Sharpe 下降`
+### ✅ — 参数自适应更新
+- **新建** `scripts/regime_wfa.py`
+- 每月第一个交易日自动运行 WFA 分析（2年训练/1年测试窗口）
+- 对 watchlist 每个标的执行 RSI 网格搜索，统计最优 RSI 参数
+- 决策逻辑：
+  - Sharpe 提升 ≥ 0.10 且 RSI 差值 ≤ 5 → **自动批准**
+  - Sharpe 提升 ≥ 0.10 但 RSI 差值 > 5 → **人工审批**
+  - Sharpe 无提升 → **拒绝变更**
+- 变更时推送飞书审批通知（`FEISHU_WEBHOOK`）
+- 通过 `--auto-approve` 标志自动写入 `live_params.json`
 
-### 🔲 — 动态选股环境感知
-- `dynamic_selector.py` — 大盘 20日均线状态传入选股
-- Bull 市：偏重趋势动量（tech_score × 1.2）
-- Bear 市：偏重防御（电力/医药/消费）× 1.2
-- 减少在 Bear 市追高热门板块
+### ✅ — 动态选股环境感知
+- **修改** `scripts/dynamic_selector.py`（P6.3 patch）
+- `DynamicStockSelectorV2.__init__(regime='CALM')` 接受市场环境参数
+- `_regime_modulate(score_dict, regime)` 根据环境调制板块评分：
+  - **BULL**: 动量板块（AI/芯片/5G/军工/新能源）× 1.2
+  - **BEAR**: 防御板块（电力/医药/消费/银行）× 1.2，非防御 × 0.85
+  - **VOLATILE**: 全部分数 × 0.80（降低敏感度）
+  - **CALM**: 不变
+- `select_stocks(top_n, regime=None)` 支持传入当前环境参数
+- `morning_runner.py` 调用时传入 `get_regime_params()['regime']`
 
 ---
 
 ## P7 · 风险管理精细化
 
-### 🔲 — 单一标的仓位上限
-- 当前：单笔 Kelly × 0.5
-- 新增：单标的最高占总仓位 25%（防止单一标的黑天鹅）
-- 写入 `broker.py` submit_order 检查
+### ✅ — 单一标的仓位上限（25%）
+- `broker.py` submit_order 内置前检查：
+  - 新开仓：超出 25% 权益上限 → 自动压缩至上限
+  - 已有持仓超标 → 拒绝开仓
 
-### 🔲 — ATR 移动止盈（Chandelier Exit）
-- 现有 ATR 止损完善为：固定止损 → ATR 跟踪止盈
-- 多头持仓：从入场高点减去 3×ATR 作为移动止损
-- 每次收盘更新
+### ✅ — Chandelier Exit（3×ATR）
+- `signals.py` check_atr_trailing_stop() 已完整实现（最高价 - 3×ATR）
+- `intraday_monitor.py` 止盈循环中优先执行 ATR 移动止盈
 
-### 🔲 — 北向共振精细化
-- 现有：北向净流入 > 50亿 → 信号强化
-- 升级：区分北向"持续流入"（连续3日）vs "单日脉冲"
-- 单日脉冲：信号强化 +1；持续流入：信号强化 +2
-- 新增 `backend/services/northbound.py` — `get_north_flow_direction(symbol)` → 3日趋势
+### ✅ — 北向共振精细化（持续 vs 脉冲）
+- `northbound.py` 新增三个函数：
+  - get_north_flow_direction(threshold_yi=50.0) → strength=2(持续)/1(脉冲)/0(中性)
+  - get_north_flow_history() → 读取/写入 north_flow_history.json
+  - NorthBoundAlertChecker → 大幅净流入/出推送
+- `signals.py` evaluate_signal() 集成：strength=2 → 北向持续共振+XXX亿；strength=1 → 北向脉冲+XXX亿
 
 ---
 
@@ -143,7 +154,23 @@
 
 ---
 
-## 已完成 → 70 分基线
+## 已完成 → 85 分目标
+
+### P6 已完成
+| 任务 | 文件 |
+|------|------|
+| 周度绩效归因报告 | `scripts/quant/performance_report.py` |
+| 参数自适应 WFA | `scripts/regime_wfa.py` |
+| 动态选股环境感知 | `scripts/dynamic_selector.py` (P6.3 patch) |
+
+### P7 已完成
+| 任务 | 文件 |
+|------|------|
+| 单标的仓位上限 25% | `broker.py` |
+| Chandelier Exit 3×ATR | `signals.py` + `intraday_monitor.py` |
+| 北向共振精细化 | `northbound.py` |
+
+## 历史已完成
 
 | 任务 | 优先级 | 文件 |
 |------|--------|------|
