@@ -1086,6 +1086,10 @@ class IntradayMonitor:
         app_secret = os.environ.get('FEISHU_APP_SECRET', '')
         user_open_id = os.environ.get('FEISHU_USER_OPEN_ID', '')
 
+        if not app_id or not app_secret or not user_open_id:
+            logger.debug('Feishu not configured (FEISHU_APP_ID/SECRET/USER_OPEN_ID), skipping push')
+            return
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
