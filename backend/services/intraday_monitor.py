@@ -1082,9 +1082,9 @@ class IntradayMonitor:
     def _deliver_alert(self, text: str, alert_type: str = 'POSITION',
                        symbol: str = '', price: float = None, pct: float = None):
         """通过飞书 IM API 推送文本消息给用户，并记录到历史。"""
-        app_id = 'cli_a9217a3f3f389cc2'
-        app_secret = '5kOAKAmFzhySMYQB9nV5ndInIlWS43mt'
-        user_open_id = 'ou_b8add658ac094464606af32933a02d0b'
+        app_id = os.environ.get('FEISHU_APP_ID', '')
+        app_secret = os.environ.get('FEISHU_APP_SECRET', '')
+        user_open_id = os.environ.get('FEISHU_USER_OPEN_ID', '')
 
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
