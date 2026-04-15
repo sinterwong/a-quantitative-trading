@@ -756,7 +756,7 @@ class IntradayMonitor:
 
             params = self._get_params(sym)
             tp_pct = params.get('take_profit', 0.25)
-            atr_multiplier = params.get('atr_multiplier', 2.0)
+            atr_multiplier = params.get('atr_multiplier', 3.0)  # Chandelier Exit: 3x ATR
 
             snap = fetch_realtime(sym)
             if not snap or snap.get('price', 0) <= 0:
