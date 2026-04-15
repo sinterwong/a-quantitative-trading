@@ -289,13 +289,23 @@ class OrderFlowFactor(Factor):
 
 ---
 
-## Phase 5 · 组合优化器
+## Phase 5 · 组合优化器 ✅ 完成
 
-```python
-class MeanVarianceOptimizer:
-    """Black-Litterman + 均值方差优化"""
-    def optimize(self, signals, cov_matrix, risk_aversion=1.0) -> Dict[str, float]:
-        # max Sharpe 或 min Variance 目标权重
+> **状态**：完成，10/10 测试通过，已提交 `4ba04a6`
+
+### 已实现组件
+
+**`core/portfolio.py`**
+- `BlackLittermanModel`: 均衡收益 π=δΣw_mkt + 主观观点合并（绝对/相对观点）
+- `MeanVarianceOptimizer`: Markowitz 均值方差（max_sharpe/min_vol/equal_weight）
+- `RiskParityOptimizer`: 风险平价组合（Newton迭代）
+- `SignalWeighter`: 因子信号→组合权重（strength/rank/blend）
+
+端到端示例（港股三标的 BL→MaxSharpe）：
+```
+观点：小米(H01810) 比 腾讯(00700) 多跌 5%
+结果：腾讯51% / 阿里39% / 小米10%
+Sharpe: 0.217, Vol: 15.8%
 ```
 
 ---
