@@ -1,150 +1,180 @@
 # TODO — 开发任务
 
 > 最后更新：2026-04-15
-> 当前基线：回测框架完成（backtest_cli.py），RSI WFA 验证通过（沪深300 Sharpe=0.467）
+> 当前基线：回测框架完成，RSI WFA Sharpe=0.467，70分级别
+> 目标：专业级个人量化系统 → 85分
 
 ---
 
-## P0 · 策略验证
+## 📊 目标分解：从 70 → 85 分
 
-### ✅ done — 回测引擎 CLI
-- `scripts/quant/backtest_cli.py` — single / grid / compare / wf / fcompare 命令
-
-### ✅ done — RSI 参数验证（沪深300）
-- 最优：RSI(25/65)，SL=5%，TP=20%，ATR_threshold=0.90
-- WFA 10 窗口 avg_sharpe=0.467，正收益窗口 70%
-- ATR 阈值选 0.90（回测最优）
-
-### ✅ done — ATR ratio 计算
-- `backend/services/signals.py` — `_compute_atr_ratio(symbol, period=14, lookback=20)`
-- ATR ratio = 当前ATR / 近20日ATR最高值
-
-### ✅ done — RSI BUY 高波动屏蔽
-- `evaluate_signal()` — ATR ratio > atr_threshold 时 RSI BUY 变为 HOLD
-- `DEFAULT_ATR_THRESH = 0.90`
-
-### ✅ done — intraday_monitor ATR 集成
-- `backend/services/intraday_monitor.py` — 两处 evaluate_signal 调用均传入 atr_threshold
-- 参数来源：`params.json` → `live_params.json`
+| 维度 | 当前(70) | 目标(85) | 核心任务 |
+|------|---------|---------|---------|
+| 策略稳健性 | 单一 RSI，Sharpe=0.467 | 动态切换多策略，Sharpe≥0.8 | 市场环境识别 + 多策略组合 |
+| 策略执行力 | 手动确认信号 | 全自动闭环，零干预 | 盘中自动化 + 实盘对接 |
+| 参数适应性 | 固定参数 | 市场环境自适应 | WFA 定期自动更新参数 |
+| 绩效分析 | 无 | 完整归因 + 周报 | 日志分析 + 归因报告 |
+| 数据质量 | 东方财富为主 | 多源共振，更稳定 | 北向共振精细化 |
 
 ---
 
-## P1 · 信号质量
+## P4 · 市场环境识别 + 多策略组合（核心突破）
 
-### ✅ done — 基本面过滤
-- **新建** `backend/services/fundamentals.py`
-- `fetch_fundamentals(symbol)` → PE/PB/股息率（市价 HTTP）
-- `check_fundamentals_filter(symbol)` → PE>80 / PB>15 拒绝；ETF（PE=PB=0）跳过
-- 集成进 `evaluate_signal()` RSI BUY 前置检查
+> **目标**：Sharpe 从 0.467 提升至 ≥ 0.8
+> **核心思路**：不同市场环境使用不同策略参数
 
-### ✅ done — confirm_signal_minute 集成
-- `intraday_monitor.py` — WATCH_BUY/RSI_BUY 信号均调用分钟RSI二次确认
+### 🔲 — 市场环境识别引擎
+- **新建** `scripts/quant/regime_detector.py`
+- 四种环境：
+  - **BULL** — 上证站上 20日均线 AND 均线多头排列
+  - **BEAR** — 上证跌破 20日均线 AND 均线空头排列
+  - **VOLATILE** — ATR ratio > 0.85（高波动，均值回归失效）
+  - **CALM** — ATR ratio ≤ 0.85 AND 趋势不明朗
+- 每日 9:30 开盘前运行一次，结果缓存全天
 
----
+### 🔲 — 策略参数表（按环境）
+- **Bull**: RSI(25/65) + 不屏蔽（顺势持有）
+- **Bear**: RSI(40/70) + 高波动屏蔽更严格
+- **Volatile**: RSI(30/60) + ATR_threshold 0.80（更保守）
+- **Calm**: RSI(25/65) + ATR_threshold 0.85（标准）
+- 参数表硬编码在 `regime_detector.py`
 
-## P1 · 风控
+### 🔲 — 多策略组合器
+- **新建** `scripts/quant/strategy_ensemble.py`
+- `get_strategy_for_regime(regime)` → 返回对应信号函数
+- 支持策略：RSI / RSI+MACD / RSI+BBANDS 三种
+- 盘中每次信号检查调用 `ensemble.get_signal()`
 
-### ✅ done — 组合熔断
-- `backend/services/intraday_monitor.py` — `_check_portfolio_risk()`
-- DD > 8% → 警告 + 仓位减半；DD > 12% → 全量清仓
-- 权益新高自动重置熔断状态
-
-### ✅ done — Kelly 仓位管理器
-- **新建** `scripts/quant/position_sizer.py`
-- `compute_kelly(win_rate, avg_win, avg_loss)` → 半 Kelly（f* × 0.5）
-- 边界：最小 5%，最大 30%
-- `_calc_shares()` 使用 `_kelly_pct`；每日根据历史交易自动更新
-- `compute_kelly_from_trades(trades)` → 从交易记录估算 Kelly
-
----
-
-## P2 · 信号多元化（待实现）
-
-### ✅ done — MACD 策略验证
-- `scripts/quant/backtest_cli.py` 新增 `macd-compare` 命令
-- 参数：fast(12) / slow(26) / signal(9)
-- `MACDSignalFunc` — MACD 零轴金叉/死叉
-- `RSIPlusMACDSignalFunc` — RSI 金叉 + MACD histogram>0 确认
-- 对比纯 RSI vs RSI+MACD 共振
-
-### ✅ done — 新闻情绪打分
-- **新建** `scripts/quant/news_scorer.py` — `NewsSentimentScorer`
-  - 实时获取东方财富快讯（newsapi.eastmoney.com）
-  - 关键词打分：利好/利空/中性（-100~+100）
-  - 板块情绪识别（银行/电力/电子/医药/新能源等14个板块）
-  - 集成进 `dynamic_selector.py` — `calc_all_scores()` 增加情绪分数加成
-
-### ✅ done — 布林带策略验证
-- `scripts/quant/backtest_cli.py` 新增 `boll-compare` 命令
-- `BBANDSFunc` — 价格下穿上轨=卖出，下穿下轨=买入
-- `RSIPlusBBANDSFunc` — RSI<=35 布林下轨共振买入 / RSI>=65 布林上轨共振卖出
-
-### ✅ done — 北向共振信号
-- `signals.py` — `_get_northbound_check()` 懒加载 `fetch_kamt`
-- `evaluate_signal()` 中 RSI_BUY 触发时检测北向净流入
-- 北向净流入 > 50亿 → 信号原因后附加 `｜北向共振+X亿`
-
-### ✅ done — 新闻情绪打分集成进早报
-- **新建** `scripts/morning_report.py` — 独立早报生成模块
-- 支持：【市场情绪】【大盘指数】【关注标的】【精选资讯】四大模块
-- 集成 `news_scorer.py` 的 `NewsSentimentScorer` 获取实时情绪 + 板块情绪
-- 盘中推送时网络异常不影响板块/选股数据（降级处理）
+### 🔲 — WFA 验证多策略效果
+- `backtest_cli.py` 新增 `regime-wfa` 命令
+- 对比：单策略 RSI(25/65) vs 环境自适应策略
+- 验收：Sharpe 提升 ≥ 30%，正收益窗口 ≥ 80%
 
 ---
 
-## P2 · 实盘对接
+## P5 · 全自动 Paper Trade 闭环（实盘对接第一阶段）
 
-### ✅ done — 涨跌停熔断（position-aware）
-- `signals.py` — `evaluate_signal()` 新增 `positions` 参数
-  - LIMIT_UP + 有持仓 → WATCH_SELL（止盈预警）
-  - LIMIT_UP + 无持仓 → LIMIT_UP（禁止追涨）
-  - LIMIT_DOWN + 有持仓 → RSI_SELL（紧急逃生）
-  - LIMIT_DOWN + 无持仓 → LIMIT_DOWN（禁止抄底）
-- `intraday_monitor.py` — 两处 evaluate_signal 均传入 positions
+> **目标**：每日 9:00 启动后，完全零人工干预运行至收盘
 
-### ✅ done — 行业集中度
-- `backend/services/sector_map.json` — 88 个 A 股代码映射
-- `portfolio.py` — `check_sector_concentration(positions, max_sector_pct=0.40)`
-- `intraday_monitor.py` — `_check_sector_concentration()` 自动减仓
-- 单一行业 > 40% → 飞书警告 + 自动减半
+### 🔲 — 早盘自动化（morning_runner.py 升级）
+- 9:00 动态选股 → 输出 watchlist
+- 9:05 对 watchlist 每只运行 `evaluate_signal()` → RSI_BUY 确认
+- 9:06 对确认标的计算 Kelly 仓位 → 发出 BUY 市价单
+- 9:10 同步日初净值 → Backend API
 
-### ✅ done — 滑点监控
-- `broker.py` — `OrderResult` 新增 `signal_price` + `slippage_bps` 字段
-- `_simulate_fill()` 计算滑点：`slippage_bps = (fill_price - signal_price) / signal_price × 10000`
-- `portfolio.py` — `record_trade()` 增加 `slippage_bps` 列，DB Schema 自动升级（ALTER TABLE）
-- 晚报/早报中可查看每笔交易的滑点记录
+### 🔲 — 持仓追踪升级
+- `intraday_monitor.py` — 持仓触发 WATCH_SELL 时记录信号原因
+- 持仓触发止损/止盈时记录完整日志（触发价格、时间、信号强度）
 
-### ✅ done — 压力测试
-- `scripts/quant/backtest_cli.py` 新增 `crash-test` 命令
-- 测试区间：2015-06~10（股灾）/ 2018全年（贸战）/ 2022-03~06（上海封控）
-- 验收标准：Sharpe >= 0 且 MaxDD < 20%
-- RSI(25/65) 在三个极端行情区间全部 PASS ✅
+### 🔲 — 收盘自动化（afternoon_report.py 升级）
+- 15:00 触发：
+  1. 查询所有今日持仓 → 计算浮动盈亏
+  2. 查询所有今日成交 → 计算已实现盈亏
+  3. 计算当日收益 → 记录 `daily_meta`
+  4. 生成收盘晚报（持仓状态 + 全天信号回顾）
 
----
-
-## P3 · 架构
-
-### 🔲 — PostgreSQL 迁移
-- 设计 Schema → `scripts/migrate_sqlite_to_pg.py`
-- `portfolio.py` — SQLAlchemy + PostgreSQL
-
-### 🔲 — Backend 崩溃自动拉起
-- `GET /health` → 非 200 则自动重启（Windows Service / supervisord）
-
-### 🔲 — Redis 缓存层
-- 持仓/信号状态缓存，TTL：信号 5 分钟，持仓 1 分钟
+### 🔲 — 日志分析模块
+- **新建** `scripts/quant/daily_journal.py`
+- 字段：date / symbol / direction / entry_price / exit_price / shares / pnl / signal_reason / regime / slippage_bps
+- 功能：
+  - 统计各信号触发频率（RSI vs MACD vs BBANDS）
+  - 统计各环境下胜率（Bull vs Bear vs Volatile）
+  - 统计滑点分布（avg, p95）
 
 ---
 
-## 已完成总览
+## P6 · 绩效归因 + 参数自适应
 
-| 优先级 | 任务 | 文件 |
-|---------|------|------|
-| P0 | ATR ratio 计算 | `services/signals.py` |
-| P0 | RSI BUY 高波动屏蔽 | `services/signals.py` |
-| P0 | intraday_monitor ATR 集成 | `intraday_monitor.py` |
-| P0 | RSI 参数 WFA 验证 | `backtest_cli.py` |
-| P1 | 基本面过滤 PE/PB | `services/fundamentals.py` |
-| P1 | 组合熔断 8%/12% | `intraday_monitor.py` |
-| P1 | Kelly 仓位 | `scripts/quant/position_sizer.py` |
-| P1 | 分钟RSI 二次确认 | `intraday_monitor.py` |
+### 🔲 — 绩效归因报告
+- **新建** `scripts/quant/performance_report.py`
+- 周度运行（每周一推送上周报告）：
+  - 总收益 / 夏普 / 最大回撤
+  - 盈利来源：RSI 信号贡献 vs MACD 信号贡献 vs BBANDS 信号贡献
+  - 亏损分析：止损 vs 回撤熔断 vs 高波动屏蔽（是否正确）
+  - 滑点总结（avg / max）
+  - 行业集中度回顾
+- 格式：飞书文本推送
+
+### 🔲 — 参数自适应更新
+- `walkforward.py` 每月第一个交易日运行
+- 输出：`live_params.json` 自动更新 RSI 参数
+- 保留人工审核步骤（更新前输出变更内容，人工确认后写入）
+- 推送飞书通知：`参数更新：RSI(25/65) → RSI(30/68)，原因：WFA 10窗口平均 Sharpe 下降`
+
+### 🔲 — 动态选股环境感知
+- `dynamic_selector.py` — 大盘 20日均线状态传入选股
+- Bull 市：偏重趋势动量（tech_score × 1.2）
+- Bear 市：偏重防御（电力/医药/消费）× 1.2
+- 减少在 Bear 市追高热门板块
+
+---
+
+## P7 · 风险管理精细化
+
+### 🔲 — 单一标的仓位上限
+- 当前：单笔 Kelly × 0.5
+- 新增：单标的最高占总仓位 25%（防止单一标的黑天鹅）
+- 写入 `broker.py` submit_order 检查
+
+### 🔲 — ATR 移动止盈（Chandelier Exit）
+- 现有 ATR 止损完善为：固定止损 → ATR 跟踪止盈
+- 多头持仓：从入场高点减去 3×ATR 作为移动止损
+- 每次收盘更新
+
+### 🔲 — 北向共振精细化
+- 现有：北向净流入 > 50亿 → 信号强化
+- 升级：区分北向"持续流入"（连续3日）vs "单日脉冲"
+- 单日脉冲：信号强化 +1；持续流入：信号强化 +2
+- 新增 `backend/services/northbound.py` — `get_north_flow_direction(symbol)` → 3日趋势
+
+---
+
+## P8 · 数据源稳定化（持续性工程）
+
+### 🔲 — 北向资金接口多源备份
+- 东方财富 KAMT 限流时 → 切换到 Sina 财经北向数据
+
+### 🔲 — 日内数据缓存优化
+- 分钟 K 线数据（腾讯接口）缓存 1 分钟
+- 避免同一分钟重复请求造成限流
+
+---
+
+## 已完成 → 70 分基线
+
+| 任务 | 优先级 | 文件 |
+|------|--------|------|
+| RSI WFA 参数验证 | P0 | `backtest_cli.py` |
+| ATR ratio + RSI BUY 屏蔽 | P0 | `signals.py` |
+| Kelly 仓位管理 | P1 | `scripts/quant/position_sizer.py` |
+| 组合熔断（8%/12%）| P1 | `intraday_monitor.py` |
+| 基本面 PE/PB 过滤 | P1 | `services/fundamentals.py` |
+| 分钟 RSI 二次确认 | P1 | `intraday_monitor.py` |
+| 涨跌停熔断（position-aware）| P2 | `signals.py` |
+| 行业集中度检查 | P2 | `portfolio.py` + `sector_map.json` |
+| 滑点监控 | P2 | `broker.py` + `portfolio.py` |
+| 压力测试（crash-test）| P2 | `backtest_cli.py` |
+| MACD 策略验证 | P2 | `backtest_cli.py` |
+| 布林带策略验证 | P2 | `backtest_cli.py` |
+| 新闻情绪打分 | P2 | `news_scorer.py` |
+| 北向共振信号 | P2 | `signals.py` |
+| 早报生成模块 | P2 | `morning_report.py` |
+| 东方财富多源 fallback | P2 | `dynamic_selector.py`（Sina 备用）|
+| 飞书推送安全处理 | 安全 | `intraday_monitor.py` |
+| Credentials 移除 | 安全 | `.env` 外置 |
+
+---
+
+## 开发顺序（建议）
+
+```
+1. P7（数据稳定）→ 基础，确保其他功能不被限流打断
+2. P4（环境识别）→ 核心突破，Sharpe 提升的关键
+3. P5（全自动闭环）→ 让系统真正跑起来，产生可用日志
+4. P6（绩效归因）→ 基于日志验证 P4 效果
+5. P8（北向精细化）→ 锦上添花
+```
+
+---
+
+> 核心原则：每完成一个 P 块，推送一次并更新 TODO.md。不追求一次性全部完成，追求每次完成都有可测试的产出。
