@@ -27,6 +27,18 @@ from typing import Optional, NamedTuple
 
 logger = logging.getLogger('signals')
 
+# Lazy import to avoid circular dependency
+_fundamentals_check = None
+def _get_fundamentals_check():
+    global _fundamentals_check
+    if _fundamentals_check is None:
+        try:
+            from services.fundamentals import check_fundamentals_filter as f
+            _fundamentals_check = f
+        except Exception:
+            pass
+    return _fundamentals_check
+
 # A股盘中时间段（UTC+8）
 MARKET_MORNING_START    = (9, 35)   # 9:35 开盘后可检查
 MARKET_MORNING_END      = (11, 30)
@@ -748,7 +760,7 @@ def evaluate_signal(symbol: str,
         # 计算 ATR ratio（用于过滤高波动期买入信号）
         atr_ratio = _compute_atr_ratio(symbol, period=14, lookback=20)
         vol_high = (atr_ratio is not None) and (atr_ratio > atr_threshold)
-        atr_note = f' | [ATRratio={atr_ratio:.2f}>0.85 高波动屏蔽]' if vol_high else ''
+        atr_note = f' | [ATRratio={atr_ratio:.2f}>{atr_threshold} 高波动屏蔽]' if vol_high else ''
 
         if prev_rsi <= rsi_buy:
             if vol_high:
@@ -757,10 +769,23 @@ def evaluate_signal(symbol: str,
                     symbol=symbol, signal='HOLD',
                     price=price, pct=pct, prev_rsi=prev_rsi,
                     volume_ratio=vol_ratio, day_chg=day_chg or 0.0,
-                    reason=(f'RSI={prev_rsi:.0f}≤{rsi_buy}超卖+ATRratio={atr_ratio:.2f}>0.85 '
+                    reason=(f'RSI={prev_rsi:.0f}≤{rsi_buy}超卖+ATRratio={atr_ratio:.2f}>{atr_threshold} '
                             f'高波动期，RSI均值回归策略失效，屏蔽买入｜现价{price}'),
                     emitted_at=datetime.now().strftime('%H:%M:%S'),
                 )
+
+            # ── 基本面检查（PE/PB 过滤）────────────────────
+            fcheck = _get_fundamentals_check()
+            if fcheck:
+                passed, reason_brief = fcheck(symbol)
+                if not passed:
+                    return SignalAlert(
+                        symbol=symbol, signal='HOLD',
+                        price=price, pct=pct, prev_rsi=prev_rsi,
+                        volume_ratio=vol_ratio, day_chg=day_chg or 0.0,
+                        reason=(f'RSI={prev_rsi:.0f}≤{rsi_buy}超卖｜基本面拒绝：{reason_brief}｜现价{price}'),
+                        emitted_at=datetime.now().strftime('%H:%M:%S'),
+                    )
 
             if day_chg is not None and day_chg < -MOMENTUM_THRESHOLD:
                 signal = 'WATCH_BUY'
