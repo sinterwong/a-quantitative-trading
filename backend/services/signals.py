@@ -705,13 +705,23 @@ DEFAULT_ATR_THRESH = 0.85     # ATR ratio > 0.85 时为高波动，禁止开仓
 def evaluate_signal(symbol: str,
                     rsi_buy:     int = RSI_BUY_THRESHOLD,
                     rsi_sell:    int = RSI_SELL_THRESHOLD,
-                    atr_threshold: float = DEFAULT_ATR_THRESH) -> Optional[SignalAlert]:
+                    atr_threshold: float = DEFAULT_ATR_THRESH,
+                    positions: Optional[list] = None) -> Optional[SignalAlert]:
     """
     评估单只股票的全部信号。
+
+    Args:
+        positions: 当前持仓列表（每项含 symbol 字段），用于涨跌停时判断是否已有持仓。
     优先级：
       1. 涨跌停相关（最紧急）
       2. RSI 超买超卖
       3. 缩量预警
+
+    涨跌停逻辑（position-aware）：
+      LIMIT_UP + 有持仓 → WATCH_SELL（止盈预警，不追高买入）
+      LIMIT_UP + 无持仓 → LIMIT_UP（禁止买入）
+      LIMIT_DOWN + 有持仓 → RSI_SELL（紧急逃生）
+      LIMIT_DOWN + 无持仓 → LIMIT_DOWN（禁止抄底）
     """
     snap = fetch_realtime(symbol)
     if not snap or snap['price'] == 0:
@@ -725,8 +735,25 @@ def evaluate_signal(symbol: str,
     price = snap['price']
     vol_ratio = snap.get('vol_ratio')  # 腾讯内置量比参考
 
-    # ── 1. 涨跌停信号 ────────────────────────────────
+    # ── 1. 涨跌停信号（position-aware）───────────────────────
     if limit_signal in ('LIMIT_UP', 'LIMIT_RISK_UP', 'WATCH_LIMIT_UP'):
+        # 检查是否已有持仓
+        has_position = any(
+            (p.get('symbol') == symbol or p.get('symbol') == symbol.replace('.SH', '.SZ'))
+            for p in (positions or [])
+            if p.get('shares', 0) > 0
+        )
+        if has_position:
+            # 涨停持仓 → 发出止盈预警（ WATCH_SELL，而不是追买）
+            vol_note = '放量确认' if (vol_ratio and vol_ratio > 1.3) else '缩量诱多'
+            return SignalAlert(
+                symbol=symbol, signal='WATCH_SELL',
+                price=price, pct=pct, prev_rsi=prev_rsi,
+                volume_ratio=vol_ratio, day_chg=day_chg or 0.0,
+                reason=(f'涨停持仓预警！{vol_note}，持仓者注意止盈｜RSI={prev_rsi:.0f}｜现价{price}'),
+                emitted_at=datetime.now().strftime('%H:%M:%S'),
+            )
+        # 无持仓 → 禁止追涨
         reason_map = {
             'LIMIT_UP':        f"涨停！{'【放量确认真拉升】' if (vol_ratio and vol_ratio > 1.3) else '【缩量诱多风险】'}",
             'LIMIT_RISK_UP':  f"逼近涨停（距涨停{'%.1f'%(limit_dist*100)}%），{'量能充沛或继续封板' if (vol_ratio and vol_ratio > 1.3) else '量能萎缩需警惕'}",
@@ -741,6 +768,23 @@ def evaluate_signal(symbol: str,
         )
 
     if limit_signal in ('LIMIT_DOWN', 'LIMIT_RISK_DOWN', 'WATCH_LIMIT_DOWN'):
+        # 检查是否已有持仓
+        has_position = any(
+            (p.get('symbol') == symbol or p.get('symbol') == symbol.replace('.SH', '.SZ'))
+            for p in (positions or [])
+            if p.get('shares', 0) > 0
+        )
+        if has_position:
+            # 跌停持仓 → 紧急逃生（SELL，不等反弹）
+            urgency = {'LIMIT_DOWN': '⚠️', 'LIMIT_RISK_DOWN': '🔴', 'WATCH_LIMIT_DOWN': '🚨'}
+            return SignalAlert(
+                symbol=symbol, signal='RSI_SELL',
+                price=price, pct=pct, prev_rsi=prev_rsi,
+                volume_ratio=vol_ratio, day_chg=day_chg or 0.0,
+                reason=(f'{urgency.get(limit_signal, "")}跌停逃生！尽快减仓｜RSI={prev_rsi:.0f}｜现价{price}'),
+                emitted_at=datetime.now().strftime('%H:%M:%S'),
+            )
+        # 无持仓 → 禁止抄底
         urgency = {'LIMIT_DOWN': '⚠️', 'LIMIT_RISK_DOWN': '🔴', 'WATCH_LIMIT_DOWN': '🚨'}
         reason_map = {
             'LIMIT_DOWN':       "已跌停！【无法卖出】",

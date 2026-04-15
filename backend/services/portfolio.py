@@ -533,6 +533,74 @@ class PortfolioService:
         }
 
 
+# ─── 行业集中度检查 ───────────────────────────────────────────────
+
+def _load_sector_map() -> dict:
+    """加载行业映射表。"""
+    try:
+        import json, os
+        path = os.path.join(os.path.dirname(__file__), 'sector_map.json')
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        # Filter out metadata keys
+        return {k: v for k, v in data.items()
+                if not k.startswith('_') and not k.startswith('__')}
+    except Exception:
+        return {}
+
+
+def check_sector_concentration(positions: list,
+                                max_sector_pct: float = 0.40) -> list[dict]:
+    """
+    检查行业集中度风险。
+
+    Args:
+        positions: 持仓列表，每项含 symbol / current_value
+        max_sector_pct: 单一行业最大占比（默认 40%）
+
+    Returns:
+        需减仓的行业列表：[{sector, total_value, pct, reduce_pct}]
+        返回空列表表示无风险。
+    """
+    if not positions:
+        return []
+
+    sector_map = _load_sector_map()
+    sector_value: dict[str, float] = {}
+    total_equity = 0.0
+
+    for pos in positions:
+        sym = pos.get('symbol', '')
+        value = pos.get('current_value', 0.0) or 0.0
+        total_equity += value
+
+        # 去除 .SH / .SZ 后缀，匹配 sector_map
+        sym_key = sym.replace('.SH', '').replace('.SZ', '')
+        sector = '其他'
+        for key, name in sector_map.items():
+            if sym_key.startswith(key) or key in sym_key:
+                sector = name
+                break
+        sector_value[sector] = sector_value.get(sector, 0.0) + value
+
+    if total_equity <= 0:
+        return []
+
+    violations = []
+    for sector, val in sorted(sector_value.items(), key=lambda x: -x[1]):
+        pct = val / total_equity
+        if pct > max_sector_pct:
+            reduce_pct = pct - max_sector_pct
+            violations.append({
+                'sector': sector,
+                'total_value': round(val, 2),
+                'pct': round(pct * 100, 1),
+                'reduce_pct': round(reduce_pct * 100, 1),
+                'reduce_value': round(total_equity * reduce_pct, 2),
+            })
+    return violations
+
+
 # ============================================================
 # Standalone test
 # ============================================================

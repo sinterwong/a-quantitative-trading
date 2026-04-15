@@ -366,10 +366,11 @@ class IntradayMonitor:
                     rsi_buy=int(params.get('rsi_buy', 25)),
                     rsi_sell=int(params.get('rsi_sell', 65)),
                     atr_threshold=float(params.get('atr_threshold', 0.90)),
+                    positions=existing,
                 )
                 if not alert:
                     continue
-                if alert.signal not in ('RSI_BUY', 'WATCH_BUY', 'HOLD'):
+                if alert.signal not in ('RSI_BUY', 'WATCH_BUY', 'HOLD', 'RSI_SELL', 'WATCH_SELL'):
                     continue
                 # 分钟确认
                 confirmed, m_rsi, reason = confirm_signal_minute(sym, 'BUY')
@@ -558,6 +559,12 @@ class IntradayMonitor:
         # ── 组合熔断检查 ─────────────────────────────────
         self._check_portfolio_risk(positions)
 
+        # ── 行业集中度检查 ─────────────────────────────────
+        try:
+            self._check_sector_concentration(positions)
+        except Exception as e:
+            logger.warning('Sector concentration check error: %s', e)
+
         # 使用 WFA 优化参数逐个检查持仓信号
         from services.signals import evaluate_signal, format_feishu_message
         alerts = []
@@ -571,6 +578,7 @@ class IntradayMonitor:
                 rsi_buy=int(params.get('rsi_buy', 25)),
                 rsi_sell=int(params.get('rsi_sell', 65)),
                 atr_threshold=float(params.get('atr_threshold', 0.90)),
+                positions=positions,
             )
             if alert:
                 alerts.append(alert)
@@ -674,6 +682,51 @@ class IntradayMonitor:
             return
 
         logger.debug("Portfolio DD=%.1f%% warn_fired=%s", drawdown * 100, self._risk_warn_fired)
+
+    def _check_sector_concentration(self, positions: list):
+        """
+        检查行业集中度风险。
+        单一行业 > 40% 权益 → 推送飞书警告 + 强制减仓至 40%。
+        """
+        try:
+            from services.portfolio import check_sector_concentration
+        except Exception:
+            return
+
+        violations = check_sector_concentration(positions, max_sector_pct=0.40)
+        if not violations:
+            return
+
+        for v in violations:
+            logger.warning('Sector concentration violation: %s=%.1f%% (max 40%%)',
+                          v['sector'], v['pct'])
+            msg = (
+                f'[WARNING] 行业集中度风险！\n'
+                f'  行业: {v["sector"]}\n'
+                f'  当前占比: {v["pct"]}% (上限 40%)\n'
+                f'  需减仓: {v["reduce_value"]:.0f}元 ({v["reduce_pct"]}% 仓位)\n'
+                f'  时间: {datetime.now().strftime("%H:%M")}\n'
+                f'  ACTION: 减仓至 40%'
+            )
+            self._deliver_alert(msg)
+
+            # 自动减仓（broker 模式下）
+            if self._broker:
+                from services.portfolio import _load_sector_map
+                sector_map = _load_sector_map()
+                for pos in positions:
+                    sym = pos.get('symbol', '')
+                    shares = pos.get('shares', 0)
+                    if shares <= 0:
+                        continue
+                    sym_key = sym.replace('.SH', '').replace('.SZ', '')
+                    for key, name in sector_map.items():
+                        if sym_key.startswith(key) or key in sym_key:
+                            if name == v['sector']:
+                                half = shares // 2
+                                if half >= 100:
+                                    self._submit_market_sell(sym, half, reason='sector_concentration')
+                            break
 
 
     def _check_take_profits(self, positions, now: datetime):
