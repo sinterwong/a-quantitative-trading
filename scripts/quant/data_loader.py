@@ -52,6 +52,69 @@ class DataLoader:
         with open(cache_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, default=str)
 
+    def _is_hk_stock(self, symbol: str) -> bool:
+        """判断是否为港股
+        支持格式: '01810.HK' / 'hk01810' / '01810' (纯数字，代码在 AkShare 港股范围内)
+        """
+        s = symbol.upper()
+        if s.endswith('.HK'):
+            return True
+        if s.startswith('HK'):
+            return True
+        # 纯数字但明确是港股范围 (6位数以下，A股是6位，港股也是)
+        pure = s.replace('.HK', '').replace('.SH', '').replace('.SZ', '')
+        if pure.isdigit() and len(pure) == 5 and not pure.startswith(('1','5','8')):
+            # 港股代码特征: 01810, 00700, 09988 等
+            return True
+        return False
+
+    def _get_hk_hist(self, symbol: str, start_date: str, end_date: str) -> list:
+        """
+        使用 AkShare stock_hk_daily 获取港股历史K线
+        数据源: Eastmoney（非push2，受proxy影响小）
+        支持: 港股所有股票（01810/00700/09988等）
+        """
+        if not AKSHARE_AVAILABLE:
+            return []
+        # 提取纯数字代码: '01810.HK' -> '01810', 'hk00700' -> '00700'
+        # 注意：AkShare 港股代码必须保留前导零，如 '01810' 不是 '1810'
+        code = symbol.upper().replace('.HK', '').replace('HK', '')
+        # 保留前导零，如 '01810'
+        if not code:  # 如果变成空字符串（处理 'HK' 这种）
+            code = symbol.upper().replace('HK', '').replace('.HK', '').replace('.SH', '').replace('.SZ', '')
+        cache_key = f"hk_daily_{code}_{start_date}_{end_date}"
+        cached = self._get_cache(cache_key)
+        if cached:
+            print(f"[CACHE HK] {code}: {len(cached)} records")
+            return cached
+        try:
+            df = ak.stock_hk_daily(symbol=code)
+            if df is None or df.empty:
+                return []
+            # 已经是英文列名: date, open, high, low, close, volume
+            # 过滤日期范围
+            df['date'] = pd.to_datetime(df['date'])
+            start_dt = pd.to_datetime(start_date[:4] + '-' + start_date[4:6] + '-' + start_date[6:8])
+            end_dt   = pd.to_datetime(end_date[:4] + '-' + end_date[4:6] + '-' + end_date[6:8])
+            df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)].copy()
+            df = df.sort_values('date').reset_index(drop=True)
+            data = []
+            for _, row in df.iterrows():
+                data.append({
+                    'date':   str(row['date'])[:10],
+                    'open':   float(row['open']),
+                    'close':  float(row['close']),
+                    'high':   float(row['high']),
+                    'low':    float(row['low']),
+                    'volume': float(row['volume'])
+                })
+            self._save_cache(cache_key, data)
+            print(f"[OK] HK {code}: {len(data)} records via stock_hk_daily ({start_date} ~ {end_date})")
+            return data
+        except Exception as e:
+            print(f"[WARN] stock_hk_daily failed for {code}: {e}")
+            return []
+
     def get_kline(self, symbol: str, start_date: str, end_date: str, adjust: str = 'qfq') -> list:
         """
         获取K线数据 - 优先使用稳定接口
@@ -59,13 +122,20 @@ class DataLoader:
         Args:
             symbol: 代码格式支持:
                 - ETF: '159992.SZ', '512690.SH', '510300.SH' 等
-                - 股票: '600900.SH', '000001.SZ' 等
+                - A股: '600900.SH', '000001.SZ' 等
+                - 港股: '01810.HK', 'hk01810', '00700.HK' 等
             start_date: 'YYYYMMDD'
             end_date: 'YYYYMMDD'
 
         Returns:
             list of dicts: [{date, open, high, low, close, volume}, ...]
         """
+        # 港股（AkShare stock_hk_hist）
+        if self._is_hk_stock(symbol):
+            data = self._get_hk_hist(symbol, start_date, end_date)
+            if data:
+                return data
+
         # 尝试ETF接口
         if self._is_etf(symbol):
             data = self._get_etf_hist(symbol, start_date, end_date)

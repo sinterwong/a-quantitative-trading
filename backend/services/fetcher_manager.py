@@ -25,6 +25,7 @@ Usage:
 
 import logging
 import time
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -153,6 +154,12 @@ class DataFetcherManager:
             DataFetchError: 所有数据源均失败
         """
         errors: List[Tuple[str, str]] = []  # [(source, reason)]
+
+        # 默认日期处理
+        if end_date is None:
+            end_date = datetime.now().strftime('%Y%m%d')
+        if start_date is None:
+            start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
 
         for fetcher in self._fetchers:
             if not self._circuit_breaker.is_available(fetcher.name):

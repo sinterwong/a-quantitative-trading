@@ -18,6 +18,15 @@ monte_carlo.py — Monte Carlo 模拟
 
 import os
 import sys
+import io
+# Windows UTF-8 fix
+_STREAMLIT = hasattr(sys, '_streamlit_version') or 'streamlit' in sys.modules
+if sys.platform == 'win32' and sys.stdout.encoding != 'utf-8' and not _STREAMLIT:
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 import json
 import random
 import math

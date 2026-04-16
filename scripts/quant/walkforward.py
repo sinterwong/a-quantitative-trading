@@ -6,7 +6,16 @@ Walk-Forward Analysis (WFA) 引擎
 
 import os
 import sys
+import io
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Windows UTF-8 fix
+_STREAMLIT = hasattr(sys, '_streamlit_version') or 'streamlit' in sys.modules
+if sys.platform == 'win32' and sys.stdout.encoding != 'utf-8' and not _STREAMLIT:
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
 from backtest import BacktestEngine, TechnicalIndicators as TI
 import itertools

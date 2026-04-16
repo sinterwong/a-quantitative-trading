@@ -31,6 +31,15 @@ for k in list(os.environ.keys()):
     if 'proxy' in k.lower():
         del os.environ[k]
 
+# Windows 控制台 UTF-8 修复（Streamlit 环境下跳过，避免输出被吞）
+_STREAMLIT = hasattr(sys, '_streamlit_version') or 'streamlit' in sys.modules
+if sys.platform == 'win32' and sys.stdout.encoding != 'utf-8' and not _STREAMLIT:
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 QUANT_DIR = SCRIPT_DIR
 sys.path.insert(0, QUANT_DIR)

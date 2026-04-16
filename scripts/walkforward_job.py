@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# Windows 控制台 UTF-8 修复（必须在最早执行）
+import sys
+_STREAMLIT = hasattr(sys, '_streamlit_version') or 'streamlit' in sys.modules
+if sys.platform == 'win32' and sys.stdout.encoding != 'utf-8' and not _STREAMLIT:
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 """
 walkforward_job.py — Walk-Forward 自动训练任务
 ==============================================
@@ -160,14 +170,16 @@ def run_walkforward_for_symbol(symbol: str,
     print(f"  Train: {train_years}y | Test: {test_years}y")
     print(f"{'='*60}")
 
-    # 加载数据
+    # 加载数据（需要足够覆盖 train + test 整个窗口）
     loader = DataLoader()
     end_date = datetime.now().strftime('%Y%m%d')
-    start_date = (datetime.now() - timedelta(days=train_years * 365 + 60)).strftime('%Y%m%d')
+    total_years = train_years + test_years
+    start_date = (datetime.now() - timedelta(days=total_years * 365 + 60)).strftime('%Y%m%d')
 
     kline = loader.get_kline(symbol, start_date, end_date)
-    if len(kline) < train_years * 252:
-        print(f"  [SKIP] 数据不足，需要 ~{train_years*252} 天，实际 {len(kline)} 天")
+    required = total_years * 252
+    if len(kline) < required:
+        print(f"  [SKIP] 数据不足，需要 ~{required} 天（{total_years}y train+test），实际 {len(kline)} 天")
         return None
 
     print(f"  Data: {kline[0]['date'][:10]} ~ {kline[-1]['date'][:10]} ({len(kline)} days)")

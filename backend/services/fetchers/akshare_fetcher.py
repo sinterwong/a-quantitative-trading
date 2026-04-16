@@ -82,7 +82,14 @@ class AkshareFetcher(BaseFetcher):
 
         df: Optional[pd.DataFrame] = None
 
-        if _is_etf(pure):
+        # HK 股票检测（.HK 后缀或 5 位码以 0 开头）
+        is_hk = stock_code.upper().endswith('.HK') or (
+            len(pure) == 5 and pure[0] == '0'
+        )
+
+        if is_hk:
+            df = self._fetch_hk(pure, sd, ed)
+        elif _is_etf(pure):
             df = self._fetch_etf(pure, sd, ed)
         else:
             # 优先用新浪历史（最稳定），失败后用 AkShare 直连
@@ -128,6 +135,32 @@ class AkshareFetcher(BaseFetcher):
             return df
         except Exception as e:
             logger.warning("[AkshareFetcher] stock_zh_a_daily 失败 %s: %s", symbol, e)
+            return None
+
+    def _fetch_hk(self, pure: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
+        """使用 akshare.stock_hk_daily 获取港股日线"""
+        try:
+            # AkShare stock_hk_daily 需要原始 5 位代码（含前导零，如 '01810'）
+            # 不能用 lstrip('0')，否则 AkShare 内部解析失败（KeyError: 'date'）
+            hk_code = pure  # keep leading zeros: '01810', not '1810'
+            df = ak.stock_hk_daily(symbol=hk_code)
+            if df is None or df.empty:
+                return None
+            # date 列可能是 datetime.date object，转为 YYYY-MM-DD string
+            df = df.copy()
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'], errors='coerce').dt.strftime('%Y-%m-%d')
+                df = df[df['date'].notna()]
+            # 按日期过滤（start_date/end_date 格式为 YYYYMMDD）
+            if start_date:
+                df = df[df['date'] >= start_date[:4] + '-' + start_date[4:6] + '-' + start_date[6:8]]
+            if end_date:
+                df = df[df['date'] <= end_date[:4] + '-' + end_date[4:6] + '-' + end_date[6:8]]
+            if not df.empty:
+                logger.debug("[AkshareFetcher] HK %s: %d 行 via stock_hk_daily", hk_code, len(df))
+            return df
+        except Exception as e:
+            logger.warning("[AkshareFetcher] stock_hk_daily 失败 %s: %s", pure, e)
             return None
 
     def _to_akshare_symbol(self, pure: str) -> Optional[str]:

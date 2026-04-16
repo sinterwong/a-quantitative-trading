@@ -114,8 +114,8 @@ def get_live_params():
     """读取最新训练参数"""
     pfile = os.path.join(BACKEND_DIR, 'services', 'live_params.json')
     if os.path.exists(pfile):
-        with open(pfile) as f:
-            return json.load(f)
+        with open(pfile, encoding='utf-8') as f:
+            return json.loads(f.read())
     return {}
 
 # ─── 腾讯实时行情 ────────────────────────────────────────────
@@ -393,7 +393,7 @@ elif page == '🔍 动态选股':
                 import subprocess
                 result = subprocess.run(
                     [sys.executable, os.path.join(BASE_DIR, 'scripts', 'dynamic_selector.py')],
-                    capture_output=True, text=True, timeout=60,
+                    capture_output=True, encoding='utf-8', errors='replace', timeout=60,
                     env={**os.environ, 'PYTHONPATH': os.path.join(BASE_DIR, 'scripts')}
                 )
                 st.code(result.stdout[-2000:] if result.stdout else '无输出', language='text')
@@ -407,8 +407,8 @@ elif page == '🔍 动态选股':
     if os.path.exists(cache_file):
         with st.spinner('读取缓存结果...'):
             try:
-                with open(cache_file) as f:
-                    cached = json.load(f)
+                with open(cache_file, encoding='utf-8') as f:
+                    cached = json.loads(f.read())
                 st.success(f'缓存时间: {cached.get("updated", "未知")}')
                 scores = cached.get('scores', {})
                 if scores:
@@ -482,6 +482,10 @@ elif page == '📉 回测分析':
         with st.spinner('训练中（可能需要几分钟）...'):
             try:
                 import subprocess
+                env = {**os.environ, 'PYTHONPATH': os.path.join(BASE_DIR, 'scripts')}
+                # 确保 subprocess 用 UTF-8
+                if sys.platform == 'win32':
+                    env['PYTHONIOENCODING'] = 'utf-8'
                 result = subprocess.run(
                     [
                         sys.executable,
@@ -489,8 +493,8 @@ elif page == '📉 回测分析':
                         '--symbol', symbol,
                         '--strategy', strategy,
                     ],
-                    capture_output=True, text=True, timeout=300,
-                    env={**os.environ, 'PYTHONPATH': os.path.join(BASE_DIR, 'scripts')}
+                    capture_output=True, encoding='utf-8', errors='replace', timeout=300,
+                    env=env
                 )
                 st.code(result.stdout[-3000:] if result.stdout else '无输出', language='text')
                 if result.stderr:
