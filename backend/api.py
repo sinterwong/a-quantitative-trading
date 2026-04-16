@@ -646,6 +646,72 @@ def clear_alerts():
 
 
 # ============================================================
+# Data fetch endpoints (多源兜底路由)
+# ============================================================
+
+@app.route('/data/daily/<code>', methods=['GET'])
+def data_daily(code):
+    """
+    GET /data/daily/<code>
+    Query params:
+        days     — int, number of trading days (default 30, max 2000)
+        start    — str, start date YYYY-MM-DD (optional)
+        end      — str, end date YYYY-MM-DD (optional)
+    
+    Returns:
+        Standardized OHLCV daily data with MA5/MA10/MA20/volume_ratio.
+        Uses multi-source failover: Tencent → Sina → AkShare.
+        Circuit breaker protects each source.
+    """
+    try:
+        from services.fetcher_manager import get_fetcher_manager
+        days = int(request.args.get('days', 30))
+        days = min(days, 2000)
+        start = request.args.get('start') or None
+        end = request.args.get('end') or None
+
+        fm = get_fetcher_manager()
+        df = fm.get_daily_data(code, start_date=start, end_date=end, days=days)
+
+        # Convert to dict records (ISO date string)
+        records = []
+        for _, row in df.iterrows():
+            rec = {}
+            for col, val in row.items():
+                if col == 'date':
+                    rec[col] = str(val)[:10] if val else None
+                elif val is not None:
+                    rec[col] = round(float(val), 4) if isinstance(val, (int, float)) else val
+            records.append(rec)
+
+        return ok(
+            code=code,
+            rows=len(records),
+            columns=list(df.columns),
+            data=records,
+            fetcher_status=fm.get_fetcher_status(),
+        )
+    except Exception as e:
+        import traceback
+        return err(f'数据获取失败: {e}\n{traceback.format_exc()}', 500)
+
+
+@app.route('/data/status', methods=['GET'])
+def data_status():
+    """
+    GET /data/status
+    Returns the current status of all registered fetchers
+    (circuit breaker state, failure count, availability).
+    """
+    from services.fetcher_manager import get_fetcher_manager
+    fm = get_fetcher_manager()
+    return ok(
+        fetchers=[f.name for f in fm.fetchers],
+        status=fm.get_fetcher_status(),
+    )
+
+
+# ============================================================
 # Error handlers
 # ============================================================
 
