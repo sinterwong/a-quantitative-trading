@@ -1,41 +1,14 @@
 {
-  "600519.SH_RSI": {
-    "symbol": "600519.SH",
-    "strategy": "RSI",
-    "params": {
-      "rsi_buy": 25,
-      "rsi_sell": 60,
-      "stop_loss": 0.05,
-      "take_profit": 0.2
-    },
-    "test_sharpe": 0.5231953485378231,
-    "updated_at": "2026-04-13 21:02"
-  },
-  "510310.SH_RSI": {
-    "symbol": "510310.SH",
-    "strategy": "RSI",
-    "params": {
-      "rsi_buy": 25,
-      "rsi_sell": 65,
-      "stop_loss": 0.05,
-      "take_profit": 0.2,
-      "atr_threshold": 0.9
-    },
-    "test_sharpe": 1.0480929801343437,
-    "updated_at": "2026-04-15 11:10"
-  },
-  "159915.SZ_RSI": {
-    "symbol": "159915.SZ",
+  "01810.HK_RSI": {
+    "symbol": "01810.HK",
     "strategy": "RSI",
     "params": {
       "rsi_buy": 40,
-      "rsi_sell": 75,
+      "rsi_sell": 70,
       "stop_loss": 0.05,
-      "take_profit": 0.2,
-      "atr_threshold": 0.9,
-      "note": "WFA failed - 创业板高波动/强趋势 RSI均值回归不适用"
+      "take_profit": 0.2
     },
-    "test_sharpe": -0.528,
-    "updated_at": "2026-04-15 11:12"
+    "test_sharpe": -0.7759185345944375,
+    "updated_at": "2026-04-16 23:04"
   }
 }
