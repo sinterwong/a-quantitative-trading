@@ -6,19 +6,14 @@ report_sender.py — 定时报告生成与推送
   - 15:30 收盘总结（持仓表现 + 今日信号 + 市场涨跌统计）
   - 自定义时间推送
 
-依赖：
-  - Backend HTTP API（持仓/现金/信号数据）
-  - 腾讯/新浪财经（行情数据）
-  - 多渠道推送（FeishuChannel，通过 channels 抽象层）
+多渠道推送（Channel 抽象层）：
+  - 飞书：始终启用（硬编码配置）
+  - Telegram：通过环境变量 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 启用
+  - 未来扩展：Discord / Email 等
 
 用法：
-  # 推送早报
   python report_sender.py --type morning
-
-  # 推送晚报
   python report_sender.py --type close
-
-  # 推送到指定时间（供 cron 调用）
   python report_sender.py --type auto
 """
 
@@ -26,12 +21,12 @@ import os
 import sys
 import io
 
-# Windows 控制台 UTF-8 修复
 if sys.platform == 'win32' and sys.stdout.encoding != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 import json
 import ssl
+import logging
 import urllib.request
 import argparse
 from datetime import datetime
@@ -48,7 +43,7 @@ BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BACKEND_DIR)
 sys.path.insert(0, os.path.join(BASE_DIR, 'scripts'))
 
-# ─── 飞书配置（Channel 初始化用） ────────────────────────────
+# ─── 飞书配置 ────────────────────────────────────────────────
 FEISHU_APP_ID     = 'cli_a9217a3f3f389cc2'
 FEISHU_APP_SECRET = '5kOAKAmFzhySMYQB9nV5ndInIlWS43mt'
 FEISHU_USER_ID    = 'ou_b8add658ac094464606af32933a02d0b'
@@ -56,27 +51,55 @@ FEISHU_USER_ID    = 'ou_b8add658ac094464606af32933a02d0b'
 # ─── Backend 配置 ────────────────────────────────────────────
 BACKEND_URL = 'http://127.0.0.1:5555'
 
-# ─── Channel 初始化 ───────────────────────────────────────────
-from channels import ReportMessage, MessageType
+# ─── Channel 初始化 ────────────────────────────────────────────
+from channels import ReportMessage, MessageType, global_manager
 from channels.feishu import FeishuChannel
 
-# 全局 channel 实例（延迟初始化）
-_feishu_channel: Optional[FeishuChannel] = None
+_channels_inited = False
 
 
-def get_feishu_channel() -> FeishuChannel:
-    """获取飞书 channel 单例"""
-    global _feishu_channel
-    if _feishu_channel is None:
-        _feishu_channel = FeishuChannel(
-            app_id=FEISHU_APP_ID,
-            app_secret=FEISHU_APP_SECRET,
-            default_receive_id=FEISHU_USER_ID,
-        )
-    return _feishu_channel
+def _init_channels():
+    """
+    初始化所有渠道（延迟调用，线程安全）。
+
+    飞书：始终启用（硬编码配置）
+    Telegram：需要同时设置 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID 环境变量才启用
+    """
+    global _channels_inited
+    if _channels_inited:
+        return
+    _channels_inited = True
+
+    gm = global_manager()
+
+    # 飞书（始终注册，主渠道）
+    feishu_ch = FeishuChannel(
+        app_id=FEISHU_APP_ID,
+        app_secret=FEISHU_APP_SECRET,
+        default_receive_id=FEISHU_USER_ID,
+    )
+    gm.register(feishu_ch, primary=True)
+    logging.info("[ChannelManager] Feishu registered (primary=True)")
+
+    # Telegram（环境变量控制，可选启用）
+    tg_token = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
+    tg_chat  = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
+    if tg_token and tg_chat:
+        from channels.telegram import TelegramChannel
+        tg_ch = TelegramChannel(bot_token=tg_token, chat_id=tg_chat)
+        tg_primary = os.environ.get('TELEGRAM_AS_PRIMARY', '').strip() == '1'
+        gm.register(tg_ch, primary=tg_primary)
+        logging.info("[ChannelManager] Telegram registered (primary=%s)", tg_primary)
+    else:
+        logging.info("[ChannelManager] Telegram not configured — set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to enable")
 
 
-# ─── 腾讯实时行情工具 ────────────────────────────────────────
+def _get_manager():
+    _init_channels()
+    return global_manager()
+
+
+# ─── 腾讯实时行情 ────────────────────────────────────────────
 
 def _to_tencent_sym(symbol: str) -> str:
     u = symbol.upper()
@@ -86,7 +109,6 @@ def _to_tencent_sym(symbol: str) -> str:
 
 
 def get_realtime(symbol: str) -> Optional[dict]:
-    """获取单只股票实时行情"""
     sym = _to_tencent_sym(symbol)
     url = f'https://qt.gtimg.cn/q={sym}'
     ctx = ssl.create_default_context()
@@ -118,7 +140,6 @@ def get_realtime(symbol: str) -> Optional[dict]:
 
 
 def get_bulk_realtime(symbols: list[str]) -> dict[str, dict]:
-    """批量获取实时行情"""
     if not symbols: return {}
     syms = [_to_tencent_sym(s) for s in symbols]
     url = f'https://qt.gtimg.cn/q={",".join(syms)}'
@@ -236,7 +257,6 @@ def build_morning_report() -> str:
         lines.append("  （数据获取失败）")
     lines.append("")
 
-    # 持仓股开盘参考
     portfolio = backend_get('/portfolio/summary')
     positions = portfolio.get('positions', [])
     holding_symbols = [p['symbol'] for p in positions if p.get('shares', 0) > 0]
@@ -257,7 +277,6 @@ def build_morning_report() -> str:
                 )
         lines.append("")
 
-    # 今日关注板块
     cache_file = os.path.join(BASE_DIR, 'scripts', 'sector_scores.json')
     if os.path.exists(cache_file):
         try:
@@ -307,7 +326,6 @@ def build_close_report() -> str:
 
     lines.append("")
 
-    # 持仓今日表现
     portfolio = backend_get('/portfolio/summary')
     total_equity = portfolio.get('total_equity', 0)
     positions = portfolio.get('positions', [])
@@ -348,7 +366,6 @@ def build_close_report() -> str:
         lines.append("━━━ 持仓：空仓 ━━━")
         lines.append("")
 
-    # 今日信号回顾
     signals = backend_get('/signals?limit=10')
     sig_list = signals.get('signals', [])
     today = now.strftime('%Y-%m-%d')
@@ -364,7 +381,6 @@ def build_close_report() -> str:
             lines.append(f"  [{sig}] {sym} {sign}{pct:.2f}% - {reason}")
         lines.append("")
 
-    # 涨跌停风险
     if holding:
         lines.append("━━━ 涨跌停风险 ━━━")
         for sym, pos in holding:
@@ -376,7 +392,6 @@ def build_close_report() -> str:
             lower = prev * (1 - lpct)
             dist_up = (upper - snap['price']) / snap['price']
             dist_down = (snap['price'] - lower) / snap['price']
-            pct = snap.get('pct', 0)
             if dist_up < 0.01:
                 lines.append(f"  🔴 {sym} 逼近涨停！")
             elif dist_down < 0.01:
@@ -394,12 +409,12 @@ def build_close_report() -> str:
 # ─── 主入口 ────────────────────────────────────────────────
 
 def main():
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
     parser = argparse.ArgumentParser(description='定时报告推送')
     parser.add_argument('--type', choices=['morning', 'close', 'auto'], default='auto',
                         help='morning=早报, close=收盘总结, auto=根据时间自动判断')
     args = parser.parse_args()
 
-    # 判断时间
     if args.type == 'auto':
         now = datetime.now()
         cur_min = now.hour * 60 + now.minute
@@ -407,7 +422,6 @@ def main():
     else:
         report_type = args.type
 
-    # 生成内容
     if report_type == 'morning':
         content = build_morning_report()
         label = '早报'
@@ -419,8 +433,12 @@ def main():
     sys.stdout.write(content[:300] + '\n...\n')
     sys.stdout.flush()
 
-    # 通过 Channel 推送
-    channel = get_feishu_channel()
+    # 通过 ChannelManager 推送（所有已注册渠道）
+    gm = _get_manager()
+    enabled = [ch.name for ch in gm.enabled_channels]
+    sys.stdout.write(f"[ChannelManager] active channels: {enabled}\n")
+    sys.stdout.flush()
+
     msg = ReportMessage(
         title=f"【{label}】" + datetime.now().strftime('%Y-%m-%d %H:%M'),
         body=content,
@@ -428,11 +446,15 @@ def main():
         tags=[report_type],
     )
 
-    ok = channel.send(msg)
-    if ok:
-        sys.stdout.write(f"[OK] {label}推送成功\n")
-    else:
-        sys.stdout.write(f"[ERROR] {label}推送失败\n")
+    results = gm.send_all(msg)
+    ok_channels = [name for name, ok in results.items() if ok]
+    fail_channels = [name for name, ok in results.items() if not ok]
+
+    if ok_channels:
+        sys.stdout.write(f"[OK] {label}推送成功: {ok_channels}\n")
+    if fail_channels:
+        sys.stdout.write(f"[WARN] 部分渠道失败: {fail_channels}\n")
+    if not ok_channels:
         sys.exit(1)
 
 
