@@ -7,9 +7,9 @@ report_sender.py — 定时报告生成与推送
   - 自定义时间推送
 
 依赖：
-  - Feishu REST API（已配置 appId/appSecret）
   - Backend HTTP API（持仓/现金/信号数据）
   - 腾讯/新浪财经（行情数据）
+  - 多渠道推送（FeishuChannel，通过 channels 抽象层）
 
 用法：
   # 推送早报
@@ -33,9 +33,8 @@ if sys.platform == 'win32' and sys.stdout.encoding != 'utf-8':
 import json
 import ssl
 import urllib.request
-import urllib.error
 import argparse
-from datetime import datetime, date
+from datetime import datetime
 from typing import Optional
 
 # 禁用代理
@@ -44,19 +43,38 @@ for k in list(os.environ.keys()):
         del os.environ[k]
 
 # ─── 路径设置 ────────────────────────────────────────────────
-BASE_DIR  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # backend/ -> quant_repo/
-BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))                  # backend/services/
+BASE_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BACKEND_DIR)
 sys.path.insert(0, os.path.join(BASE_DIR, 'scripts'))
 
-# ─── Feishu 配置 ──────────────────────────────────────────────
+# ─── 飞书配置（Channel 初始化用） ────────────────────────────
 FEISHU_APP_ID     = 'cli_a9217a3f3f389cc2'
 FEISHU_APP_SECRET = '5kOAKAmFzhySMYQB9nV5ndInIlWS43mt'
 FEISHU_USER_ID    = 'ou_b8add658ac094464606af32933a02d0b'
-FEISHU_API_BASE   = 'https://open.feishu.cn/open-apis'
 
 # ─── Backend 配置 ────────────────────────────────────────────
 BACKEND_URL = 'http://127.0.0.1:5555'
+
+# ─── Channel 初始化 ───────────────────────────────────────────
+from channels import ReportMessage, MessageType
+from channels.feishu import FeishuChannel
+
+# 全局 channel 实例（延迟初始化）
+_feishu_channel: Optional[FeishuChannel] = None
+
+
+def get_feishu_channel() -> FeishuChannel:
+    """获取飞书 channel 单例"""
+    global _feishu_channel
+    if _feishu_channel is None:
+        _feishu_channel = FeishuChannel(
+            app_id=FEISHU_APP_ID,
+            app_secret=FEISHU_APP_SECRET,
+            default_receive_id=FEISHU_USER_ID,
+        )
+    return _feishu_channel
+
 
 # ─── 腾讯实时行情工具 ────────────────────────────────────────
 
@@ -85,15 +103,15 @@ def get_realtime(symbol: str) -> Optional[dict]:
             f = raw.split('~')
             if len(f) < 40: return None
             return {
-                'price':     float(f[3])  if f[3]  not in ('', '-') else 0.0,
-                'prev_close':float(f[4])  if f[4]  not in ('', '-') else 0.0,
-                'pct':       float(f[32]) if f[32] not in ('', '-') else 0.0,
-                'chg':       float(f[31]) if f[31] not in ('', '-') else 0.0,
-                'high':      float(f[33]) if len(f) > 33 and f[33] not in ('', '-') else 0.0,
-                'low':       float(f[34]) if len(f) > 34 and f[34] not in ('', '-') else 0.0,
-                'vol_ratio': float(f[38]) if len(f) > 38 and f[38] not in ('', '-', '0') else None,
-                'volume':    f[36] if len(f) > 36 else '',
-                'name':      f[1]  if len(f) > 1 else '',
+                'price':      float(f[3])  if f[3]  not in ('', '-') else 0.0,
+                'prev_close': float(f[4])  if f[4]  not in ('', '-') else 0.0,
+                'pct':        float(f[32]) if f[32] not in ('', '-') else 0.0,
+                'chg':        float(f[31]) if f[31] not in ('', '-') else 0.0,
+                'high':       float(f[33]) if len(f) > 33 and f[33] not in ('', '-') else 0.0,
+                'low':        float(f[34]) if len(f) > 34 and f[34] not in ('', '-') else 0.0,
+                'vol_ratio':  float(f[38]) if len(f) > 38 and f[38] not in ('', '-', '0') else None,
+                'volume':     f[36] if len(f) > 36 else '',
+                'name':       f[1]  if len(f) > 1 else '',
             }
     except Exception:
         return None
@@ -122,14 +140,14 @@ def get_bulk_realtime(symbols: list[str]) -> dict[str, dict]:
                 f = line.split('~')
                 if len(f) < 40: continue
                 result[sym] = {
-                    'price':     float(f[3])  if f[3]  not in ('', '-') else 0.0,
-                    'prev_close':float(f[4])  if f[4]  not in ('', '-') else 0.0,
-                    'pct':       float(f[32]) if f[32] not in ('', '-') else 0.0,
-                    'chg':       float(f[31]) if f[31] not in ('', '-') else 0.0,
-                    'high':      float(f[33]) if len(f) > 33 and f[33] not in ('', '-') else 0.0,
-                    'low':       float(f[34]) if len(f) > 34 and f[34] not in ('', '-') else 0.0,
-                    'vol_ratio': float(f[38]) if len(f) > 38 and f[38] not in ('', '-', '0') else None,
-                    'name':      f[1] if len(f) > 1 else sym,
+                    'price':      float(f[3])  if f[3]  not in ('', '-') else 0.0,
+                    'prev_close': float(f[4])  if f[4]  not in ('', '-') else 0.0,
+                    'pct':        float(f[32]) if f[32] not in ('', '-') else 0.0,
+                    'chg':        float(f[31]) if f[31] not in ('', '-') else 0.0,
+                    'high':       float(f[33]) if len(f) > 33 and f[33] not in ('', '-') else 0.0,
+                    'low':        float(f[34]) if len(f) > 34 and f[34] not in ('', '-') else 0.0,
+                    'vol_ratio':  float(f[38]) if len(f) > 38 and f[38] not in ('', '-', '0') else None,
+                    'name':       f[1] if len(f) > 1 else sym,
                 }
             return result
     except Exception:
@@ -143,15 +161,16 @@ def get_limit_pct(symbol: str) -> float:
     return 0.10
 
 
-# ─── 外盘行情（美股期货、恒生） ────────────────────────────────
+# ─── 外盘行情 ────────────────────────────────────────────────
 
 def _fetch_tencent(url: str, timeout: float = 4.0) -> Optional[dict]:
-    """带超时的腾讯行情fetch"""
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.qq.com'})
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.qq.com',
+        })
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             raw = resp.read().decode('gbk', errors='replace')
             eq = raw.find('="')
@@ -170,14 +189,10 @@ def _fetch_tencent(url: str, timeout: float = 4.0) -> Optional[dict]:
 
 
 def get_market_overview() -> list:
-    """
-    获取市场概况（上证、沪深300、黄金）。
-    外盘期货（纳指/S&P）在国内网络通常超时，用A股指数代替。
-    """
     items = [
         ('sh000001', '上证指数'),
         ('sh000300', '沪深300'),
-        ('sh518880', '黄金ETF'),  # 黄金现货替代
+        ('sh518880', '黄金ETF'),
     ]
     result = []
     for sym, name in items:
@@ -201,55 +216,9 @@ def backend_get(endpoint: str) -> dict:
         return {}
 
 
-# ─── Feishu 推送 ──────────────────────────────────────────────
-
-def get_feishu_token() -> Optional[str]:
-    """获取 tenant_access_token"""
-    url = f'{FEISHU_API_BASE}/auth/v3/tenant_access_token/internal'
-    payload = json.dumps({'app_id': FEISHU_APP_ID, 'app_secret': FEISHU_APP_SECRET}).encode()
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    try:
-        req = urllib.request.Request(url, data=payload,
-                                      headers={'Content-Type': 'application/json'}, method='POST')
-        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
-            result = json.loads(resp.read())
-            return result.get('tenant_access_token')
-    except Exception:
-        return None
-
-
-def send_feishu(text: str, token: str) -> bool:
-    url = f'{FEISHU_API_BASE}/im/v1/messages?receive_id_type=open_id'
-    headers = {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token}
-    payload = json.dumps({
-        'receive_id': FEISHU_USER_ID,
-        'msg_type': 'text',
-        'content': json.dumps({'text': text})
-    }).encode()
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    try:
-        req = urllib.request.Request(url, data=payload, headers=headers, method='POST')
-        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
-            result = json.loads(resp.read())
-            return result.get('code', -1) == 0
-    except Exception:
-        return False
-
-
 # ─── 报告内容生成 ────────────────────────────────────────────
 
 def build_morning_report() -> str:
-    """
-    9:00 早报内容：
-    1. 今日日期 + 星期
-    2. 隔夜外盘（美股期货、黄金、A50）
-    3. 持仓股开盘参考（若有）
-    4. 今日关注板块（从动态选股读取）
-    """
     now = datetime.now()
     date_str = now.strftime('%Y年%m月%d日（%A）')
     time_str = now.strftime('%H:%M')
@@ -260,7 +229,6 @@ def build_morning_report() -> str:
         "━━━ 市场概况 ━━━",
     ]
 
-    # 市场指数
     overview = get_market_overview()
     if overview:
         lines.extend(overview)
@@ -289,7 +257,7 @@ def build_morning_report() -> str:
                 )
         lines.append("")
 
-    # 今日关注（从缓存读取动态选股结果）
+    # 今日关注板块
     cache_file = os.path.join(BASE_DIR, 'scripts', 'sector_scores.json')
     if os.path.exists(cache_file):
         try:
@@ -315,14 +283,6 @@ def build_morning_report() -> str:
 
 
 def build_close_report() -> str:
-    """
-    15:30 收盘总结：
-    1. 今日日期
-    2. 大盘指数（上证、深证、创业板）
-    3. 持仓今日表现
-    4. 今日信号回顾
-    5. 持仓涨跌停风险检查
-    """
     now = datetime.now()
     date_str = now.strftime('%Y年%m月%d日')
 
@@ -332,7 +292,6 @@ def build_close_report() -> str:
         "━━━ 大盘表现 ━━━",
     ]
 
-    # 大盘指数
     indices = {
         'sh000001': '上证指数',
         'sz399001': '深证成指',
@@ -351,7 +310,6 @@ def build_close_report() -> str:
     # 持仓今日表现
     portfolio = backend_get('/portfolio/summary')
     total_equity = portfolio.get('total_equity', 0)
-    cash = portfolio.get('cash', 0)
     positions = portfolio.get('positions', [])
     holding = [(p['symbol'], p) for p in positions if p.get('shares', 0) > 0]
 
@@ -373,13 +331,11 @@ def build_close_report() -> str:
                 limit_pct = get_limit_pct(sym)
                 upper = snap['prev_close'] * (1 + limit_pct)
                 dist_up = (upper - snap['price']) / snap['price'] if snap['price'] else None
-
                 risk_note = ''
                 if pct <= -9.5:
                     risk_note = ' 【跌停风险】'
                 elif dist_up is not None and dist_up < 0.02:
                     risk_note = f' 【距涨停{dist_up:.1%}】'
-
                 lines.append(
                     f"  {sym}({shares}股成本¥{entry:.2f})：{snap['price']:.2f}（{sign}{pct:.2f}）"
                     f" 市值¥{mv:,.0f}{' +' if pnl >= 0 else ' '}{pnl:,.0f}{risk_note}"
@@ -421,7 +377,6 @@ def build_close_report() -> str:
             dist_up = (upper - snap['price']) / snap['price']
             dist_down = (snap['price'] - lower) / snap['price']
             pct = snap.get('pct', 0)
-
             if dist_up < 0.01:
                 lines.append(f"  🔴 {sym} 逼近涨停！")
             elif dist_down < 0.01:
@@ -447,14 +402,8 @@ def main():
     # 判断时间
     if args.type == 'auto':
         now = datetime.now()
-        h, m = now.hour, now.minute
-        cur_min = h * 60 + m
-        morning_min  = 8 * 60 + 30   # 8:30
-        close_min    = 15 * 60 + 30  # 15:30
-        if cur_min < close_min:
-            report_type = 'morning'
-        else:
-            report_type = 'close'
+        cur_min = now.hour * 60 + now.minute
+        report_type = 'morning' if cur_min < 15 * 60 + 30 else 'close'
     else:
         report_type = args.type
 
@@ -470,13 +419,16 @@ def main():
     sys.stdout.write(content[:300] + '\n...\n')
     sys.stdout.flush()
 
-    # 推送
-    token = get_feishu_token()
-    if not token:
-        sys.stdout.write("[ERROR] Feishu token 获取失败\n")
-        sys.exit(1)
+    # 通过 Channel 推送
+    channel = get_feishu_channel()
+    msg = ReportMessage(
+        title=f"【{label}】" + datetime.now().strftime('%Y-%m-%d %H:%M'),
+        body=content,
+        msg_type=MessageType.TEXT,
+        tags=[report_type],
+    )
 
-    ok = send_feishu(content, token)
+    ok = channel.send(msg)
     if ok:
         sys.stdout.write(f"[OK] {label}推送成功\n")
     else:

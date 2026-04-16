@@ -3,46 +3,32 @@
 fund_flow.py — 主力资金流服务
 ==========================
 
-数据来源: AkShare
-  - stock_individual_fund_flow(stock)  → 大盘/指数资金流（注意：返回沪深300指数数据，非个股）
-  - stock_market_fund_flow()            → 两市（沪深）资金流汇总
+已验证可用接口（2026-04-16）：
+  ✅ ak.stock_fund_flow_individual('5日排行') — 同花顺，返回全市场5191只股票的资金流排名
+  ✅ ak.stock_market_fund_flow() — AkShare，两市大盘主力净流入（单位：元）
 
-⚠️ 重要说明：
-  AkShare 的 stock_individual_fund_flow() 无论传入什么 stock 代码，
-  都返回沪深300指数的主力资金流数据（收盘价/涨跌幅是沪深300指数），
-  因此 get_stock_fund_flow() 实际获取的是"大盘资金流"，不是个股。
-  若需个股资金流，需使用 level2 数据或其他数据源。
+接口说明：
+  stock_fund_flow_individual: 同花顺资金流排名
+    参数: symbol='5日排行'（或'实时'/'3日排行'/'10日排行'/'20日排行'）
+    返回: 全市场所有股票的排名列表，按资金流入净额排序
+    列名: 序号, 股票代码, 股票简称, 最新价, 阶段涨跌幅, 连续换手率, 资金流入净额
+    特点: 免费无需token，直接返回；但是排名列表，需按股票代码筛选
 
-资金分类（按成交量档位划分）：
-  超大单: >100万手 或 成交额>1亿元
-  大单:  20~100万手
-  中单:  5~20万手
-  小单:  <5万手
+  stock_market_fund_flow: 两市资金流汇总
+    返回: 上证/深证指数收盘价/涨跌幅 + 主力净流入/占比（单位：元）
 
-主力净流入 = 超大单 + 大单（特大单+大单合计）
-
-Usage:
-  from services.fund_flow import FundFlowService
-  fs = FundFlowService()
-
-  # 大盘资金流（最近N日，沪深300指数）
-  flow = fs.get_stock_fund_flow("000300")
-
-  # 两市大盘资金流汇总
-  market = fs.get_market_fund_flow()
-
-  # 大盘主力净流入摘要（用于选股评分）
-  summary = fs.get_main_net_summary("000300")
+⚠️ 注意：
+  stock_individual_fund_flow(stock) 返回的是沪深300指数数据，不是个股数据！
+  要获取个股资金流，必须用同花顺的 stock_fund_flow_individual 全市场排名后筛选。
 """
 
-import json
 import logging
 import os
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from threading import RLock
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
@@ -59,176 +45,167 @@ except ImportError:
 
 logger = logging.getLogger('fund_flow')
 
+
 # ─── 数据类型 ────────────────────────────────────────────────────────────────
 
 
 @dataclass
 class StockFundFlow:
     """
-    个股/大盘资金流快照。
+    个股资金流快照（来自同花顺全市场排名数据）。
 
-    单位说明:
-      - 净额: 元（需 /1e8 转为"亿元"）
-      - 占比: %（已 /100 处理，可用 f"{v:.2%}" 格式化）
+    字段说明（akshare stock_fund_flow_individual 返回）：
+      - code: 股票代码，如 '600900'
+      - name: 股票简称
+      - date: 数据日期（排名数据通常为当日）
+      - close: 最新价（元）
+      - change_pct: 阶段涨跌幅（如 '0.68%'，需解析）
+      - turnover_rate: 连续换手率（如 '1.33%'）
+      - main_net: 资金流入净额（元，正=流入，负=流出）
     """
-    code: str           # 股票代码或 "000300"（沪深300大盘）
-    name: str           # 名称
-    date: str           # 日期 "YYYY-MM-DD"
-    close: float        # 收盘价
-    change_pct: float   # 涨跌幅(%)
-
-    # 各档位净流入（单位：元）
-    super_net: float       # 超大单净流入
-    super_pct: float       # 超大单净流入占比
-    large_net: float       # 大单净流入
-    large_pct: float       # 大单净流入占比
-    medium_net: float      # 中单净流入
-    medium_pct: float      # 中单净流入占比
-    small_net: float       # 小单净流入
-    small_pct: float       # 小单净流入占比
-
-    @property
-    def main_net(self) -> float:
-        """主力净流入 = 超大单 + 大单（单位：元）"""
-        return self.super_net + self.large_net
-
-    @property
-    def main_pct(self) -> float:
-        """主力净流入占比"""
-        total = self.super_net + self.large_net + self.medium_net + self.small_net
-        if total == 0:
-            return 0.0
-        return (self.main_net / total) * 100.0
+    code: str
+    name: str
+    date: str           # YYYY-MM-DD
+    close: float        # 最新价（元）
+    change_pct: float  # 阶段涨跌幅（%）
+    turnover_rate: float  # 连续换手率（%）
+    main_net: float     # 资金流入净额（元）
 
     def to_dict(self) -> Dict:
-        d = {
+        return {
             'code': self.code,
             'name': self.name,
             'date': self.date,
             'close': self.close,
             'change_pct': self.change_pct,
-            'main_net': round(self.main_net, 2),          # 元
-            'main_pct': round(self.main_pct, 2),            # %
-            'super_net': round(self.super_net, 2),
-            'super_pct': round(self.super_pct, 2),
-            'large_net': round(self.large_net, 2),
-            'large_pct': round(self.large_pct, 2),
-            'medium_net': round(self.medium_net, 2),
-            'medium_pct': round(self.medium_pct, 2),
-            'small_net': round(self.small_net, 2),
-            'small_pct': round(self.small_pct, 2),
+            'turnover_rate': self.turnover_rate,
+            'main_net': round(self.main_net, 2),  # 元
+            'main_net_yi': round(self.main_net / 1e8, 2),  # 亿元
         }
-        return d
 
 
-@dataclass
-class SectorFundFlow:
-    """板块资金流"""
-    sector_code: str    # 板块代码
-    sector_name: str    # 板块名称
-    rank: int           # 涨跌幅排名
-    change_pct: float   # 涨跌幅(%)
-    main_net: float     # 主力净流入（元）
-    turnover: float     # 换手率(%)
-    volume_ratio: float  # 量比
+# ─── 同花顺资金流排名字段映射 ─────────────────────────────────────────────
 
+# 同花顺返回列名（中文字段）
+_THS_COLUMNS = [
+    '序号', '股票代码', '股票简称', '最新价', '阶段涨跌幅', '连续换手率', '资金流入净额'
+]
 
-# ─── 字段名映射（兼容 AkShare 中英文列名）──────────────────────────────────
-
-# 原始中文列名（AkShare 返回）
-_FUND_FIELD_MAP = {
-    # 个股/市场资金流列名映射（直接从列名字符串匹配）
-    '日期': 'date',
-    '收盘价': 'close',          # 注：个股接口返回的是沪深300指数收盘价
-    '涨跌幅': 'change_pct',
-    # 主力 = 超大单 + 大单（特大单+大单合计）
-    '主力净流入-净额': 'main_net',
-    '主力净流入-净占比': 'main_pct',
-    # 超大单
-    '超大单净流入-净额': 'super_net',
-    '超大单净流入-净占比': 'super_pct',
-    # 大单
-    '大单净流入-净额': 'large_net',
-    '大单净流入-净占比': 'large_pct',
-    # 中单
-    '中单净流入-净额': 'medium_net',
-    '中单净流入-净占比': 'medium_pct',
-    # 小单
-    '小单净流入-净额': 'small_net',
-    '小单净流入-净占比': 'small_pct',
+_THS_RENAME = {
+    '股票代码': 'code',
+    '股票简称': 'name',
+    '最新价': 'close',
+    '阶段涨跌幅': 'change_pct',
+    '连续换手率': 'turnover_rate',
+    '资金流入净额': 'main_net',
 }
 
 
-def _parse_fund_df(df: pd.DataFrame, code: str, name: str = '') -> List[StockFundFlow]:
+def _parse_ths_fund_flow(df: pd.DataFrame) -> List[StockFundFlow]:
     """
-    将 AkShare 返回的 fund flow DataFrame 解析为 StockFundFlow 列表。
+    解析同花顺资金流排名 DataFrame → List[StockFundFlow]。
 
-    列名匹配：直接用列名字符串匹配 _FUND_FIELD_MAP
-    日期格式：降序（最新在前）
+    处理：
+      1. 识别并重命名资金流列
+      2. 解析百分比字符串（'0.68%' → 0.68）
+      3. 解析资金净额字符串（'-6.72亿' → -6.72e8 元）
+      4. 按股票代码建索引
     """
     if df is None or df.empty:
         return []
 
-    # Step 1: 标准化列名（直接匹配中文列名字符串）
-    rename_map = {}
-    for col in df.columns:
-        if col in _FUND_FIELD_MAP:
-            rename_map[col] = _FUND_FIELD_MAP[col]
+    # 重命名
+    df = df.rename(columns=_THS_RENAME)
 
-    df = df.rename(columns=rename_map)
-
-    # Step 2: 验证必要列
-    required = ['date', 'close', 'change_pct', 'main_net', 'main_pct']
+    # 过滤必要列
+    required = ['code', 'name', 'main_net']
     missing = [c for c in required if c not in df.columns]
     if missing:
-        logger.warning("[FundFlow] 缺少列 %s，可用列: %s", missing, list(df.columns))
+        logger.warning("[FundFlow] 同花顺数据缺少列 %s，可用: %s", missing, list(df.columns))
         return []
 
-    # Step 3: 数值类型转换
-    num_cols = ['close', 'change_pct', 'main_net', 'main_pct',
-                 'super_net', 'super_pct', 'large_net', 'large_pct',
-                 'medium_net', 'medium_pct', 'small_net', 'small_pct']
-    for col in num_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-
-    # Step 4: 按日期降序
-    if 'date' in df.columns:
-        df = df.sort_values('date', ascending=False).reset_index(drop=True)
-
-    # Step 5: 构建对象
     records = []
+    today = datetime.now().strftime('%Y-%m-%d')
+
     for _, row in df.iterrows():
-        if pd.isna(row.get('date')):
+        code = str(row.get('code', '')).strip()
+        if not code or code == 'nan':
             continue
+
+        # 解析涨跌幅
+        change_pct_raw = row.get('change_pct', 0)
+        if isinstance(change_pct_raw, str):
+            change_pct = float(change_pct_raw.replace('%', '').strip())
+        else:
+            change_pct = float(change_pct_raw or 0)
+
+        # 解析换手率
+        turnover_raw = row.get('turnover_rate', 0)
+        if isinstance(turnover_raw, str):
+            turnover_rate = float(turnover_raw.replace('%', '').strip())
+        else:
+            turnover_rate = float(turnover_raw or 0)
+
+        # 解析资金净额
+        main_net_raw = row.get('main_net', 0)
+        main_net = _parse_money_string(str(main_net_raw)) if main_net_raw else 0.0
+
+        # 最新价
+        close_raw = row.get('close')
         try:
-            records.append(StockFundFlow(
-                code=code,
-                name=name,
-                date=str(row['date'])[:10],
-                close=float(row.get('close', 0) or 0),
-                change_pct=float(row.get('change_pct', 0) or 0),
-                super_net=float(row.get('super_net', 0) or 0),
-                super_pct=float(row.get('super_pct', 0) or 0),
-                large_net=float(row.get('large_net', 0) or 0),
-                large_pct=float(row.get('large_pct', 0) or 0),
-                medium_net=float(row.get('medium_net', 0) or 0),
-                medium_pct=float(row.get('medium_pct', 0) or 0),
-                small_net=float(row.get('small_net', 0) or 0),
-                small_pct=float(row.get('small_pct', 0) or 0),
-            ))
-        except Exception:
-            continue
+            close = float(close_raw) if close_raw not in (None, '', '-') else 0.0
+        except (ValueError, TypeError):
+            close = 0.0
+
+        records.append(StockFundFlow(
+            code=code,
+            name=str(row.get('name', '')).strip(),
+            date=today,
+            close=close,
+            change_pct=change_pct,
+            turnover_rate=turnover_rate,
+            main_net=main_net,
+        ))
 
     return records
 
 
-# ─── 简易内存缓存 ────────────────────────────────────────────────────────
+def _parse_money_string(s: str) -> float:
+    """
+    解析资金字符串 → 元。
+
+    Examples:
+      '6.72亿'   → 6.72e8
+      '-6.72亿'  → -6.72e8
+      '1234万'   → 1234e4
+      '-1234万'  → -1234e4
+      '1234'    → 1234.0
+      '-1234'   → -1234.0
+    """
+    s = str(s).strip().replace(' ', '')
+    if not s or s in ('-', 'nan'):
+        return 0.0
+    negative = s.startswith('-')
+    s = s.lstrip('-')
+    try:
+        if '亿' in s:
+            return float(s.replace('亿', '')) * 1e8 * (-1 if negative else 1)
+        elif '万' in s:
+            return float(s.replace('万', '')) * 1e4 * (-1 if negative else 1)
+        elif '万' in s:
+            return float(s.replace('万', '')) * 1e4 * (-1 if negative else 1)
+        else:
+            return float(s) * (-1 if negative else 1)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+# ─── 线程安全缓存 ────────────────────────────────────────────────────────
 
 class _FundFlowCache:
     """资金流专用缓存（线程安全，TTL）"""
     _lock = RLock()
-    _store: Dict[str, Dict[str, Any]] = {}  # {key: {'expires_at': float, 'value': Any}}
+    _store: Dict[str, Dict[str, Any]] = {}
 
     @classmethod
     def get(cls, key: str) -> Optional[Any]:
@@ -259,85 +236,134 @@ class _FundFlowCache:
 
 class FundFlowService:
     """
-    主力资金流服务。
+    主力资金流服务（整合多个可用接口）。
 
-    功能：
-      1. 个股资金流（支持获取近N日/累计数据）
-      2. 大盘市场资金流（上证+深证汇总）
-      3. 板块资金流排名（需要网络畅通）
+    已验证可用接口：
+      ✅ stock_fund_flow_individual('5日排行') — 同花顺，全市场排名，5191只股票
+         * 列: 股票代码/股票简称/最新价/阶段涨跌幅/连续换手率/资金流入净额
+         * 可按 stock_code 筛选获取个股数据
+         * 缓存: 10分钟 TTL
+      ✅ stock_market_fund_flow() — AkShare，两市汇总大盘资金流
+         * 返回: 上证/深证指数收盘/涨跌幅 + 主力净流入/占比
 
-    缓存策略：
-      - 个股资金流: 10 分钟 TTL（日内变化慢）
-      - 大盘资金流: 30 分钟 TTL
+    不可用/待验证：
+      ⚠️ stock_individual_fund_flow_rank — eastmoney push2接口，代理问题
+      ⚠️ stock_main_fund_flow — eastmoney，需要正确的股票列表参数
+      ❌ stock_individual_fund_flow(stock) — 返回沪深300，非个股
     """
-
-    # 大盘指数代码
-    MARKET_CODE = '000300'  # 沪深300作为大盘代表
 
     def __init__(self):
         if not AKSHARE_AVAILABLE:
             raise ImportError("[FundFlowService] AkShare 未安装: pip install akshare")
 
-    # ── 公开 API ────────────────────────────────────────────────────────
+    # ── 个股资金流（来自同花顺全市场排名）────────────────────────────
 
-    def get_stock_fund_flow(
-        self,
-        stock_code: str,
-        days: int = 5,
-    ) -> List[StockFundFlow]:
+    def get_stock_fund_flow(self, stock_code: str, period: str = '5日排行') -> Optional[StockFundFlow]:
         """
-        获取个股资金流（最近N日）。
+        获取个股资金流数据（来自同花顺全市场排名）。
 
         Args:
-            stock_code: 股票代码，如 "600900"
-            days: 获取最近N个交易日数据（默认5日）
+            stock_code: 股票代码，如 '600900'
+            period: 时间周期，默认 '5日排行'
+                   可选: '实时' / '3日排行' / '5日排行' / '10日排行' / '20日排行'
 
         Returns:
-            List[StockFundFlow]，按日期降序（最新在前）
+            StockFundFlow 对象，或 None（未找到或接口失败）
 
         注意：
-            AkShare 的 stock_individual_fund_flow 以"时间序列"形式返回，
-            每行是一个交易日的资金流，请参考使用。
+            同花顺返回的是全市场排名数据，我们从中筛选对应股票。
+            由于是排名列表，无法直接获取某只股票特定日期的历史序列，
+            只能获取当前最新的排名数据。
         """
-        cache_key = f"fund_flow_{stock_code}_{days}"
+        period_key = period.replace(' ', '')
+        cache_key = f"ths_ff_{period_key}"
+
+        # 获取全市场数据（带缓存）
+        all_stocks = self._get_ths_all_fund_flow(period_key)
+        if all_stocks is None:
+            logger.warning("[FundFlow] 无法获取同花顺资金流数据: stock=%s", stock_code)
+            return None
+
+        # 按股票代码筛选
+        stock_code_clean = stock_code.strip()
+        for record in all_stocks:
+            if record.code == stock_code_clean:
+                logger.debug("[FundFlow] 找到 %s 同花顺资金流: %.2f亿",
+                           stock_code, record.main_net / 1e8)
+                return record
+
+        logger.warning("[FundFlow] 同花顺数据中未找到 %s", stock_code)
+        return None
+
+    def get_top_fund_flow_stocks(self, period: str = '5日排行', top_n: int = 20) -> List[StockFundFlow]:
+        """
+        获取资金流入最多的 TOP N 只股票。
+
+        Args:
+            period: 时间周期，默认 '5日排行'
+            top_n: 返回数量，默认20
+
+        Returns:
+            List[StockFundFlow]，按 main_net 降序（流入最多在前）
+        """
+        period_key = period.replace(' ', '')
+        cache_key = f"ths_ff_{period_key}"
+        all_stocks = self._get_ths_all_fund_flow(period_key)
+        if all_stocks is None:
+            return []
+
+        # 按 main_net 降序
+        sorted_stocks = sorted(all_stocks, key=lambda r: r.main_net, reverse=True)
+        return sorted_stocks[:top_n]
+
+    def _get_ths_all_fund_flow(self, period_key: str) -> Optional[List[StockFundFlow]]:
+        """获取同花顺全市场资金流排名（内部缓存）"""
+        cache_key = f"ths_ff_{period_key}"
 
         def fetch():
-            df = ak.stock_individual_fund_flow(stock=stock_code)
-            if df is None or df.empty:
+            logger.info("[FundFlow] 从同花顺获取全市场资金流: period=%s", period_key)
+            period_map = {
+                '实时': '实时',
+                '3日排行': '3日排行',
+                '5日排行': '5日排行',
+                '10日排行': '10日排行',
+                '20日排行': '20日排行',
+            }
+            period_val = period_map.get(period_key, '5日排行')
+            try:
+                df = ak.stock_fund_flow_individual(symbol=period_val)
+                if df is None or df.empty:
+                    return None
+                return _parse_ths_fund_flow(df)
+            except Exception as e:
+                logger.warning("[FundFlow] 同花顺接口失败: %s", e)
                 return None
-            records = _parse_fund_df(df, code=stock_code)
-            return records[:days]
 
         cached = _FundFlowCache.get(cache_key)
         if cached is not None:
-            logger.debug("[FundFlow] 缓存命中 %s", cache_key)
+            logger.debug("[FundFlow] 缓存命中: %s", cache_key)
             return cached
 
-        try:
-            records = fetch()
-            if records is None or not records:
-                return []
-            logger.info("[FundFlow] 获取 %s 资金流 %d 日: %s",
-                       stock_code, len(records),
-                       [(r.date, f"{r.main_net/1e8:.2f}亿") for r in records[:3]])
-            _FundFlowCache.set(cache_key, records, ttl=600)
-            return records
-        except Exception as e:
-            logger.warning("[FundFlow] 获取 %s 资金流失败: %s", stock_code, e)
-            return []
+        result = fetch()
+        if result is not None:
+            _FundFlowCache.set(cache_key, result, ttl=600)
+        return result
 
-    def get_market_fund_flow(self, days: int = 5) -> Dict:
+    # ── 大盘资金流（AkShare）────────────────────────────
+
+    def get_market_fund_flow(self) -> Dict:
         """
         获取大盘市场资金流汇总。
 
         Returns:
-            Dict，包含:
-              - sh: 上证主力净流入（亿元）
-              - sz: 深证主力净流入（亿元）
-              - main_net: 两市合计主力净流入（亿元）
+            Dict:
               - date: 日期
+              - sh_close, sh_change: 上证指数收盘/涨跌幅
+              - sz_close, sz_change: 深证成指收盘/涨跌幅
+              - main_net: 沪深合计主力净流入（亿元）
+              - main_pct: 主力净流入占成交额百分比
         """
-        cache_key = f"fund_flow_market_{days}"
+        cache_key = "market_ff"
         cached = _FundFlowCache.get(cache_key)
         if cached is not None:
             return cached
@@ -347,39 +373,30 @@ class FundFlowService:
             if df is None or df.empty:
                 return {}
 
-            # 列名标准化（直接匹配中文字段名）
-            rename = {}
-            for col in df.columns:
-                if col in _FUND_FIELD_MAP:
-                    rename[col] = _FUND_FIELD_MAP[col]
-                elif col.startswith('上证'):
-                    if '收盘价' in col:
-                        rename[col] = 'sh_close'
-                    elif '涨跌幅' in col:
-                        rename[col] = 'sh_change'
-                elif col.startswith('深证'):
-                    if '收盘价' in col:
-                        rename[col] = 'sz_close'
-                    elif '涨跌幅' in col:
-                        rename[col] = 'sz_change'
+            df = df.rename(columns={
+                '日期': 'date',
+                '上证-收盘价': 'sh_close',
+                '上证-涨跌幅': 'sh_change',
+                '深证-收盘价': 'sz_close',
+                '深证-涨跌幅': 'sz_change',
+                '主力净流入-净额': 'main_net',
+                '主力净流入-净占比': 'main_pct',
+            })
 
-            df = df.rename(columns=rename)
-
-            # 按日期降序，取最新
+            # 按日期降序
             if 'date' in df.columns:
                 df = df.sort_values('date', ascending=False).reset_index(drop=True)
-            latest = df.iloc[0]
 
+            latest = df.iloc[0]
             result = {
                 'date': str(latest.get('date', ''))[:10],
-                'sh_close': latest.get('sh_close'),
-                'sh_change': latest.get('sh_change'),
-                'sz_close': latest.get('sz_close'),
-                'sz_change': latest.get('sz_change'),
+                'sh_close': float(latest.get('sh_close', 0) or 0),
+                'sh_change': float(latest.get('sh_change', 0) or 0),
+                'sz_close': float(latest.get('sz_close', 0) or 0),
+                'sz_change': float(latest.get('sz_change', 0) or 0),
                 'main_net': round(float(latest.get('main_net', 0) or 0) / 1e8, 2),  # 亿元
-                'main_pct': latest.get('main_pct', 0),  # %
+                'main_pct': float(latest.get('main_pct', 0) or 0),  # %
             }
-
             _FundFlowCache.set(cache_key, result, ttl=1800)
             logger.info("[FundFlow] 大盘资金流: %s", result)
             return result
@@ -388,50 +405,49 @@ class FundFlowService:
             logger.warning("[FundFlow] 获取大盘资金流失败: %s", e)
             return {}
 
-    def get_main_net_summary(self, stock_code: str) -> Dict:
+    # ── 主力净流入摘要 ──────────────────────────────────────────────
+
+    def get_main_net_summary(self, stock_code: str, period: str = '5日排行') -> Dict:
         """
         获取个股主力净流入摘要（用于选股评分）。
 
         Returns:
             {
-                'main_net_1d': float,   # 今日主力净流入（元）
-                'main_net_5d': float,   # 5日累计主力净流入（元）
-                'main_net_10d': float,  # 10日累计主力净流入（元）
-                'signal': str,          # 'strong_inflow' / 'inflow' / 'neutral' / 'outflow' / 'strong_outflow'
+                'code': str,
+                'name': str,
+                'date': str,
+                'main_net': float,   # 元
+                'main_net_yi': float,  # 亿元
+                'close': float,
+                'change_pct': float,  # %
+                'turnover_rate': float,
+                'signal': str  # strong_inflow/inflow/neutral/outflow/strong_outflow
             }
         """
-        flow = self.get_stock_fund_flow(stock_code, days=10)
-        if not flow:
-            return {'signal': 'unknown', 'main_net_1d': 0, 'main_net_5d': 0, 'main_net_10d': 0}
+        flow = self.get_stock_fund_flow(stock_code, period)
+        if flow is None:
+            return {'code': stock_code, 'signal': 'unknown', 'main_net': 0}
 
-        # 今日
-        net_1d = flow[0].main_net if len(flow) > 0 else 0
-        # 5日累计
-        net_5d = sum(r.main_net for r in flow[:5]) if len(flow) >= 5 else sum(r.main_net for r in flow)
-        # 10日累计
-        net_10d = sum(r.main_net for r in flow)
-
-        # 信号判断（阈值待验证，根据实际数据调整）
-        # 以"亿元"为单位
-        net_1d_yi = net_1d / 1e8
-        net_5d_yi = net_5d / 1e8
-
-        if net_1d_yi > 5:
+        net_yi = flow.main_net / 1e8
+        if net_yi > 5:
             signal = 'strong_inflow'
-        elif net_1d_yi > 1:
+        elif net_yi > 1:
             signal = 'inflow'
-        elif net_1d_yi < -5:
+        elif net_yi < -5:
             signal = 'strong_outflow'
-        elif net_1d_yi < -1:
+        elif net_yi < -1:
             signal = 'outflow'
         else:
             signal = 'neutral'
 
         return {
-            'code': stock_code,
-            'date': flow[0].date,
-            'main_net_1d': round(net_1d, 2),
-            'main_net_5d': round(net_5d, 2),
-            'main_net_10d': round(net_10d, 2),
+            'code': flow.code,
+            'name': flow.name,
+            'date': flow.date,
+            'main_net': round(flow.main_net, 2),
+            'main_net_yi': round(net_yi, 2),
+            'close': flow.close,
+            'change_pct': flow.change_pct,
+            'turnover_rate': flow.turnover_rate,
             'signal': signal,
         }
