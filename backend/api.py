@@ -711,6 +711,55 @@ def data_status():
     )
 
 
+@app.route('/data/fund_flow', methods=['GET'])
+def data_fund_flow():
+    """
+    GET /data/fund_flow
+    Query params:
+        source  — 'market' (default) or stock code (e.g. '000300')
+        days    — int, number of trading days for stock flow (default 5)
+
+    Returns:
+        Market-level main fund flow summary (两市合计主力净流入).
+        Source: AkShare stock_market_fund_flow()
+
+        market flow (default):
+          - sh_close, sh_change: 上证指数收盘/涨跌幅
+          - sz_close, sz_change: 深证成指收盘/涨跌幅
+          - main_net: 主力净流入（亿元，沪深合计）
+          - main_pct: 主力净流入占成交额百分比
+
+        stock flow (source=<code>):
+          - List of recent N days fund flow records
+          - Each record: date, close, change_pct, main_net/5d/10d, signal
+    """
+    source = request.args.get('source', 'market')
+    days = int(request.args.get('days', 5))
+
+    try:
+        from services.fund_flow import FundFlowService
+        svc = FundFlowService()
+
+        if source == 'market':
+            result = svc.get_market_fund_flow()
+            return ok(
+                type='market',
+                **result
+            )
+        else:
+            summary = svc.get_main_net_summary(source)
+            return ok(
+                type='stock',
+                source=source,
+                **summary
+            )
+    except ImportError:
+            return err('FundFlowService not available (AkShare missing)', 500)
+    except Exception as e:
+        import traceback
+        return err(f'资金流获取失败: {e}\n{traceback.format_exc()}', 500)
+
+
 # ============================================================
 # Error handlers
 # ============================================================
