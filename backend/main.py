@@ -157,7 +157,7 @@ def start_api_server(host: str, port: int, logger):
 
 def main():
     parser = argparse.ArgumentParser(description='Portfolio Backend Service')
-    parser.add_argument('--host', default='127.0.0.1')
+    parser.add_argument('--host', default='0.0.0.0', help='绑定地址，0.0.0.0=接受局域网访问，127.0.0.1=仅本机（默认 0.0.0.0）')
     parser.add_argument('--port', type=int, default=5555)
     parser.add_argument('--mode', choices=['api', 'scheduler', 'both'], default='both')
     args = parser.parse_args()

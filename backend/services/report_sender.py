@@ -38,7 +38,7 @@ for k in list(os.environ.keys()):
         del os.environ[k]
 
 # ─── 路径设置 ────────────────────────────────────────────────
-BASE_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR    = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # backend/services -> backend -> quant_repo
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BACKEND_DIR)
 sys.path.insert(0, os.path.join(BASE_DIR, 'scripts'))
@@ -240,29 +240,36 @@ def backend_get(endpoint: str) -> dict:
 # ─── 报告内容生成 ────────────────────────────────────────────
 
 def build_morning_report() -> str:
-    now = datetime.now()
-    date_str = now.strftime('%Y年%m月%d日（%A）')
-    time_str = now.strftime('%H:%M')
+    """
+    生成早报内容（丰富版）：
+      1. 调用 scripts.morning_report.build_report() 获取结构化早报
+         （市场情绪 + 大盘指数 + 关注标的 + 精选资讯）
+      2. 附加持仓开盘参考（report_sender 特有）
+    """
+    # ── 调用丰富版早报 ───────────────────────────────────────────
+    try:
+        from morning_report import build_report as _build_rich_report
+        report = _build_rich_report(
+            include_sentiment=True,
+            include_indices=True,
+            include_stocks=True,
+            include_news=True,
+        )
+    except Exception as e:
+        # Fallback 到简单版（网络异常时）
+        import logging
+        logging.warning("[report_sender] morning_report.build_report() failed: %s, using fallback", e)
+        report = _build_morning_report_fallback()
 
-    lines = [
-        f"🌅 **【早报】{date_str} {time_str}**",
-        "",
-        "━━━ 市场概况 ━━━",
-    ]
-
-    overview = get_market_overview()
-    if overview:
-        lines.extend(overview)
-    else:
-        lines.append("  （数据获取失败）")
-    lines.append("")
-
+    # ── 附加持仓开盘参考（追加到报告末尾） ─────────────────────
     portfolio = backend_get('/portfolio/summary')
     positions = portfolio.get('positions', [])
     holding_symbols = [p['symbol'] for p in positions if p.get('shares', 0) > 0]
+
+    append_lines = []
     if holding_symbols:
         snaps = get_bulk_realtime(holding_symbols)
-        lines.append("━━━ 持仓开盘参考 ━━━")
+        append_lines.append('━━━ 持仓开盘参考 ━━━')
         for sym in holding_symbols:
             snap = snaps.get(sym, {})
             if snap.get('price'):
@@ -271,31 +278,33 @@ def build_morning_report() -> str:
                 name = snap.get('name', sym)
                 limit_pct = get_limit_pct(sym)
                 upper = snap['prev_close'] * (1 + limit_pct)
-                lines.append(
+                append_lines.append(
                     f"  {name}({sym})：{snap['price']:.2f}（{sign}{pct:.2f}%）"
                     f" | 涨停{upper:.2f}"
                 )
-        lines.append("")
+        append_lines.append('')
 
-    cache_file = os.path.join(BASE_DIR, 'scripts', 'sector_scores.json')
-    if os.path.exists(cache_file):
-        try:
-            with open(cache_file) as f:
-                cached = json.load(f)
-            updated = cached.get('updated', '')
-            scores = cached.get('scores', {})
-            if scores:
-                sorted_scores = sorted(scores.items(), key=lambda x: -x[1].get('total', 0))
-                lines.append("━━━ 今日关注板块 ━━━")
-                for sector, score in sorted_scores[:5]:
-                    s = score or {}
-                    total = s.get('total', 0)
-                    news_score = s.get('news', 0)
-                    lines.append(f"  {sector}（综合{total:.0f} | 新闻{news_score:.0f}）")
-                lines.append(f"_ 更新时间：{updated}_")
-        except Exception:
-            pass
+    if append_lines:
+        report = report + '\n\n' + '\n'.join(append_lines)
 
+    return report
+
+
+def _build_morning_report_fallback() -> str:
+    """当 scripts.morning_report 不可用时的降级版本"""
+    now = datetime.now()
+    date_str = now.strftime('%Y年%m月%d日（%A）')
+    time_str = now.strftime('%H:%M')
+    lines = [
+        f"🌅 **【早报】{date_str} {time_str}**",
+        "",
+        "━━━ 市场概况 ━━━",
+    ]
+    overview = get_market_overview()
+    if overview:
+        lines.extend(overview)
+    else:
+        lines.append("  （数据获取失败）")
     lines.append("")
     lines.append("⚠️ 仅供参考，不构成投资建议")
     return '\n'.join(lines)

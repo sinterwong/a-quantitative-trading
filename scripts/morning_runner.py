@@ -63,6 +63,23 @@ def api_post(path: str, body: dict = None) -> dict:
         return {}
 
 
+def api_delete(path: str) -> dict:
+    try:
+        req = urllib.request.Request(
+            f'{BASE_URL}{path}',
+            method='DELETE'
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        body = e.read()
+        _log.warning('API DELETE %s HTTP %d: %s', path, e.code, body[:200])
+        return {}
+    except Exception as e:
+        _log.warning('API DELETE %s failed: %s', path, e)
+        return {}
+
+
 # ─── 飞书推送 ──────────────────────────────────────────────────────────────
 
 def feishu_push(text: str, to_user: str = 'user:ou_b8add658ac094464606af32933a02d0b'):
@@ -153,7 +170,7 @@ def sync_watchlist(stocks: list):
             sym = item.get('symbol')
             if sym:
                 try:
-                    api_post(f'/watchlist/{sym}')  # DELETE
+                    api_delete(f'/watchlist/{sym}')  # DELETE
                 except Exception:
                     pass
 
@@ -366,7 +383,7 @@ def log_opening_state(candidates: list, buy_results: list,
             f"equity={equity:.0f} cash={cash:.0f}"
         )
 
-        api_post('/daily_meta', {
+        api_post('/portfolio/daily', {
             'date':        today,
             'nav':         equity / equity if equity else 1.0,
             'equity':      equity,

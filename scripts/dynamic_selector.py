@@ -377,7 +377,7 @@ class DynamicStockSelectorV2:
 
     def fetch_market_news(self, limit: int = 30) -> List[Dict]:
         """获取市场资讯，依次尝试：缓存 -> 东方财富 -> 同花顺"""
-        if sself.news_cache:
+        if self.news_cache:
             return self.news_cache[:limit]
 
         # 1. 文件缓存（30分钟内有效）
