@@ -392,7 +392,7 @@ class IntradayMonitor:
                         self._deliver_alert(
                             f'\u26d4[{sym}] \u65b0\u95fb\u60c5\u7eea\u5229\u7a7a\uff0c\u62d2\u7edd\u5efa\u4ed3\n'
                             f'   \u60c5\u7eea\uff1a{sent}\uff08\u7f6e\u4fe1\u5ea6 {conf:.0%}\uff09\n'
-                            f'   \u6458\u8981\uff1a{summ[:80] if summ else "\u65e0"}'
+                            f'   \u6458\u8981\uff1a{summ[:80] if summ else "无"}'
                         )
                         continue
                 shares = self._calc_shares(sym, alert.price)
@@ -447,7 +447,7 @@ class IntradayMonitor:
                 self._deliver_alert(
                     f'\u26d4[{alert.symbol}] \u65b0\u95fb\u60c5\u7eea\u5229\u7a7a\uff0c\u6682\u505c\u4e70\u5165\\n'
                     f'   \u60c5\u7eea\uff1a{sent}\uff08\u7f6e\u4fe1\u5ea6 {conf:.0%}\uff09\\n'
-                    f'   \u6458\u8981\uff1a{summ[:80] if summ else "\u65e0"}\\n'
+                    f'   \u6458\u8981\uff1a{summ[:80] if summ else "无"}\\n'
                 )
                 return None
         shares = self._calc_shares(alert.symbol, alert.price)
