@@ -855,12 +855,13 @@ def evaluate_signal(symbol: str,
                         emitted_at=datetime.now().strftime('%H:%M:%S'),
                     )
 
+            day_chg_pct = f'{day_chg*100:.1f}' if day_chg is not None else 'N/A'
             if day_chg is not None and day_chg < -MOMENTUM_THRESHOLD:
                 signal = 'WATCH_BUY'
-                reason = f'RSI={prev_rsi:.0f}≤{rsi_buy}超卖，当日下跌{'%.1f'%(day_chg*100)}%，关注低吸｜现价{price}'
+                reason = f'RSI={prev_rsi:.0f}<={rsi_buy} oversold, down {day_chg_pct}% today — watch for dip buy | price={price}'
             elif day_chg is not None and day_chg > MOMENTUM_THRESHOLD:
                 signal = 'RSI_BUY'
-                reason = f'RSI={prev_rsi:.0f}≤{rsi_buy}超卖+价格已反弹{'%.1f'%(day_chg*100)}%，强势｜现价{price}'
+                reason = f'RSI={prev_rsi:.0f}<={rsi_buy} oversold + price rebounded {day_chg_pct}%, strong | price={price}'
             else:
                 signal = 'RSI_BUY'
                 reason = f'RSI={prev_rsi:.0f}≤{rsi_buy}超卖区间｜现价{price}'
