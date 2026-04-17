@@ -116,4 +116,7 @@ jobs:
 
       - name: Run unit tests (Windows)
         shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+          LC_ALL: C.UTF-8
         run: python tests/run_tests.py
