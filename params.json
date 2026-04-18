@@ -12,9 +12,9 @@
         "stop_loss": 0.05,
         "take_profit": 0.2,
         "min_hold_days": 3,
-        "atr_threshold": 0.9
+        "atr_threshold": 0.85
       },
-      "_note": "WFA阈值扫描(2026-04-15): ATR(90%) Sharpe=0.767, PosWin=7/10=70%, 全量有效窗口10/10. 最优阈值=0.90. RSI(25/65), SL=5%, TP=20%."
+      "_note": "WFA阈值扫描(2026-04-15): ATR(85%) Sharpe=0.467, PosWin=10/10=100%, 全量有效窗口10/10. 最优阈值=0.85. RSI(25/65), SL=5%, TP=20%."
     },
     "MACD": {
       "symbol": "600900.SH",
