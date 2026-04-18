@@ -12,7 +12,7 @@ S1-T1: ATR 阈值 WFA 精确化
   python atr_wfa_scan.py [symbol] [--train-years N] [--test-years N]
 """
 
-import os, sys, argparse
+import os, sys, json, argparse
 from datetime import datetime, timedelta
 
 for k in list(os.environ.keys()):
@@ -21,9 +21,42 @@ for k in list(os.environ.keys()):
 
 QUANT_DIR = r'C:\Users\sinte\.openclaw\workspace\quant_repo\scripts\quant'
 sys.path.insert(0, QUANT_DIR)
+BK_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from data_loader import DataLoader
 from backtest import BacktestEngine
+
+LIVE_PARAMS_PATH = os.path.join(BK_DIR, 'backend', 'services', 'live_params.json')
+
+
+def save_best_threshold(symbol: str, best_threshold: float, best_sharpe: float,
+                        rsi_buy: int = 25, rsi_sell: int = 65):
+    """将最优 ATR 阈值回写到 live_params.json。"""
+    live_params = {}
+    if os.path.exists(LIVE_PARAMS_PATH):
+        try:
+            with open(LIVE_PARAMS_PATH, encoding='utf-8') as f:
+                live_params = json.load(f)
+        except Exception:
+            pass
+
+    key = f'{symbol}_RSI'
+    entry = live_params.get(key, {'symbol': symbol, 'strategy': 'RSI'})
+    entry['params'] = {
+        'rsi_buy': rsi_buy,
+        'rsi_sell': rsi_sell,
+        'stop_loss': 0.05,
+        'take_profit': 0.20,
+        'atr_threshold': best_threshold,
+    }
+    entry['test_sharpe'] = round(best_sharpe, 4)
+    entry['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M')
+    live_params[key] = entry
+
+    os.makedirs(os.path.dirname(LIVE_PARAMS_PATH), exist_ok=True)
+    with open(LIVE_PARAMS_PATH, 'w', encoding='utf-8') as f:
+        json.dump(live_params, f, indent=2, ensure_ascii=False)
+    print(f'  [WRITE] {LIVE_PARAMS_PATH} updated: atr_threshold={best_threshold}')
 
 # ─── RSI + ATR Filter 信号 ────────────────────────────────
 
@@ -234,6 +267,15 @@ def scan_thresholds(symbol, thresholds, train_years, test_years, capital):
     return results
 
 
+def save_best_threshold_to_live_params(symbol: str, results: list, rsi_buy: int = 25, rsi_sell: int = 65):
+    """将最优阈值结果写入 live_params.json（供盘中信号引擎使用）。"""
+    if not results:
+        return
+    results.sort(key=lambda x: x['avg_sharpe'], reverse=True)
+    best = results[0]
+    save_best_threshold(symbol, best['threshold'], best['avg_sharpe'], rsi_buy, rsi_sell)
+
+
 if __name__=='__main__':
     import argparse
     p=argparse.ArgumentParser()
@@ -242,6 +284,9 @@ if __name__=='__main__':
     p.add_argument('--train-years',type=int,default=2)
     p.add_argument('--test-years',type=int,default=1)
     p.add_argument('--capital',type=float,default=200000)
+    p.add_argument('--write',action='store_true',help='将最优阈值写入 live_params.json')
     a=p.parse_args()
     ths=[float(x) for x in a.thresholds.split(',')]
-    scan_thresholds(a.symbol,ths,a.train_years,a.test_years,a.capital)
+    results = scan_thresholds(a.symbol,ths,a.train_years,a.test_years,a.capital)
+    if results and a.write:
+        save_best_threshold_to_live_params(a.symbol, results)
