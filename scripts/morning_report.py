@@ -286,6 +286,8 @@ def build_report(include_sentiment: bool = True,
 
 
 if __name__ == '__main__':
+    import sys, io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     print('Building morning report...')
     report = build_report()
     print(report)
