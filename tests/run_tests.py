@@ -192,6 +192,62 @@ allowed_ok, reason_ok = filt.can_buy(ok_data, 1)
 check(allowed_ok == True, 'normal stock passes')
 
 # ============================================================
+# Section 3: DataLayer tests (Phase 1)
+# ============================================================
+
+section('DataLayer (Phase 1)')
+
+import importlib, subprocess, sys as _sys
+
+def _run_test_module(module_name, label):
+    """运行独立测试模块，捕获结果写入全局计数。"""
+    global passed, failed
+    result = subprocess.run(
+        [_sys.executable, os.path.join(THIS_DIR, module_name)],
+        capture_output=True, text=True, encoding='utf-8'
+    )
+    output = result.stdout + result.stderr
+    # 解析最后一行摘要
+    for line in reversed(output.splitlines()):
+        line = line.strip()
+        if 'passed' in line and 'failed' in line:
+            # 格式: "Phase X Label: N passed, M failed"
+            try:
+                parts = line.split(':')[-1].strip().split(',')
+                p = int(parts[0].split()[0])
+                f = int(parts[1].split()[0])
+                passed += p
+                failed += f
+                status = 'PASS' if f == 0 else 'FAIL'
+                print(f'  {status}: {label} — {p} passed, {f} failed')
+                return
+            except Exception:
+                pass
+        elif line.startswith('ALL') and 'TESTS PASSED' in line:
+            try:
+                p = int(line.split()[1])
+                passed += p
+                print(f'  PASS: {label} — {p} passed')
+                return
+            except Exception:
+                pass
+    # 找不到摘要行 → 按退出码判断
+    if result.returncode == 0:
+        print(f'  PASS: {label} (no summary line)')
+    else:
+        failed += 1
+        print(f'  FAIL: {label} (exit code {result.returncode})')
+        if result.stderr:
+            for ln in result.stderr.splitlines()[:5]:
+                print('    ' + ln)
+
+_run_test_module('test_data_layer.py',     'DataLayer')
+_run_test_module('test_factor_pipeline.py','FactorRegistry+Pipeline')
+_run_test_module('test_strategy_runner.py','StrategyRunner')
+_run_test_module('test_portfolio_risk.py', 'PortfolioRisk')
+_run_test_module('test_config.py',         'Config')
+
+# ============================================================
 # Summary
 # ============================================================
 
