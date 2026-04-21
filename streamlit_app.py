@@ -205,6 +205,7 @@ page = st.sidebar.radio(
         '📉 回测分析',
         '💼 持仓详情',
         '📋 历史交易',
+        '📋 实盘记录',
     ],
     index=0,
 )
@@ -704,5 +705,141 @@ elif page == '📋 历史交易':
         c2.metric('卖出次数', len(sells))
     else:
         st.info('暂无交易记录')
+
+    st.button('🔄 刷新', on_click=st.cache_data.clear)
+
+
+# ─── 页面 7：实盘记录 ────────────────────────────────────────
+elif page == '📋 实盘记录':
+    st.title('📋 实盘记录')
+    st.caption('模拟交易全流程追踪 · 明日 09:30 自动开始扫描信号')
+
+    # ── 账户概览 ──────────────────────────────────────
+    summary = api_get('/portfolio/summary', timeout=5)
+    cash     = summary.get('cash', 0)
+    equity   = summary.get('total_equity', cash)
+    pos_val  = summary.get('position_value', 0)
+    real_pnl = summary.get('realized_pnl', 0)
+    total_pnl  = summary.get('total_pnl', 0)
+
+    m_col = st.columns([1, 1, 1, 1, 1])
+    m_col[0].metric('总权益', f'¥{equity:,.0f}')
+    m_col[1].metric('可用现金', f'¥{cash:,.0f}')
+    m_col[2].metric('持仓市值', f'¥{pos_val:,.0f}')
+    m_col[3].metric('已实现盈亏', f'{real_pnl:+.0f}',
+                     delta=f'{real_pnl/equity*100:+.1f}%' if equity else None)
+    m_col[4].metric('总盈亏', f'{total_pnl:+.0f}',
+                     delta=f'{total_pnl/equity*100:+.1f}%' if equity else None)
+
+    # ── 持仓明细 ──────────────────────────────────────
+    positions_data = summary.get('positions', [])
+    st.subheader('📦 当前持仓')
+    if positions_data:
+        rows = []
+        for p in positions_data:
+            sym = p.get('symbol', '')
+            snap = get_realtime(sym)
+            entry = p.get('entry_price', 0)
+            cur = snap.get('price', entry) if snap else entry
+            shares = p.get('shares', 0)
+            mkt_val = cur * shares
+            pnl = (cur - entry) * shares
+            pnl_pct = pnl / (entry * shares) if entry * shares else 0
+            day_pct = snap.get('pct', 0) if snap else 0
+            rows.append({
+                '代码': sym,
+                '股数': shares,
+                '成本': f'¥{entry:.3f}',
+                '现价': f'¥{cur:.3f}',
+                '市值': f'¥{mkt_val:,.0f}',
+                '浮动盈亏': f'{pnl:+,.0f}',
+                '盈亏%': f'{pnl_pct:+.1%}',
+                '今日': f'{day_pct:+.2f}%',
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info('当前无持仓（市场收盘或已清仓）')
+
+    # ── 权益曲线 ──────────────────────────────────────
+    st.subheader('📈 权益曲线')
+    daily_data = api_get('/portfolio/daily', timeout=5).get('daily', [])
+    if daily_data:
+        df_daily = pd.DataFrame(daily_data)
+        df_daily = df_daily.sort_values('trade_date')
+        fig = px.line(
+            df_daily, x='trade_date', y='equity',
+            title='每日权益（Paper Trade）',
+            labels={'trade_date': '日期', 'equity': '总权益（¥）'},
+            markers=True,
+        )
+        fig.update_layout(hovermode='x unified')
+        st.plotly_chart(fig, use_container_width=True)
+        start_eq = df_daily.iloc[0]['equity'] if not df_daily.empty else equity
+        st.caption(f'起始: ¥{start_eq:,.0f} → 当前: ¥{equity:,.0f} | 收益率: {(equity-start_eq)/start_eq*100:+.1f}%')
+    else:
+        st.info('暂无日线权益数据')
+
+    # ── 最近成交 ──────────────────────────────────────
+    st.subheader('📋 最近成交记录')
+    recent_trades = summary.get('recent_trades', [])
+    if recent_trades:
+        rows = []
+        for t in recent_trades:
+            rows.append({
+                '时间':    t.get('executed_at', '')[:16],
+                '代码':    t.get('symbol', ''),
+                '方向':    '🔴 卖出' if t.get('direction') == 'SELL' else '🟢 买入',
+                '价格':    f'¥{t.get("price", 0):.3f}',
+                '股数':    t.get('shares', 0),
+                '总额':    f'¥{t.get("shares", 0) * t.get("price", 0):,.0f}',
+                '滑点':    f'{t.get("slippage_bps", 0):+.1f}bps',
+                '单笔盈亏': f'{t.get("pnl", 0):+.0f}' if t.get('pnl') is not None else '—',
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info('暂无成交记录')
+
+    # ── 盘中预警 ──────────────────────────────────────
+    st.subheader('🔔 盘中预警记录')
+    alerts_data = api_get('/alerts/history?limit=10', timeout=5).get('alerts', [])
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    today_alerts = [a for a in alerts_data
+                    if str(a.get('triggered_at', '')).startswith(today_str)]
+    show_alerts = today_alerts if today_alerts else alerts_data[:5]
+    if show_alerts:
+        for a in show_alerts[:8]:
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                pct = a.get('pct_change', 0)
+                emoji = '🔴' if pct < 0 else '🟢'
+                st.markdown(f'{emoji} `{a.get("symbol","")}`')
+            with col2:
+                msg = a.get('message', '(无内容)')
+                st.markdown(f"{msg.replace(chr(10), ' | ')} **{pct:+.2f}%** · {a.get('triggered_at','')[:16]}")
+    else:
+        st.info('今日暂无预警')
+
+    # ── 候选标的 ──────────────────────────────────────
+    st.subheader('👀 候选标的（明日待买）')
+    watchlist = api_get('/watchlist', timeout=5).get('watchlist', [])
+    enabled = [w for w in watchlist if w.get('enabled', 0) == 1]
+    if enabled:
+        rows = []
+        for w in enabled[:10]:
+            sym = w.get('symbol', '')
+            snap = get_realtime(sym)
+            cur = snap.get('price', 0) if snap else 0
+            day_pct = snap.get('pct', 0) if snap else 0
+            rows.append({
+                '代码':     sym,
+                '名称':     w.get('name', '—'),
+                '关注理由': w.get('reason', ''),
+                '现价':     f'¥{cur:.2f}' if cur else '—',
+                '今日涨跌': f'{day_pct:+.2f}%',
+                '预警阈值': f"±{w.get('alert_pct', 5):.1f}%",
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info('候选标的为空（今日五维选股尚未运行）')
 
     st.button('🔄 刷新', on_click=st.cache_data.clear)
