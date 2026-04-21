@@ -391,11 +391,15 @@ elif page == '🔍 动态选股':
         with st.spinner('正在获取市场数据（新闻 → 板块行情 → 成分股分析）...'):
             try:
                 import subprocess
+                env = {**os.environ, 'PYTHONPATH': os.path.join(BASE_DIR, 'scripts')}
+                if sys.platform == 'win32':
+                    env['PYTHONIOENCODING'] = 'utf-8'
+                    env['PYTHONUTF8'] = '1'
                 result = subprocess.run(
                     [sys.executable, os.path.join(BASE_DIR, 'scripts', 'dynamic_selector.py')],
                     capture_output=True, encoding='utf-8', errors='replace',
-                    timeout=120,   # 从 60s 提升至 120s（成分股 HTTP 请求较多）
-                    env={**os.environ, 'PYTHONPATH': os.path.join(BASE_DIR, 'scripts')}
+                    timeout=120,
+                    env=env
                 )
                 if result.returncode == 0:
                     st.success('✅ 选股完成')
@@ -480,37 +484,142 @@ elif page == '📉 回测分析':
     st.markdown('---')
     st.subheader('运行 Walk-Forward 训练')
 
-    col1, col2 = st.columns(2)
-    with col1:
+    col_sym, col_strat = st.columns([1, 1])
+    with col_sym:
         symbol = st.text_input('标的代码', value='510310.SH')
-    with col2:
+    with col_strat:
         strategy = st.selectbox('策略', ['RSI', 'MACD'], index=0)
 
-    if st.button('🚀 开始 Walk-Forward 训练'):
-        with st.spinner('训练中（可能需要几分钟）...'):
+    # ── 数据可用性检测 ──────────────────────────────
+    st.markdown('**① 检测数据可用性**（改变标的后请重新检测）')
+
+    if 'wfa_detected' not in st.session_state:
+        st.session_state['wfa_detected'] = False
+        st.session_state['wfa_days'] = 0
+        st.session_state['wfa_first'] = ''
+        st.session_state['wfa_last'] = ''
+
+    btn_col1, btn_col2 = st.columns([1, 3])
+    with btn_col1:
+        clicked = st.button('🔍 检测数据可用性')
+    with btn_col2:
+        if st.session_state['wfa_detected']:
+            days = st.session_state['wfa_days']
+            first = st.session_state['wfa_first']
+            last = st.session_state['wfa_last']
+            max_train_test = days // 252
+            st.success(f'📈 {symbol} 可用数据: **{days} 天**（{first} ~ {last}）— 最多支持 {max_train_test}y 训练+验证')
+        else:
+            st.info('点击"检测数据可用性"获取标的实际数据量')
+
+    if clicked:
+        with st.spinner('正在检测数据...'):
             try:
-                import subprocess
-                env = {**os.environ, 'PYTHONPATH': os.path.join(BASE_DIR, 'scripts')}
-                # 确保 subprocess 用 UTF-8
-                if sys.platform == 'win32':
-                    env['PYTHONIOENCODING'] = 'utf-8'
-                result = subprocess.run(
-                    [
+                import sys as _sys
+                _sys.path.insert(0, os.path.join(BASE_DIR, 'scripts', 'quant'))
+                from data_loader import DataLoader
+                from datetime import datetime, timedelta
+                loader = DataLoader()
+                end = datetime.now().strftime('%Y%m%d')
+                start = (datetime.now() - timedelta(days=365 * 6)).strftime('%Y%m%d')
+                kline = loader.get_kline(symbol, start, end)
+                if kline and len(kline) > 100:
+                    st.session_state['wfa_detected'] = True
+                    st.session_state['wfa_days'] = len(kline)
+                    st.session_state['wfa_first'] = kline[0]['date'][:10]
+                    st.session_state['wfa_last'] = kline[-1]['date'][:10]
+                    st.rerun()
+                else:
+                    st.error(f'数据不足: 仅获取 {len(kline) if kline else 0} 条')
+                    st.session_state['wfa_detected'] = False
+            except Exception as e:
+                st.error(f'检测失败: {e}')
+                st.session_state['wfa_detected'] = False
+
+    # ── 参数配置（仅在检测后才显示） ────────────────────
+    BUFFER_DAYS = 90   # 预热缓冲天数
+
+    if st.session_state['wfa_detected']:
+        st.markdown('**② 配置训练参数**')
+        days = st.session_state['wfa_days']
+
+        # 根据数据量计算可用范围
+        min_train_days = 252          # 至少 1 交易年用于训练
+        max_train_days = days - 252 - BUFFER_DAYS  # 留下 1y 测试 + 缓冲
+
+        if max_train_days < min_train_days:
+            st.error(f'数据不足以进行 WFA：仅有 {days} 天，需至少 {min_train_days + 252 + BUFFER_DAYS} 天（1y 训练 + 1y 测试 + {BUFFER_DAYS}d 缓冲）')
+            st.button('🔄 刷新', on_click=st.cache_data.clear)
+            st.stop()
+
+        # 初始化默认值（训练占 2/3，测试占 1/3）
+        default_train_days = min(504, (max_train_days + min_train_days) // 2)
+        if 'wfa_train_days' not in st.session_state:
+            st.session_state['wfa_train_days'] = default_train_days
+
+        # ── 单一滑条：训练天数 ──────────────────────────
+        new_train_days = st.slider(
+            '📐 训练天数',
+            min_value=int(min_train_days),
+            max_value=int(max_train_days),
+            value=int(st.session_state['wfa_train_days']),
+            step=21,
+            key='wfa_train_days_slider',
+        )
+        st.session_state['wfa_train_days'] = new_train_days
+        test_days = days - new_train_days - BUFFER_DAYS
+
+        # ── 状态栏 ────────────────────────────────────
+        total_used = new_train_days + test_days + BUFFER_DAYS
+        col_stat = st.columns([1, 1, 1, 2])
+        with col_stat[0]: st.metric('训练天数', f'{new_train_days}d')
+        with col_stat[1]: st.metric('验证天数', f'{test_days}d')
+        with col_stat[2]: st.metric('缓冲天数', f'{BUFFER_DAYS}d')
+        with col_stat[3]:
+            used_pct = total_used / days * 100
+            st.caption(f'📊 共使用 {days} 天中的 {total_used} 天 ({used_pct:.0f}%)')
+
+        # ── 警告判断 ──────────────────────────────────
+        if test_days < 252:
+            st.warning(f'⚠️ 验证天数仅 {test_days}d（< 252d），测试窗口太少，WFA 结果可能不稳定')
+        elif new_train_days > days * 0.75:
+            st.warning(f'⚡ 训练天数过长，测试窗口偏少（{test_days}d），建议适当增加验证比例')
+
+        # ── 换算为年数（传给 job 脚本） ─────────────────
+        train_yrs = max(1, new_train_days // 252)   # 向下取整，避免需求放大
+        test_yrs  = max(1, test_days // 252)
+        st.caption(f'→ 实际传参：--train-years={train_yrs} --test-years={test_yrs}（{train_yrs*252}d + {test_yrs*252}d）')
+
+        if st.button('🚀 开始 Walk-Forward 训练'):
+            st.info(f'📊 {symbol} | 训练 {new_train_days}d({train_yrs}y) + 验证 {test_days}d({test_yrs}y) | 缓冲 {BUFFER_DAYS}d | 共 {total_used}d')
+            with st.spinner('训练中（可能需要几分钟）...'):
+                try:
+                    import subprocess
+                    env = {**os.environ, 'PYTHONPATH': os.path.join(BASE_DIR, 'scripts')}
+                    if sys.platform == 'win32':
+                        env['PYTHONIOENCODING'] = 'utf-8'
+                        env['PYTHONUTF8'] = '1'
+                    cmd = [
                         sys.executable,
                         os.path.join(BASE_DIR, 'scripts', 'walkforward_job.py'),
                         '--symbol', symbol,
                         '--strategy', strategy,
-                    ],
-                    capture_output=True, encoding='utf-8', errors='replace', timeout=300,
-                    env=env
-                )
-                st.code(result.stdout[-3000:] if result.stdout else '无输出', language='text')
-                if result.stderr:
-                    st.warning(result.stderr[-500:])
-                st.success('训练完成！')
-                st.cache_data.clear()
-            except Exception as e:
-                st.error(f'训练失败: {e}')
+                        '--train-years', str(train_yrs),
+                        '--test-years', str(test_yrs),
+                    ]
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True, encoding='utf-8', errors='replace', timeout=600,
+                        env=env
+                    )
+                    st.code(result.stdout[-5000:] if result.stdout else '无输出', language='text')
+                    if result.stderr and 'warning' not in result.stderr.lower():
+                        st.warning(result.stderr[-500:])
+                except Exception as e:
+                    st.error(f'训练失败: {e}')
+    else:
+        st.markdown('*请先点击上方「🔍 检测数据可用性」后再配置训练参数*')
+        train_yrs, test_yrs = 2, 1  # placeholder
 
     st.button('🔄 刷新', on_click=st.cache_data.clear)
 
