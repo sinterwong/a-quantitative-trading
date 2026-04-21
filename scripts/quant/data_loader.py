@@ -115,6 +115,67 @@ class DataLoader:
             print(f"[WARN] stock_hk_daily failed for {code}: {e}")
             return []
 
+    def _get_akshare_a_stock(self, symbol: str, start_date: str, end_date: str) -> list:
+        """
+        使用 AkShare stock_zh_a_daily 获取 A 股完整历史数据。
+        AkShare 可以获取到股票上市日的完整历史，而 Sina 只返回最近 6000 条。
+        """
+        if not AKSHARE_AVAILABLE:
+            return []
+
+        # 转换代码格式: '600900.SH' -> 'sh600900', '000001.SZ' -> 'sz000001'
+        pure = symbol.replace('.SH', '').replace('.SZ', '')
+        if not pure.isdigit() or len(pure) != 6:
+            return []
+        exchange = 'sh' if symbol.endswith('.SH') else 'sz'
+        ak_code = exchange + pure
+
+        cache_key = f'akshare_a_{ak_code}_{start_date}_{end_date}'
+        cached = self._get_cache(cache_key)
+        if cached:
+            print(f'[CACHE A] {symbol}: {len(cached)} records')
+            return cached
+
+        try:
+            # stock_zh_a_daily 返回全量历史（不受 datalen 限制）
+            df = ak.stock_zh_a_daily(symbol=ak_code, adjust='qfq')
+            if df is None or df.empty:
+                return []
+
+            # AkShare 返回中文列名: 日期, 开盘, 收盘, 最高, 最低, 成交量, 成交额, 振幅, 涨跌幅, 涨跌额, 换手率
+            # 重命名为英文列名
+            df = df.rename(columns={
+                '日期': 'date', '开盘': 'open', '收盘': 'close',
+                '最高': 'high', '最低': 'low', '成交量': 'volume',
+            })
+
+            # 日期过滤
+            df['date'] = pd.to_datetime(df['date'])
+            start_dt = pd.to_datetime(start_date[:4] + '-' + start_date[4:6] + '-' + start_date[6:8])
+            end_dt = pd.to_datetime(end_date[:4] + '-' + end_date[4:6] + '-' + end_date[6:8])
+            df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)].copy()
+            df = df.sort_values('date').reset_index(drop=True)
+
+            data = []
+            for _, row in df.iterrows():
+                data.append({
+                    'date': str(row['date'])[:10],
+                    'open': float(row['open']),
+                    'close': float(row['close']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'volume': float(row['volume']),
+                })
+
+            if data:
+                self._save_cache(cache_key, data)
+                print(f'[OK] A股 {symbol}: {len(data)} records via AkShare ({data[0]["date"]} ~ {data[-1]["date"]})')
+            return data
+
+        except Exception as e:
+            print(f'[WARN] AkShare A-stock failed for {symbol}: {e}')
+            return []
+
     def get_kline(self, symbol: str, start_date: str, end_date: str, adjust: str = 'qfq') -> list:
         """
         获取K线数据 - 优先使用稳定接口
@@ -142,7 +203,13 @@ class DataLoader:
             if data:
                 return data
 
-        # 尝试新浪财经接口
+        # A股：用 AkShare 获取完整历史数据（优先于 Sina/QT）
+        if not self._is_hk_stock(symbol) and not self._is_etf(symbol):
+            data = self._get_akshare_a_stock(symbol, start_date, end_date)
+            if data:
+                return data
+
+        # 尝试新浪财经接口（备用）
         data = self._get_sina_kline(symbol, start_date, end_date)
         if data:
             return data
