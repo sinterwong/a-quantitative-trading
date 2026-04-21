@@ -174,12 +174,19 @@ def run_walkforward_for_symbol(symbol: str,
     loader = DataLoader()
     end_date = datetime.now().strftime('%Y%m%d')
     total_years = train_years + test_years
-    start_date = (datetime.now() - timedelta(days=total_years * 365 + 60)).strftime('%Y%m%d')
+    # ATR warmup ≈ period*6 ≈ 84d，取 120d 缓冲确保够用
+    start_date = (datetime.now() - timedelta(days=total_years * 365 + 120)).strftime('%Y%m%d')
 
     kline = loader.get_kline(symbol, start_date, end_date)
-    required = total_years * 252
+    # 实际需要: train * 252 + test * 252（每段窗口内 ATR 自己算）
+    required = train_years * 252 + test_years * 252
     if len(kline) < required:
-        print(f"  [SKIP] 数据不足，需要 ~{required} 天（{total_years}y train+test），实际 {len(kline)} 天")
+        # 提供更清晰的诊断信息
+        listing_info = ''
+        if kline:
+            listing_info = f'（数据范围: {kline[0]["date"][:10]} ~ {kline[-1]["date"][:10]}）'
+        print(f'  [SKIP] 数据不足: 需要 ~{required} 天（{train_years}y train + {test_years}y test），实际 {len(kline)} 天 {listing_info}')
+        print(f'  提示: 如数据不足，可减少 train-years 或 test-years 参数，或检查股票上市时间')
         return None
 
     print(f"  Data: {kline[0]['date'][:10]} ~ {kline[-1]['date'][:10]} ({len(kline)} days)")
