@@ -69,9 +69,13 @@ class MiniMaxProvider(LLMProvider):
     def chat(self, messages: list[dict], **kwargs) -> LLMResponse:
         """
         通过 Anthropic SDK 发送请求。
+
+        注意：Minimax-M2.7 是推理模型，会先生成 thinking block 再输出 text。
+        max_tokens 需要足够大（建议 ≥ 2000）才能在 thinking 之后留出 text token 空间。
         """
         temperature = kwargs.get('temperature')
-        max_tokens = kwargs.get('max_tokens', 1024)
+        # M2.7 是推理模型，需要更大 budget
+        max_tokens = kwargs.get('max_tokens', 64000)
         model = kwargs.get('model', self.model)
 
         # 分离 system 消息
@@ -82,15 +86,18 @@ class MiniMaxProvider(LLMProvider):
             raw_content = msg.get('content', '')
 
             if role == 'system':
-                system_content = raw_content if isinstance(raw_content, str) else str(raw_content)
+                system_content = raw_content if isinstance(
+                    raw_content, str) else str(raw_content)
             elif role in ('user', 'assistant'):
                 if isinstance(raw_content, str):
                     content_blocks = [{"type": "text", "text": raw_content}]
                 elif isinstance(raw_content, list):
                     content_blocks = raw_content
                 else:
-                    content_blocks = [{"type": "text", "text": str(raw_content)}]
-                anthropic_messages.append({"role": role, "content": content_blocks})
+                    content_blocks = [
+                        {"type": "text", "text": str(raw_content)}]
+                anthropic_messages.append(
+                    {"role": role, "content": content_blocks})
 
         start = time.time()
         try:
@@ -110,13 +117,16 @@ class MiniMaxProvider(LLMProvider):
 
         latency_ms = int((time.time() - start) * 1000)
 
-        # 解析响应
+        # 解析响应（thinking block 跳过，只取 text）
         content_parts = []
+        thinking_parts = []
         for block in response.content:
             if block.type == 'text':
                 content_parts.append(block.text)
             elif block.type == 'thinking':
-                pass  # 跳过思考内容
+                # M2.7 推理模型会先产生 thinking block，内容不作为回复正文
+                if hasattr(block, 'thinking') and block.thinking:
+                    thinking_parts.append(block.thinking)
             elif block.type == 'tool_use':
                 inp = block.input
                 content_parts.append(f"[tool_use: {block.name}({inp})]")
