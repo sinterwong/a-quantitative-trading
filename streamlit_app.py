@@ -386,19 +386,27 @@ elif page == '🔍 动态选股':
     run = st.button('🚀 运行五维选股', disabled=not backend_ok)
 
     if run:
-        with st.spinner('正在获取市场数据...'):
+        # 五维选股耗时说明：需依次拉取新闻、板块行情、Top30 板块成分股，约 30-60s
+        st.info('⏳ 五维选股通常需要 30-60 秒，请耐心等待……')
+        with st.spinner('正在获取市场数据（新闻 → 板块行情 → 成分股分析）...'):
             try:
-                sys.path.insert(0, os.path.join(BASE_DIR, 'scripts'))
-                # 延迟导入避免启动慢
                 import subprocess
                 result = subprocess.run(
                     [sys.executable, os.path.join(BASE_DIR, 'scripts', 'dynamic_selector.py')],
-                    capture_output=True, encoding='utf-8', errors='replace', timeout=60,
+                    capture_output=True, encoding='utf-8', errors='replace',
+                    timeout=120,   # 从 60s 提升至 120s（成分股 HTTP 请求较多）
                     env={**os.environ, 'PYTHONPATH': os.path.join(BASE_DIR, 'scripts')}
                 )
-                st.code(result.stdout[-2000:] if result.stdout else '无输出', language='text')
+                if result.returncode == 0:
+                    st.success('✅ 选股完成')
+                else:
+                    st.warning(f'⚠️ 脚本退出码 {result.returncode}，结果可能不完整')
+                st.code(result.stdout[-3000:] if result.stdout else '无输出', language='text')
                 if result.stderr:
-                    st.warning(result.stderr[-500:])
+                    with st.expander('错误详情'):
+                        st.code(result.stderr[-1000:], language='text')
+            except subprocess.TimeoutExpired:
+                st.error('❌ 选股超时（>120s）。可能原因：网络慢或东方财富 API 限流。请稍后重试，或使用已缓存结果。')
             except Exception as e:
                 st.error(f'选股失败: {e}')
 

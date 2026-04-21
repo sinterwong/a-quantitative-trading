@@ -816,9 +816,14 @@ class DynamicStockSelectorV2:
             else:
                 return 40  # 严重分化
 
-    def calc_all_scores(self) -> Dict[str, Dict]:
+    def calc_all_scores(self, top_n_for_constituents: int = 30) -> Dict[str, Dict]:
         """
-        计算所有维度的综合评分
+        计算所有维度的综合评分。
+
+        性能优化：tech/consistency 两个维度需要对每个板块发起 HTTP 请求抓成分股，
+        开销较大（约 200ms/次 × 板块数）。为避免超时，先按 perf+flow 初筛出
+        top_n_for_constituents 个板块，只对这些板块发起成分股请求；
+        其余板块 tech=50、consistency=50（中性分，不影响排名精度）。
         """
         news = self.calc_news_score()
         bk_data = self.calc_sector_scores_from_bk()
@@ -830,13 +835,28 @@ class DynamicStockSelectorV2:
         except Exception:
             pass
 
+        # ── 性能优化：只对 perf+flow Top-N 板块抓成分股 ──────────────
+        # 先按 perf_score + flow_score 粗排，取前 top_n_for_constituents
+        sorted_by_pf = sorted(
+            bk_data.items(),
+            key=lambda x: x[1].get('perf_score', 0) + x[1].get('flow_score', 0),
+            reverse=True,
+        )
+        constituent_candidates = {bk for bk, _ in sorted_by_pf[:top_n_for_constituents]}
+        _log('INFO', f'calc_all_scores: fetching constituents for top {len(constituent_candidates)}/{len(bk_data)} sectors')
+
         # 为每个BK板块计算技术分和综合分
         bk_final = {}
         for bk, info in bk_data.items():
             perf = info['perf_score']
             flow = info['flow_score']
-            tech = self.calc_tech_score_for_bk(bk)
-            consistency = self.calc_consistency_score_for_bk(bk)
+            # 只对初筛板块发 HTTP 请求；其余给中性分（50），不影响最终 Top 结果
+            if bk in constituent_candidates:
+                tech = self.calc_tech_score_for_bk(bk)
+                consistency = self.calc_consistency_score_for_bk(bk)
+            else:
+                tech = 50
+                consistency = 50
 
             # 新闻分：尝试从板块名匹配
             bk_name = info.get('name', '')
