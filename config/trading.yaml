@@ -1,0 +1,163 @@
+# trading.yaml — 统一交易配置文件
+#
+# 层级覆盖规则：
+#   base 节点   → 所有环境共用的默认值
+#   live/dev 节点 → 覆盖 base 对应字段（deep merge）
+#
+# 通过环境变量 TRADING_ENV=live|dev 切换（默认 dev）
+#
+# 用法（Python）：
+#   from core.config import load_config
+#   cfg = load_config()              # 自动读取 TRADING_ENV
+#   cfg = load_config(env='live')    # 强制 live
+#
+# 字段说明见各节注释。
+
+# ─── 投资组合 ──────────────────────────────────────────────
+portfolio:
+  capital: 20000          # 初始资金（元）
+  max_positions: 5        # 同时持有的最大标的数
+  max_position_pct: 0.25  # 单标的最大仓位占比
+  layer_size: 2000        # 每层买入金额（元）
+  max_layers: 2           # 同一标的最大加仓次数
+
+# ─── 风控参数 ──────────────────────────────────────────────
+risk:
+  # PreTrade
+  max_net_exposure: 0.90     # 总净暴露上限
+  max_daily_loss: 0.02       # 日亏损熔断（占权益比例）
+  # InTrade
+  atr_stop_multiplier: 3.0   # Chandelier Exit 倍数
+  take_profit_pct: 0.20      # 固定止盈线
+  trailing_drawdown: 0.10    # 移动止盈触发回撤
+  # Portfolio-level
+  max_drawdown: 0.15         # 组合最大回撤
+  max_sector_weight: 0.30    # 行业集中度上限
+  var_limit: 0.03            # 单日 VaR 上限（95% 置信度）
+  max_correlation: 0.85      # 持仓相关性预警阈值
+  # 成本
+  commission_rate: 0.0003    # 佣金率（万三）
+  stamp_tax: 0.001           # 印花税（卖出 0.1%）
+  slippage_bps: 5.0          # 估算滑点（基点）
+
+# ─── 策略参数 ──────────────────────────────────────────────
+strategies:
+  RSI:
+    symbol: "510310.SH"
+    factors:
+      - name: RSI
+        weight: 0.5
+        params:
+          period: 14
+          buy_threshold: 25
+          sell_threshold: 65
+      - name: ATR
+        weight: 0.2
+        params:
+          period: 14
+          lookback: 20
+      - name: MACD
+        weight: 0.3
+        params:
+          fast: 12
+          slow: 26
+          signal: 9
+    signal_threshold: 0.5   # combined_score 触发阈值
+    bars_lookback: 120
+    stop_loss: 0.05
+    take_profit: 0.20
+    atr_threshold: 0.85
+    min_hold_days: 3
+    _note: "WFA最优: Sharpe=0.467 vs RSI_Only=0.319 (+74%). ATR(85%)过滤高波动."
+
+  MACD_600900:
+    symbol: "600900.SH"
+    factors:
+      - name: MACD
+        weight: 0.6
+        params:
+          fast: 12
+          slow: 26
+          signal: 9
+      - name: RSI
+        weight: 0.4
+        params:
+          period: 14
+          buy_threshold: 30
+          sell_threshold: 70
+    signal_threshold: 0.5
+    bars_lookback: 120
+    stop_loss: 0.08
+    take_profit: 0.25
+    min_hold_days: 5
+
+  Bollinger_300750:
+    symbol: "300750.SZ"
+    factors:
+      - name: BollingerBands
+        weight: 0.6
+        params:
+          period: 20
+          nb_std: 2.0
+      - name: RSI
+        weight: 0.4
+        params:
+          period: 14
+          buy_threshold: 35
+          sell_threshold: 65
+    signal_threshold: 0.5
+    bars_lookback: 120
+    stop_loss: 0.08
+    take_profit: 0.20
+    min_hold_days: 3
+
+# ─── 实盘标的池（由 live_params.json 迁移） ────────────────
+live_symbols:
+  - symbol: "510310.SH"
+    strategy: RSI
+    note: "WFA optimal, ATR=0.85"
+  - symbol: "600900.SH"
+    strategy: MACD_600900
+  - symbol: "300750.SZ"
+    strategy: Bollinger_300750
+  - symbol: "159915.SZ"
+    strategy: RSI
+    note: "WFA validated 2026-04"
+
+# ─── 运行参数 ──────────────────────────────────────────────
+runner:
+  interval: 300          # 主循环间隔（秒）
+  dry_run: true          # 默认模拟运行（上线前改 false）
+  min_bars: 30           # 因子计算最少 K 线数
+  bars_lookback: 120     # 拉取历史 K 线天数
+  log_level: INFO
+
+# ─── 数据源 ────────────────────────────────────────────────
+data:
+  bar_ttl: 3600          # 日K线缓存 TTL（秒）
+  quote_ttl: 30          # 实时报价缓存 TTL（秒）
+  primary_source: tencent
+  fallback_source: sina
+  request_timeout: 10
+
+# ─── 通知 ──────────────────────────────────────────────────
+alerts:
+  feishu_webhook: ""     # 飞书 Webhook URL（留空则禁用）
+  log_only: true
+
+---
+# 环境覆盖：live 覆盖 base 的字段
+_env_overrides:
+  live:
+    runner:
+      dry_run: false
+      log_level: WARNING
+    portfolio:
+      capital: 100000
+    alerts:
+      log_only: false
+  dev:
+    runner:
+      dry_run: true
+      interval: 60
+      log_level: DEBUG
