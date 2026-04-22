@@ -45,6 +45,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from core.data_layer import DataLayer, get_data_layer
 from core.factor_pipeline import FactorPipeline, PipelineResult
+from core.regime import RegimeInfo, get_regime
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,13 @@ class RunnerConfig:
     signal_threshold: float = 0.5
     bars_lookback: int = 120
     on_signal: Optional[Callable] = None
+    regime_aware: bool = True
+    """
+    True → 在每轮 run_once() 开始前检测市场环境，并据此调整行为：
+      BEAR     → 禁止新开多仓，信号阈值 ×1.4
+      VOLATILE → 信号阈值 ×1.2
+      BULL / CALM → 不做调整
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +141,7 @@ class StrategyRunner:
         self._running = False
         self._run_count = 0                       # 已完成轮次
         self._last_run_results: List[RunResult] = []
+        self._current_regime: Optional[RegimeInfo] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -149,6 +158,19 @@ class StrategyRunner:
         symbols = self._resolve_symbols()
         results: List[RunResult] = []
         ts = datetime.now()
+
+        # 检测市场环境（每轮只调用一次，结果全轮复用）
+        if self.config.regime_aware:
+            try:
+                self._current_regime = get_regime()
+                logger.info(
+                    "[StrategyRunner] Regime=%s | %s",
+                    self._current_regime.regime,
+                    self._current_regime.reason,
+                )
+            except Exception as exc:
+                logger.warning("[StrategyRunner] get_regime failed: %s", exc)
+                self._current_regime = None
 
         for symbol in symbols:
             r = self._process_symbol(symbol, ts)
@@ -205,6 +227,11 @@ class StrategyRunner:
     def last_results(self) -> List[RunResult]:
         return list(self._last_run_results)
 
+    @property
+    def current_regime(self) -> Optional[RegimeInfo]:
+        """最近一次检测到的市场环境，未检测时为 None。"""
+        return self._current_regime
+
     # ------------------------------------------------------------------
     # Internal: per-symbol processing
     # ------------------------------------------------------------------
@@ -249,17 +276,39 @@ class StrategyRunner:
                 action='ERROR', reason=f'pipeline failed: {exc}',
             )
 
-        # 4. 判断是否触发信号
+        # 4. 判断是否触发信号（含 Regime 调整）
         score = pr.combined_score
         dominant = pr.dominant_signal
 
-        if abs(score) < self.config.signal_threshold or dominant == 'HOLD':
+        # Regime 风控：调整有效阈值
+        effective_threshold = self.config.signal_threshold
+        regime = self._current_regime
+        if regime is not None:
+            effective_threshold *= regime.signal_threshold_multiplier
+            # BEAR 状态下禁止新开多仓
+            if not regime.allow_new_buys and dominant == 'BUY':
+                return RunResult(
+                    symbol=symbol, timestamp=ts,
+                    pipeline_result=pr,
+                    action='SKIPPED',
+                    reason=f'regime_bear_no_buy(regime={regime.regime})',
+                    metadata={'combined_score': score, 'regime': regime.regime},
+                )
+
+        if abs(score) < effective_threshold or dominant == 'HOLD':
             return RunResult(
                 symbol=symbol, timestamp=ts,
                 pipeline_result=pr,
                 action='NONE',
-                reason=f'score={score:.4f} below threshold={self.config.signal_threshold}',
-                metadata={'combined_score': score, 'dominant': dominant},
+                reason=(
+                    f'score={score:.4f} below threshold={effective_threshold:.4f}'
+                    + (f'(regime={regime.regime})' if regime else '')
+                ),
+                metadata={
+                    'combined_score': score,
+                    'dominant': dominant,
+                    'regime': regime.regime if regime else 'unknown',
+                },
             )
 
         # 5. 用户回调拦截
