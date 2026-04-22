@@ -8,6 +8,7 @@ TOOLS.md
 SOUL.md
 heartbeat-state.json
 !params.json
+memory
 
 # Personal data
 investments.json
@@ -51,4 +52,6 @@ skills/
 # Temporary
 *.tmp
 *.bak
+*.parquet
 live_params.json
+trading_mode.json
