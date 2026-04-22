@@ -32,6 +32,9 @@ import numpy as np
 from core.factors.base import Factor, Signal
 from core.factor_registry import registry as _global_registry, FactorRegistry
 
+# IC 计算窗口（月）
+_IC_ROLLING_MONTHS = 3
+
 
 # ---------------------------------------------------------------------------
 # Result type
@@ -338,3 +341,146 @@ class FactorPipeline:
             dominant_signal='HOLD',
             metadata={'reason': reason, 'price': price},
         )
+
+
+# ---------------------------------------------------------------------------
+# DynamicWeightPipeline — 基于滚动 IC 自动调整因子权重
+# ---------------------------------------------------------------------------
+
+class DynamicWeightPipeline(FactorPipeline):
+    """
+    动态权重因子流水线。
+
+    每隔 ``update_freq_days`` 根据各因子滚动 IC（预测下期收益的 Spearman 相关系数）
+    重新计算权重：
+        w_i = max(IC_i_rolling, 0) / Σ max(IC_j_rolling, 0)
+    若所有因子 IC 均 ≤ 0，退回等权。
+
+    Parameters
+    ----------
+    ic_window_days : int
+        计算 IC 的回溯窗口（默认 63 个交易日 ≈ 3 个月）
+    update_freq_days : int
+        重新计算权重的频率（默认 21 个交易日 ≈ 1 个月）
+    min_bars : int
+        同 FactorPipeline.min_bars
+    """
+
+    def __init__(
+        self,
+        ic_window_days: int = 63,
+        update_freq_days: int = 21,
+        reg: Optional[FactorRegistry] = None,
+        min_bars: int = 30,
+    ) -> None:
+        super().__init__(reg=reg, min_bars=min_bars)
+        self.ic_window_days = ic_window_days
+        self.update_freq_days = update_freq_days
+
+        # 运行时状态
+        self._ic_history: Dict[str, List[float]] = {}   # factor_name → IC 序列
+        self._dynamic_weights: Dict[str, float] = {}    # factor_name → 最新权重
+        self._bars_since_update: int = 0
+        self._weight_history: List[Dict[str, float]] = []  # 权重历史（诊断用）
+
+    # ------------------------------------------------------------------
+    # Override run() — 在执行前更新动态权重
+    # ------------------------------------------------------------------
+
+    def run(
+        self,
+        symbol: str,
+        data: pd.DataFrame,
+        price: Optional[float] = None,
+    ) -> PipelineResult:
+        if len(data) >= self.min_bars + self.ic_window_days:
+            self._maybe_update_weights(data)
+
+        # 用动态权重替换 _entries 的权重（临时覆盖）
+        original_weights = [e.weight for e in self._entries]
+        for entry in self._entries:
+            name = entry.factor.name
+            if name in self._dynamic_weights:
+                entry.weight = self._dynamic_weights[name]
+
+        result = super().run(symbol, data, price)
+
+        # 恢复原始权重
+        for entry, w in zip(self._entries, original_weights):
+            entry.weight = w
+
+        result.metadata['dynamic_weights'] = dict(self._dynamic_weights)
+        return result
+
+    # ------------------------------------------------------------------
+    # IC 计算 & 权重更新
+    # ------------------------------------------------------------------
+
+    def _maybe_update_weights(self, data: pd.DataFrame) -> None:
+        self._bars_since_update += 1
+        if self._bars_since_update < self.update_freq_days and self._dynamic_weights:
+            return
+        self._bars_since_update = 0
+        self._update_weights(data)
+
+    def _update_weights(self, data: pd.DataFrame) -> None:
+        """用滚动 IC 重新计算各因子权重。"""
+        window = data.iloc[-self.ic_window_days:]
+        if len(window) < 20:
+            return
+
+        # 次日收益（预测目标）
+        fwd_returns = window['close'].pct_change().shift(-1).dropna()
+        if len(fwd_returns) < 10:
+            return
+
+        ic_map: Dict[str, float] = {}
+        for entry in self._entries:
+            name = entry.factor.name
+            try:
+                vals = entry.factor.evaluate(window)
+                aligned = vals.reindex(fwd_returns.index).dropna()
+                rets_aligned = fwd_returns.reindex(aligned.index).dropna()
+                aligned = aligned.reindex(rets_aligned.index)
+                if len(aligned) < 5:
+                    ic_map[name] = 0.0
+                    continue
+                rx = pd.Series(aligned.values).rank().values
+                ry = pd.Series(rets_aligned.values).rank().values
+                corr = float(np.corrcoef(rx, ry)[0, 1])
+                ic_map[name] = corr if not np.isnan(corr) else 0.0
+            except Exception:
+                ic_map[name] = 0.0
+
+        # 权重 = max(IC, 0)，负 IC 因子权重归零（等效于不使用）
+        positive_ic = {k: max(v, 0.0) for k, v in ic_map.items()}
+        total_pos = sum(positive_ic.values())
+
+        if total_pos > 1e-8:
+            self._dynamic_weights = {k: v / total_pos for k, v in positive_ic.items()}
+        else:
+            # 全部因子 IC ≤ 0，退回等权
+            n = len(self._entries)
+            self._dynamic_weights = {e.factor.name: 1.0 / n for e in self._entries}
+
+        self._weight_history.append(dict(self._dynamic_weights))
+
+    # ------------------------------------------------------------------
+    # 诊断接口
+    # ------------------------------------------------------------------
+
+    def weight_history_df(self) -> pd.DataFrame:
+        """
+        返回权重历史 DataFrame（行=更新时间序列，列=因子名）。
+        可用于绘制权重随时间的变化图。
+        """
+        if not self._weight_history:
+            return pd.DataFrame()
+        return pd.DataFrame(self._weight_history)
+
+    def current_weights(self) -> Dict[str, float]:
+        """返回当前动态权重（若尚未计算，返回等权）。"""
+        if self._dynamic_weights:
+            return dict(self._dynamic_weights)
+        n = len(self._entries)
+        return {e.factor.name: 1.0 / n for e in self._entries} if n else {}

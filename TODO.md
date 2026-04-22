@@ -70,10 +70,10 @@
   - flake8 lint（core 重点模块）+ mypy 类型检查 + pytest Phase 1 新测试
   - Linux(3.10/3.11/3.12) + Windows(3.11) 四矩阵并行
 
-- [ ] **[P2] 清理 scripts/ 目录**
-  - 将 `scripts/test_*.py` 临时调试脚本移入 `tests/` 或删除
-  - 将可复用的研究函数提取到 `core/research.py`
-  - 建立 `scripts/README.md` 说明各脚本用途
+- [x] **[P2] 清理 scripts/ 目录** ✅ 2026-04-22
+  - `scripts/test_core_arch/phase2~5.py` → `tests/test_legacy_*.py`；`test_backtest_engine.py`（旧版）删除
+  - 调试脚本 `test_em_l2_depth.py` / `test_level2.py` 保留在 scripts/（非 unittest）
+  - 新建 `scripts/README.md` 说明所有脚本用途
 
 ---
 
@@ -90,10 +90,11 @@
   - 接口：`make_macd_trend_pipeline()` 工厂函数，可直接接入 WFA
   - WFA 验证待运行（需真实历史数据，目标 OOS Sharpe > 0.3）
 
-- [ ] **[P2] 策略相关性分析**
-  - 计算 RSI策略 vs MACD策略的每日收益相关系数
-  - 目标：相关系数 < 0.4（真正意义上的 Alpha 多样化）
-  - 输出：相关矩阵图 `outputs/strategy_correlation.png`
+- [x] **[P2] 策略相关性分析** ✅ 2026-04-22
+  - 文件：`core/research.py`，`StrategyCorrelationAnalyzer` 类
+  - 接受 `{策略名: BacktestResult}` 字典，计算日收益相关矩阵
+  - `plot_heatmap()` 输出 `outputs/strategy_correlation.png`
+  - 待跑：真实历史数据验证 RSI vs MACD 相关系数 < 0.4
 
 ### P2-B：订单流因子实战化
 
@@ -125,17 +126,17 @@
 
 ### P2-D：多因子组合优化
 
-- [ ] **[P2] 实现动态因子权重（基于滚动 IC 加权）**
-  - 文件：`core/factor_pipeline.py`
-  - 当前：因子权重固定（config 中静态配置）
-  - 升级：每月更新因子权重 = 滚动 3 月 IC / Σ(所有因子 3 月 IC)
-  - 好处：自适应市场环境，低效因子自动降权
+- [x] **[P2] 实现动态因子权重（基于滚动 IC 加权）** ✅ 2026-04-22
+  - 文件：`core/factor_pipeline.py`，`DynamicWeightPipeline` 类（继承 `FactorPipeline`）
+  - 每 `update_freq_days`（默认 21）更新权重 = max(IC, 0) / Σmax(IC,0)
+  - 全 IC ≤ 0 时自动退回等权；`weight_history_df()` / `current_weights()` 方便诊断
+  - 不依赖 scipy，用 numpy rank + corrcoef 实现 Spearman IC
 
-- [ ] **[P2] 因子 IC 时序分析**
-  - 文件：`core/research.py`（新增）
-  - 计算每个因子的月度 IC 时间序列
-  - 分析 IC 在牛市/熊市/震荡市的稳定性
-  - 输出：因子 IC 热力图（月份 × 因子）
+- [x] **[P2] 因子 IC 时序分析** ✅ 2026-04-22
+  - 文件：`core/research.py`，`FactorICAnalyzer` 类
+  - `analyze()` 输出月度 IC 序列、IC均值/IR/IC>0占比、按 Regime 分层 IC
+  - `plot_heatmap()` 输出 `outputs/factor_ic_heatmap.png`（月份 × 因子）
+  - `summary_table()` 返回多因子汇总 DataFrame
 
 ### P2-E：市场状态自适应
 
@@ -145,9 +146,11 @@
   - 效果：BEAR → 禁止新多仓 + 信号阈值 ×1.4；VOLATILE → 阈值 ×1.2；每轮 run_once() 检测一次
   - 暴露 `runner.current_regime` 属性，方便外部监控当前 Regime
 
-- [ ] **[P2] Regime 分状态回测分析**
-  - 对历史回测按 Regime 拆分，分析各 Regime 下的胜率、Sharpe、最大回撤
-  - 输出：Regime 分层绩效表
+- [x] **[P2] Regime 分状态回测分析** ✅ 2026-04-22
+  - 文件：`core/research.py`，`RegimeBacktestAnalyzer` 类
+  - `build_regime_series(data)` 从 OHLCV 计算历史 Regime 标签序列
+  - `analyze(result, regime_series)` 按 BULL/BEAR/VOLATILE/CALM 分层统计
+  - 输出：`RegimeAnalysisResult.to_dataframe()` / `print_report()`
 
 ---
 
