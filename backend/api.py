@@ -19,6 +19,8 @@ Endpoints:
     GET  /orders/recent        — recent order results
     POST /analysis/run         — trigger daily analysis manually
     GET  /analysis/status       — last analysis result
+    GET  /trading/mode          — get current trading mode (simulation|live)
+    PUT  /trading/mode          — set trading mode {"mode": "simulation"|"live"}
 
 Run with: python api.py
 """
@@ -766,6 +768,49 @@ def data_fund_flow():
     except Exception as e:
         import traceback
         return err(f'资金流获取失败: {e}\n{traceback.format_exc()}', 500)
+
+
+# ============================================================
+# Trading Mode
+# ============================================================
+
+_MODE_FILE = os.path.join(os.path.dirname(__file__), 'trading_mode.json')
+_VALID_MODES = {'simulation', 'live'}
+
+
+def _load_trading_mode() -> str:
+    try:
+        with open(_MODE_FILE, 'r') as f:
+            data = json.load(f)
+        mode = data.get('mode', 'simulation')
+        return mode if mode in _VALID_MODES else 'simulation'
+    except (FileNotFoundError, json.JSONDecodeError):
+        return 'simulation'
+
+
+def _save_trading_mode(mode: str) -> None:
+    with open(_MODE_FILE, 'w') as f:
+        json.dump({'mode': mode, 'updated_at': datetime.now().isoformat()}, f)
+
+
+@app.route('/trading/mode', methods=['GET'])
+def get_trading_mode():
+    """Return current trading mode (simulation or live)."""
+    mode = _load_trading_mode()
+    return ok(mode=mode)
+
+
+@app.route('/trading/mode', methods=['PUT'])
+def set_trading_mode():
+    """Set trading mode. Body: {"mode": "simulation"|"live"}"""
+    if (e := require_json()):
+        return e
+    body = request.json or {}
+    mode = body.get('mode', '')
+    if mode not in _VALID_MODES:
+        return err(f'invalid mode "{mode}", must be one of: {sorted(_VALID_MODES)}', 422)
+    _save_trading_mode(mode)
+    return ok(mode=mode, message=f'Trading mode set to {mode}')
 
 
 # ============================================================

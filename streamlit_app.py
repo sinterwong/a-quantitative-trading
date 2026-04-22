@@ -243,7 +243,7 @@ mode_changed = st.sidebar.toggle('🎮 开启实盘交易', value=(current_mode 
 if mode_changed != (current_mode == 'live'):
     new_mode = 'live' if mode_changed else 'simulation'
     put_resp = api_put('/trading/mode', {'mode': new_mode})
-    st.sidebar.rerun()
+    st.rerun()
 
 st.sidebar.markdown('---')
 st.sidebar.caption('Powered by 小黑 · Streamlit')

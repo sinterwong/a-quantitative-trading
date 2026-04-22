@@ -251,6 +251,40 @@ _run_test_module('test_backtest_engine.py', 'BacktestEngine(P1-A)')
 _run_test_module('test_walkforward.py',     'WalkForward(P1-B)')
 _run_test_module('test_data_quality.py',    'DataQuality(P1-C)')
 
+# Phase 1-E: Web API / UI tests (via pytest)
+def _run_pytest_module(module_name, label):
+    """Run a pytest-based test module and tally results."""
+    global passed, failed
+    result = subprocess.run(
+        [_sys.executable, '-m', 'pytest', os.path.join(THIS_DIR, module_name),
+         '-q', '--tb=short'],
+        capture_output=True, text=True, encoding='utf-8',
+        cwd=os.path.dirname(THIS_DIR),
+    )
+    output = result.stdout + result.stderr
+    for line in reversed(output.splitlines()):
+        line = line.strip()
+        # pytest summary: "53 passed" or "52 passed, 1 failed"
+        import re
+        m = re.search(r'(\d+) passed(?:, (\d+) failed)?', line)
+        if m:
+            p = int(m.group(1))
+            f = int(m.group(2) or 0)
+            passed += p
+            failed += f
+            status = 'PASS' if f == 0 else 'FAIL'
+            print(f'  {status}: {label} — {p} passed, {f} failed')
+            return
+    if result.returncode == 0:
+        print(f'  PASS: {label} (no summary line)')
+    else:
+        failed += 1
+        print(f'  FAIL: {label} (exit code {result.returncode})')
+        for ln in (result.stdout + result.stderr).splitlines()[:10]:
+            print('    ' + ln)
+
+_run_pytest_module('test_api.py', 'WebAPI(P1-E)')
+
 # ============================================================
 # Summary
 # ============================================================
