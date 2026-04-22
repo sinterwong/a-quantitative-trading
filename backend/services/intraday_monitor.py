@@ -172,6 +172,9 @@ class IntradayMonitor:
         # Kelly 仓位
         self._kelly_pct: float = 0.10   # 默认 10%，每交易日根据历史交易更新
         self._kelly_last_updated: str = ''  # ISO date string
+        # 交易模式：'simulation' (默认，不执行Broker订单) | 'live' (执行Broker订单)
+        self._trading_mode: str = 'simulation'
+        self._load_trading_mode()
 
     # ── Public API ────────────────────────────────────────
 
@@ -195,6 +198,46 @@ class IntradayMonitor:
     @property
     def is_running(self) -> bool:
         return self._running
+
+    @property
+    def trading_mode(self) -> str:
+        return self._trading_mode
+
+    def set_trading_mode(self, mode: str):
+        """动态切换交易模式：'simulation' | 'live'"""
+        old = self._trading_mode
+        self._trading_mode = mode
+        self._save_trading_mode()
+        logger.info('Trading mode changed: %s → %s', old, mode)
+
+    def _load_trading_mode(self):
+        mode_file = os.path.join(BACKEND_DIR, 'trading_mode.json')
+        if os.path.exists(mode_file):
+            try:
+                import json
+                with open(mode_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                self._trading_mode = data.get('mode', 'simulation')
+                logger.info('Loaded trading mode: %s', self._trading_mode)
+            except Exception as e:
+                logger.warning('Failed to load trading_mode.json: %s', e)
+                self._trading_mode = 'simulation'
+        else:
+            self._trading_mode = 'simulation'
+
+    def _save_trading_mode(self):
+        mode_file = os.path.join(BACKEND_DIR, 'trading_mode.json')
+        try:
+            import json
+            with open(mode_file, 'w', encoding='utf-8') as f:
+                json.dump({'mode': self._trading_mode, 'updated_at': datetime.now().isoformat()},
+                          f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning('Failed to save trading_mode.json: %s', e)
+
+    def _can_trade(self) -> bool:
+        """检查是否允许执行实单（Broker下单）。simulation模式返回False。"""
+        return self._trading_mode == 'live'
 
     # ── Internal ───────────────────────────────────────────
 
@@ -411,6 +454,14 @@ class IntradayMonitor:
                     shares = shares // 2
                 if shares < 100:
                     continue
+                if not self._can_trade():
+                    self._deliver_alert(
+                        f'📋 [{sym}] 模拟模式：信号触发但跳过执行\n'
+                        f'   方向：BUY | 股数：{shares} | 价：{alert.price:.2f}\n'
+                        f'   原因：{alert.reason}（切换到"实盘"模式后生效）'
+                    )
+                    logger.info('Simulation mode: skipped BUY %s %d @ %.2f', sym, shares, alert.price)
+                    continue
                 result = self._broker.submit_order(
                     symbol=sym, direction='BUY',
                     shares=shares, price=alert.price, price_type='market',
@@ -501,6 +552,14 @@ class IntradayMonitor:
 
         # 提交订单
         try:
+            if not self._can_trade():
+                self._deliver_alert(
+                    f'📋 [{alert.symbol}] 模拟模式：持仓信号跳过执行\n'
+                    f'   方向：{direction} | 股数：{shares} | 价：{alert.price:.2f}\n'
+                    f'   信号：{signal}（切换到"实盘"模式后生效）'
+                )
+                logger.info('Simulation mode: skipped %s %s %d @ %.2f', direction, alert.symbol, shares, alert.price)
+                return None
             result = self._broker.submit_order(
                 symbol=alert.symbol,
                 direction=direction,
@@ -547,7 +606,12 @@ class IntradayMonitor:
                 sent, conf_s, summ = self._sentiment_cache[sent_key]
                 sentiment_info = f'情绪={sent}（置信度{conf_s:.0%}），摘要：{summ[:60]}'
 
-            # 构建持仓摘要
+            # 构建持仓摘要（提前计算避免 f-string 反斜杠问题）
+            if pos:
+                _pos_label = f"是（{pos.get('shares', 0)}股，成本{'{:.2f}'.format(pos.get('entry_price', 0))}）"
+            else:
+                _pos_label = "否（可建仓）"
+
             pos_summary = []
             for p in (positions or []):
                 if p.get('shares', 0) > 0:
@@ -593,7 +657,7 @@ class IntradayMonitor:
                     f"市场环境：{self._market_regime.get('regime', 'UNKNOWN')}（ATR ratio={self._market_regime.get('atr_ratio', 0):.3f}）\n"
                     f"大盘状态：{mb.get('趋势', '未知')} | 情绪：{mb.get('情绪', '未知')}\n"
                     f"可用现金：¥{cash:,.0f}（总权益：¥{self._svc.get_equity():,.0f}）\n"
-                    f"该股已有持仓：{'是（' + str(pos.get('shares', 0)) + '\u80a1\uff0c\u6210\u672c' + '{:.2f}'.format(pos.get('entry_price', 0)) + '\uff09' if pos else '\u5426\uff08\u53ef\u5efa\u4ed3\uff09'}\n"
+                    f"该股已有持仓：{_pos_label}\n"
                     f"当前持仓：{' | '.join(pos_summary) if pos_summary else '空仓'}\n"
                     f"近期交易：{' | '.join(trade_summary) if trade_summary else '无'}\n"
                     f"新闻情绪：{sentiment_info if sentiment_info else '无情绪数据（自动放行）'}"
@@ -979,6 +1043,14 @@ class IntradayMonitor:
 
             sell_shares = (shares // 100) * 100
             try:
+                if not self._can_trade():
+                    self._deliver_alert(
+                        f'📋 [{sym}] 模拟模式：止盈跳过执行\n'
+                        f'   止盈：{label} | 卖出：{sell_shares}股 | 价：{current_price:.2f}\n'
+                        f'   原因: {reason}（切换"实盘"后生效）'
+                    )
+                    logger.info('Simulation: skipped TakeProfit SELL %s %d', sym, sell_shares)
+                    continue
                 result = self._broker.submit_order(
                     symbol=sym, direction='SELL',
                     shares=sell_shares, price=current_price, price_type='market',
@@ -1046,6 +1118,14 @@ class IntradayMonitor:
             # 执行止损卖出（全部清仓）
             sell_shares = (shares // 100) * 100
             try:
+                if not self._can_trade():
+                    self._deliver_alert(
+                        f'📋 [{sym}] 模拟模式：止损跳过执行\n'
+                        f'   止损触发 | 卖出：{sell_shares}股 | 价：{current_price:.2f}\n'
+                        f'   止损价：{stop_price:.2f} | 原因: {reason}（切换"实盘"后生效）'
+                    )
+                    logger.info('Simulation: skipped StopLoss SELL %s %d', sym, sell_shares)
+                    continue
                 result = self._broker.submit_order(
                     symbol=sym,
                     direction='SELL',
