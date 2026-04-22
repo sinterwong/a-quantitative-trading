@@ -173,11 +173,11 @@
   - 与同期回测结果对比：成交价偏差应 < 20 bps
   - 记录并归因任何 > 50 bps 的偏差（流动性/延迟/订单类型）
 
-- [ ] **[P1] 实现 TCA（交易成本分析）模块**
+- [x] **[P1] 实现 TCA（交易成本分析）模块** ✅ 2026-04-22
   - 文件：`core/tca.py`（新建）
-  - 功能：对每笔成交计算 Implementation Shortfall（决策价 vs 成交价）
-  - 按标的、时段、市场环境分类统计平均隐性成本
-  - 输出：每月 TCA 报告，反馈用于调整 slippage_bps 参数
+  - `TCARecord`：单笔 IS / 总成本 bps 计算；`TCAAnalyzer`：按标的/方向/Regime/时段/月份统计
+  - `from_backtest_result()` / `from_trade_dicts()` 两种数据源接入
+  - `recommended_slippage_bps` 自动推荐参数；`save_monthly_report()` 输出 JSON
 
 ### P3-B：异步事件循环升级
 
@@ -208,20 +208,21 @@
 
 ### P3-D：监控与告警完善
 
-- [ ] **[P1] 添加策略健康度实时监控**
-  - 文件：`backend/services/intraday_monitor.py`
-  - 新增检查：策略 rolling 20 日 Sharpe 下降 > 30% 时触发告警
-  - 新增检查：单日亏损 > 2% 时触发飞书告警并暂停自动交易
+- [x] **[P1] 添加策略健康度实时监控** ✅ 2026-04-22
+  - 文件：`core/strategy_health.py`（新建，独立无 broker 依赖）
+  - `StrategyHealthMonitor.check()`：Rolling Sharpe(20d/60d) 下降 >30%、单日亏损 >2%、连续亏损 >5 天、换手率异常
+  - `check_series()` 返回逐日时序 DataFrame（供 Streamlit 折线图）
+  - `HealthReport.to_feishu_text()` 一键生成飞书告警文本
 
 - [ ] **[P1] 实现每日回测 vs 实盘对比报告**
   - 每个交易日收盘后，自动对比当日回测信号 vs 实际纸交易信号
   - 记录任何不一致（信号方向差异、触发时间差异）
   - 输出：`reports/daily_bt_live_diff_{date}.json`
 
-- [ ] **[P2] 添加 Dashboard 实盘监控页面**
-  - 文件：`streamlit_app.py`（新增第 7 个 tab）
-  - 内容：实时持仓、当日 P&L、策略信号历史、风控状态、TCA 统计
-  - 数据源：从 PostgreSQL 读取（降级到 SQLite）
+- [x] **[P2] 添加 Dashboard 实盘监控页面** ✅ 2026-04-22
+  - 文件：`streamlit_app.py`（新增第 8 页「🏥 策略健康」）
+  - 内容：健康状态卡 / Rolling Sharpe 折线图 / 胜率时序 / TCA 成本分析 / CVaR + 蒙特卡洛
+  - 数据源：backend API 降级到 SQLite portfolio.db
 
 ---
 
@@ -231,8 +232,8 @@
 - [ ] **期权策略框架**（隐波动率曲面、Put/Call 对冲）
 - [ ] **新闻情感因子完整验证**（LLM 打分 IC 统计）
 - [ ] **多账户支持**（策略组合层面的资金分配）
-- [ ] **CVaR / Expected Shortfall**（替换简化历史模拟 VaR）
-- [ ] **蒙特卡洛压力测试**（对极端市场情境的组合韧性分析）
+- [x] **CVaR / Expected Shortfall** ✅ 2026-04-22（`core/portfolio_risk.py`，`check_cvar()` 方法）
+- [x] **蒙特卡洛压力测试** ✅ 2026-04-22（`core/portfolio_risk.py`，`MonteCarloStressTest` 类，bootstrap/参数法，5000次模拟，P5/P50/P95/ES/最大回撤分布）
 
 ---
 

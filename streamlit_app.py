@@ -223,6 +223,7 @@ page = st.sidebar.radio(
         '💼 持仓详情',
         '📋 历史交易',
         '📋 实盘记录',
+        '🏥 策略健康',
     ],
     index=0,
 )
@@ -877,4 +878,198 @@ elif page == '📋 实盘记录':
     else:
         st.info('候选标的为空（今日五维选股尚未运行）')
 
-    st.button('🔄 刷新', on_click=st.cache_data.clear)
+    st.button('🔄 刷新', key='live_refresh', on_click=st.cache_data.clear)
+
+# ─── 页面 8：策略健康监控 ─────────────────────────────────────
+
+if page == '🏥 策略健康':
+    st.title('🏥 策略健康监控')
+    st.caption('基于回测/实盘日收益，自动检测 Sharpe 下降、单日大额亏损、连续亏损等风险')
+
+    # ── 数据来源：从 backend 或 sqlite 读取日度统计 ──────
+    @st.cache_data(ttl=120)
+    def _load_daily_stats_for_health():
+        """尝试从 backend API 读取 daily_stats，降级到 SQLite"""
+        raw = api_get('/portfolio/daily_stats?limit=250', timeout=8)
+        if raw.get('daily_stats'):
+            return raw['daily_stats']
+        # 降级：直接读 SQLite portfolio.db
+        db_path = os.path.join(BACKEND_DIR, 'services', 'portfolio.db')
+        if not os.path.exists(db_path):
+            return []
+        try:
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """SELECT date, daily_return, n_trades, equity
+                   FROM daily_stats ORDER BY date ASC LIMIT 500"""
+            ).fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    @st.cache_data(ttl=300)
+    def _load_trades_for_tca():
+        raw = api_get('/trades?limit=500', timeout=8)
+        return raw.get('trades', [])
+
+    daily_stats_raw = _load_daily_stats_for_health()
+
+    if not daily_stats_raw:
+        st.info('暂无日度统计数据（backend 未连接，且 portfolio.db 无记录）')
+        st.stop()
+
+    # ── 策略健康度检查 ────────────────────────────────────
+    try:
+        from core.strategy_health import StrategyHealthMonitor
+        monitor = StrategyHealthMonitor()
+        health_report = monitor.check(daily_stats_raw)
+        health_series = monitor.check_series(daily_stats_raw)
+    except Exception as e:
+        st.error(f'StrategyHealthMonitor 加载失败：{e}')
+        health_report = None
+        health_series = pd.DataFrame()
+
+    # ── 顶部指标卡 ────────────────────────────────────────
+    if health_report:
+        level_color = {'OK': '🟢', 'WARN': '🟡', 'CRITICAL': '🔴'}.get(health_report.worst_level(), '⚪')
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric('状态', f"{level_color} {health_report.worst_level()}")
+        col2.metric('Sharpe(20d)', f"{health_report.rolling_sharpe_20d:.3f}",
+                    delta=f"{health_report.sharpe_change_pct:+.1f}%")
+        col3.metric('Sharpe(60d)', f"{health_report.rolling_sharpe_60d:.3f}")
+        col4.metric('今日收益', f"{health_report.latest_daily_return*100:+.2f}%")
+        col5.metric('连续亏损', f"{health_report.consecutive_loss_days} 天")
+
+        # 告警列表
+        if health_report.alerts:
+            st.markdown('---')
+            for alert in health_report.alerts:
+                level_map = {'CRITICAL': 'error', 'WARN': 'warning', 'OK': 'success'}
+                fn = getattr(st, level_map.get(alert.level, 'info'))
+                pause_tag = ' **【建议暂停自动交易】**' if alert.should_pause else ''
+                fn(f"**[{alert.level}] {alert.check_name}**：{alert.message}{pause_tag}")
+        else:
+            st.success('策略运行正常，无健康告警')
+
+    st.markdown('---')
+
+    # ── Rolling Sharpe 折线图 ─────────────────────────────
+    st.subheader('📈 Rolling Sharpe 时序')
+    if not health_series.empty and 'sharpe_20d' in health_series.columns:
+        chart_df = health_series[['date', 'sharpe_20d', 'sharpe_60d']].dropna(subset=['sharpe_20d'])
+        chart_df = chart_df.rename(columns={'sharpe_20d': 'Sharpe(20d)', 'sharpe_60d': 'Sharpe(60d)'})
+        chart_df = chart_df.set_index('date')
+        st.line_chart(chart_df, use_container_width=True)
+    else:
+        st.info('数据不足以计算 Rolling Sharpe（需要至少 20 条日度记录）')
+
+    # ── 胜率时序 ──────────────────────────────────────────
+    st.subheader('🎯 近 20 日胜率')
+    if not health_series.empty and 'win_rate' in health_series.columns:
+        wr_df = health_series[['date', 'win_rate']].dropna()
+        wr_df = wr_df.set_index('date')
+        wr_df['win_rate'] = wr_df['win_rate'] * 100
+        st.line_chart(wr_df, use_container_width=True)
+
+    st.markdown('---')
+
+    # ── TCA 交易成本分析 ──────────────────────────────────
+    st.subheader('💸 交易成本分析（TCA）')
+    try:
+        from core.tca import TCAAnalyzer
+        trades_raw = _load_trades_for_tca()
+        if trades_raw:
+            tca_analyzer = TCAAnalyzer.from_trade_dicts(trades_raw)
+            tca_report = tca_analyzer.analyze()
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric('样本笔数', tca_report.n_trades)
+            c2.metric('平均 IS', f"{tca_report.avg_is_bps:.2f} bps")
+            c3.metric('平均总成本', f"{tca_report.avg_total_cost_bps:.2f} bps")
+            c4.metric('建议 slippage', f"{tca_report.recommended_slippage_bps:.0f} bps")
+
+            if tca_report.by_direction:
+                dir_rows = []
+                for d, stats in tca_report.by_direction.items():
+                    dir_rows.append({
+                        '方向': d,
+                        '笔数': stats['n_trades'],
+                        'avg IS (bps)': f"{stats['avg_is_bps']:.2f}",
+                        'P95 IS (bps)': f"{stats['p95_is_bps']:.2f}",
+                        '总佣金(元)': f"{stats['total_commission']:,.0f}",
+                        '总印花税(元)': f"{stats['total_stamp_tax']:,.0f}",
+                    })
+                st.dataframe(pd.DataFrame(dir_rows), hide_index=True)
+
+            if tca_report.monthly:
+                monthly_df = pd.DataFrame([
+                    {'月份': k, 'avg IS (bps)': v['avg_is_bps'], '总成本(元)': v['total_cost']}
+                    for k, v in sorted(tca_report.monthly.items())
+                ]).set_index('月份')
+                if len(monthly_df) > 1:
+                    st.line_chart(monthly_df[['avg IS (bps)']], use_container_width=True)
+        else:
+            st.info('暂无交易记录，TCA 分析需要成交数据')
+    except Exception as e:
+        st.warning(f'TCA 分析加载失败：{e}')
+
+    st.markdown('---')
+
+    # ── CVaR 风控摘要 ─────────────────────────────────────
+    st.subheader('🛡️ 风险指标（CVaR / 蒙特卡洛）')
+    try:
+        from core.portfolio_risk import MonteCarloStressTest
+
+        ret_series = pd.Series([
+            float(s.get('daily_return', 0) if isinstance(s, dict) else getattr(s, 'daily_return', 0))
+            for s in daily_stats_raw
+        ]).dropna()
+        equity_val = float(portfolio.get('total_equity', 100_000) or 100_000)
+
+        if len(ret_series) >= 30:
+            mc = MonteCarloStressTest(n_simulations=2000, horizon_days=63, seed=42)
+            mc_result = mc.run(ret_series, initial_equity=equity_val)
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric('P5 净值（63日）', f'¥{mc_result.p5_final:,.0f}',
+                      delta=f'{(mc_result.p5_final/equity_val-1)*100:+.1f}%')
+            c2.metric('P50 净值', f'¥{mc_result.p50_final:,.0f}',
+                      delta=f'{(mc_result.p50_final/equity_val-1)*100:+.1f}%')
+            c3.metric('亏损概率', f'{mc_result.prob_loss*100:.1f}%')
+            c4.metric('ES(95%)', f'{mc_result.expected_shortfall*100:.2f}%')
+
+            with st.expander('完整蒙特卡洛报告'):
+                st.text(mc_result.summary())
+        else:
+            st.info(f'日度数据不足（{len(ret_series)} 条，需要 ≥ 30 条）')
+    except Exception as e:
+        st.warning(f'风险分析加载失败：{e}')
+
+    st.markdown('---')
+
+    # ── 近期日度明细 ──────────────────────────────────────
+    st.subheader('📅 近期日度绩效明细')
+    tail_stats = daily_stats_raw[-30:][::-1]
+    detail_rows = []
+    for s in tail_stats:
+        d = s if isinstance(s, dict) else {
+            'date': getattr(s, 'date', ''),
+            'daily_return': getattr(s, 'daily_return', 0),
+            'n_trades': getattr(s, 'n_trades', 0),
+            'equity': getattr(s, 'equity', 0),
+        }
+        ret = float(d.get('daily_return', 0))
+        detail_rows.append({
+            '日期':    str(d.get('date', ''))[:10],
+            '日收益':  f'{ret*100:+.2f}%',
+            '交易次数': int(d.get('n_trades', 0)),
+            '净值':    f'¥{float(d.get("equity", 0)):,.0f}',
+            '状态':    '🔴 亏损' if ret < 0 else '🟢 盈利',
+        })
+    if detail_rows:
+        st.dataframe(pd.DataFrame(detail_rows), hide_index=True, use_container_width=True)
+
+    st.button('🔄 刷新数据', key='health_refresh', on_click=st.cache_data.clear)

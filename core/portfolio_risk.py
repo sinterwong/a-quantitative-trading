@@ -307,3 +307,297 @@ class PortfolioRiskChecker:
     ) -> Dict[str, pd.Series]:
         """将价格序列转换为日收益率序列（方便外部调用）。"""
         return {sym: ps.pct_change().dropna() for sym, ps in prices.items()}
+
+    def check_cvar(
+        self,
+        snapshot: 'PortfolioSnapshot',
+        confidence: float = 0.95,
+        cvar_limit: float = 0.05,
+    ) -> 'RiskResult':
+        """
+        CVaR / Expected Shortfall 检查。
+
+        CVaR(α) = 损失超过 VaR(α) 时的期望损失，比 VaR 更保守。
+        用历史模拟法计算组合日收益在最差 (1-α) 部分的均值。
+
+        Parameters
+        ----------
+        snapshot : PortfolioSnapshot
+        confidence : float
+            置信水平（默认 0.95）
+        cvar_limit : float
+            CVaR 上限（占权益比例，默认 0.05 = 5%）
+        """
+        if not snapshot.returns or not snapshot.positions:
+            return RiskResult.ok()
+
+        weights = snapshot.position_weights
+        valid = {
+            sym: ret for sym, ret in snapshot.returns.items()
+            if sym in weights and len(ret) >= self.min_returns_days
+        }
+        if not valid:
+            return RiskResult.ok()
+
+        combined = pd.DataFrame(valid).dropna()
+        if len(combined) < self.min_returns_days:
+            return RiskResult.ok()
+
+        w_vec = np.array([weights.get(sym, 0.0) for sym in combined.columns])
+        total_w = w_vec.sum()
+        if total_w <= 0:
+            return RiskResult.ok()
+        w_vec = w_vec / total_w
+
+        portfolio_returns = combined.values @ w_vec
+        var_threshold = np.percentile(portfolio_returns, (1 - confidence) * 100)
+        tail_losses = portfolio_returns[portfolio_returns <= var_threshold]
+
+        if len(tail_losses) == 0:
+            return RiskResult.ok()
+
+        cvar = float(abs(np.mean(tail_losses)))
+
+        if cvar >= cvar_limit:
+            return RiskResult.reject(
+                f'CVaR({confidence*100:.0f}%) = {cvar*100:.2f}% >= limit {cvar_limit*100:.1f}%',
+                cvar_pct=cvar,
+                limit=cvar_limit,
+                confidence=confidence,
+            )
+        if cvar >= cvar_limit * 0.80:
+            return RiskResult.warn(
+                f'CVaR({confidence*100:.0f}%) = {cvar*100:.2f}% approaching limit',
+                cvar_pct=cvar,
+            )
+        return RiskResult.ok()
+
+
+# ---------------------------------------------------------------------------
+# MonteCarloStressTest — 蒙特卡洛压力测试
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MonteCarloResult:
+    """蒙特卡洛压力测试结果"""
+    n_simulations: int
+    horizon_days: int
+    initial_equity: float
+    # 分位数统计（基于模拟期末净值）
+    p5_final: float          # 最差 5% 情境的期末净值
+    p25_final: float
+    p50_final: float
+    p75_final: float
+    p95_final: float
+    # 风险指标
+    prob_loss: float         # 亏损概率
+    expected_shortfall: float  # CVaR(95%)：最差 5% 情境下的期望亏损
+    max_drawdown_mean: float   # 平均最大回撤
+    max_drawdown_p95: float    # 最差 5% 情境的最大回撤
+    # 压力情境
+    stress_scenarios: Dict[str, float]  # {'base': final_p50, 'bear': ...}
+
+    def summary(self) -> str:
+        lines = [
+            "=" * 60,
+            f"  蒙特卡洛压力测试（{self.n_simulations} 次，{self.horizon_days} 天）",
+            "=" * 60,
+            f"  初始净值:       ¥{self.initial_equity:,.0f}",
+            f"  P5  (最差5%):   ¥{self.p5_final:,.0f}  ({(self.p5_final/self.initial_equity-1)*100:+.1f}%)",
+            f"  P25:            ¥{self.p25_final:,.0f}  ({(self.p25_final/self.initial_equity-1)*100:+.1f}%)",
+            f"  P50 (中位数):   ¥{self.p50_final:,.0f}  ({(self.p50_final/self.initial_equity-1)*100:+.1f}%)",
+            f"  P75:            ¥{self.p75_final:,.0f}  ({(self.p75_final/self.initial_equity-1)*100:+.1f}%)",
+            f"  P95 (最好5%):   ¥{self.p95_final:,.0f}  ({(self.p95_final/self.initial_equity-1)*100:+.1f}%)",
+            f"  亏损概率:       {self.prob_loss*100:.1f}%",
+            f"  ES(95%):        {self.expected_shortfall*100:.2f}%",
+            f"  平均最大回撤:   {self.max_drawdown_mean*100:.1f}%",
+            f"  P95 最大回撤:   {self.max_drawdown_p95*100:.1f}%",
+            "=" * 60,
+        ]
+        return "\n".join(lines)
+
+
+class MonteCarloStressTest:
+    """
+    基于历史收益率的蒙特卡洛压力测试。
+
+    方法：参数法（正态）或历史重采样法。
+    每次模拟生成一条 horizon_days 长的净值路径，
+    统计期末净值分布、亏损概率、最大回撤等。
+
+    用法：
+        mc = MonteCarloStressTest(n_simulations=10000, horizon_days=252)
+        result = mc.run(
+            daily_returns=portfolio_returns_series,
+            initial_equity=100_000,
+        )
+        print(result.summary())
+        mc.plot(result, 'outputs/monte_carlo.png')
+    """
+
+    def __init__(
+        self,
+        n_simulations: int = 5000,
+        horizon_days: int = 252,
+        method: str = 'bootstrap',   # 'bootstrap' | 'parametric'
+        seed: int = 42,
+    ) -> None:
+        self.n_simulations = n_simulations
+        self.horizon_days = horizon_days
+        self.method = method
+        self.seed = seed
+
+    def run(
+        self,
+        daily_returns: pd.Series,
+        initial_equity: float = 100_000,
+    ) -> MonteCarloResult:
+        """
+        执行蒙特卡洛模拟。
+
+        Parameters
+        ----------
+        daily_returns : pd.Series
+            历史每日收益率序列
+        initial_equity : float
+            初始净值
+        """
+        rng = np.random.default_rng(self.seed)
+        rets = daily_returns.dropna().values
+
+        if len(rets) < 20:
+            raise ValueError(f"需要至少 20 条历史收益率，只有 {len(rets)}")
+
+        # 生成模拟路径矩阵 [n_sim × horizon_days]
+        if self.method == 'bootstrap':
+            idx = rng.integers(0, len(rets), size=(self.n_simulations, self.horizon_days))
+            sim_rets = rets[idx]
+        else:  # parametric
+            mu = np.mean(rets)
+            sigma = np.std(rets)
+            sim_rets = rng.normal(mu, sigma, (self.n_simulations, self.horizon_days))
+
+        # 累积净值曲线
+        cum_returns = np.cumprod(1 + sim_rets, axis=1)  # [n_sim × horizon]
+        final_values = initial_equity * cum_returns[:, -1]
+
+        # 最大回撤
+        max_drawdowns = self._calc_max_drawdowns(cum_returns)
+
+        # 统计
+        p5, p25, p50, p75, p95 = np.percentile(final_values, [5, 25, 50, 75, 95])
+        prob_loss = float(np.mean(final_values < initial_equity))
+
+        # Expected Shortfall：最差 5% 情境的期望损失率
+        cutoff = np.percentile(final_values, 5)
+        tail = final_values[final_values <= cutoff]
+        es = float(abs(np.mean(tail / initial_equity - 1))) if len(tail) > 0 else 0.0
+
+        # 压力情境
+        bear_sim_rets = sim_rets * 1.5   # 收益率放大 1.5 倍（熊市情境）
+        bear_cum = np.cumprod(1 + bear_sim_rets, axis=1)
+        bull_sim_rets = np.abs(sim_rets)   # 全部正收益（极端牛市）
+        bull_cum = np.cumprod(1 + bull_sim_rets, axis=1)
+
+        scenarios = {
+            'base': round(float(np.median(final_values)), 2),
+            'bear': round(float(initial_equity * np.median(bear_cum[:, -1])), 2),
+            'crash': round(float(np.percentile(final_values, 1)), 2),
+            'bull': round(float(initial_equity * np.median(bull_cum[:, -1])), 2),
+        }
+
+        return MonteCarloResult(
+            n_simulations=self.n_simulations,
+            horizon_days=self.horizon_days,
+            initial_equity=initial_equity,
+            p5_final=round(float(p5), 2),
+            p25_final=round(float(p25), 2),
+            p50_final=round(float(p50), 2),
+            p75_final=round(float(p75), 2),
+            p95_final=round(float(p95), 2),
+            prob_loss=round(prob_loss, 4),
+            expected_shortfall=round(es, 4),
+            max_drawdown_mean=round(float(np.mean(max_drawdowns)), 4),
+            max_drawdown_p95=round(float(np.percentile(max_drawdowns, 95)), 4),
+            stress_scenarios=scenarios,
+        )
+
+    @staticmethod
+    def _calc_max_drawdowns(cum_returns: np.ndarray) -> np.ndarray:
+        """计算每条路径的最大回撤（向量化）。"""
+        running_max = np.maximum.accumulate(cum_returns, axis=1)
+        drawdowns = (cum_returns - running_max) / running_max
+        return np.abs(drawdowns.min(axis=1))
+
+    def plot(
+        self,
+        result: MonteCarloResult,
+        output_path: str = '',
+        n_paths: int = 200,
+        daily_returns: Optional[pd.Series] = None,
+    ) -> None:
+        """绘制蒙特卡洛路径扇形图（分位数带）。"""
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+        except ImportError:
+            print("[MonteCarloStressTest] matplotlib 未安装，跳过绘图")
+            return
+
+        if daily_returns is None:
+            print("[MonteCarloStressTest] 需要传入 daily_returns 才能绘图")
+            return
+
+        rng = np.random.default_rng(self.seed)
+        rets = daily_returns.dropna().values
+
+        if self.method == 'bootstrap':
+            idx = rng.integers(0, len(rets), size=(n_paths, self.horizon_days))
+            sim_rets = rets[idx]
+        else:
+            mu, sigma = np.mean(rets), np.std(rets)
+            sim_rets = rng.normal(mu, sigma, (n_paths, self.horizon_days))
+
+        cum = result.initial_equity * np.cumprod(1 + sim_rets, axis=1)
+        days = np.arange(1, self.horizon_days + 1)
+
+        fig, ax = plt.subplots(figsize=(12, 6))
+
+        # 绘制部分路径（半透明）
+        for i in range(min(100, n_paths)):
+            ax.plot(days, cum[i], color='steelblue', alpha=0.05, linewidth=0.5)
+
+        # 分位数带
+        all_rets_arr = rets[rng.integers(0, len(rets), size=(5000, self.horizon_days))]
+        all_cum = result.initial_equity * np.cumprod(1 + all_rets_arr, axis=1)
+        p5s = np.percentile(all_cum, 5, axis=0)
+        p25s = np.percentile(all_cum, 25, axis=0)
+        p50s = np.percentile(all_cum, 50, axis=0)
+        p75s = np.percentile(all_cum, 75, axis=0)
+        p95s = np.percentile(all_cum, 95, axis=0)
+
+        ax.fill_between(days, p5s, p95s, alpha=0.15, color='steelblue', label='P5-P95')
+        ax.fill_between(days, p25s, p75s, alpha=0.25, color='steelblue', label='P25-P75')
+        ax.plot(days, p50s, color='navy', linewidth=2, label='中位数')
+        ax.axhline(result.initial_equity, color='gray', linestyle='--', linewidth=1, label='初始净值')
+
+        ax.set_xlabel('交易日')
+        ax.set_ylabel('净值（元）')
+        ax.set_title(
+            f'蒙特卡洛压力测试（{result.n_simulations}次，{result.horizon_days}天）\n'
+            f'亏损概率={result.prob_loss*100:.1f}%  ES(95%)={result.expected_shortfall*100:.2f}%  '
+            f'平均最大回撤={result.max_drawdown_mean*100:.1f}%'
+        )
+        ax.legend(loc='upper left')
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'¥{x:,.0f}'))
+        plt.tight_layout()
+
+        if not output_path:
+            output_path = os.path.join(
+                os.path.join(os.path.dirname(os.path.dirname(__file__)), 'outputs'),
+                'monte_carlo.png'
+            )
+        plt.savefig(output_path, dpi=120)
+        plt.close(fig)
+        print(f"[MonteCarloStressTest] 图表已保存: {output_path}")
