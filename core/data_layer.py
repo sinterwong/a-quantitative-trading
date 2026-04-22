@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import ssl
 import time
 import threading
@@ -289,6 +290,164 @@ def _fetch_daily_bars_sina(symbol: str, days: int = 60) -> Optional[pd.DataFrame
     return df
 
 
+# ─── 分钟 K 线获取（AKShare）─────────────────────────────────────────────────
+
+def _fetch_minute_bars_akshare(
+    symbol: str,
+    period: str = '1',
+    adjust: str = 'qfq',
+) -> Optional[pd.DataFrame]:
+    """
+    通过 AKShare 获取 A 股分钟 K 线（免费，限约 1 年历史）。
+
+    Args:
+        symbol: 标的代码，如 '510300' 或 '510300.SH'
+        period: '1' | '5' | '15' | '30' | '60'（分钟）
+        adjust: 'qfq'=前复权, 'hfq'=后复权, ''=不复权
+
+    Returns:
+        DataFrame，列：open, high, low, close, volume，DatetimeIndex
+    """
+    try:
+        import akshare as ak  # type: ignore
+    except ImportError:
+        logger.warning("akshare 未安装，无法获取分钟 K 线。请: pip install akshare")
+        return None
+
+    # 标准化代码（去掉市场后缀）
+    code = symbol.upper()
+    if code.endswith('.SH') or code.endswith('.SZ'):
+        code = code[:-3]
+
+    try:
+        df = ak.stock_zh_a_minute(symbol=code, period=period, adjust=adjust)
+    except Exception as exc:
+        logger.debug("AKShare minute bars failed for %s: %s", symbol, exc)
+        return None
+
+    if df is None or df.empty:
+        return None
+
+    # AKShare 返回列名：日期/时间, 开盘, 收盘, 最高, 最低, 成交量
+    col_map = {
+        '时间': 'datetime', '日期': 'datetime',
+        '开盘': 'open', '收盘': 'close',
+        '最高': 'high', '最低': 'low',
+        '成交量': 'volume', '成交额': 'amount',
+    }
+    df = df.rename(columns={c: col_map.get(c, c) for c in df.columns})
+
+    # 标准化时间索引
+    time_col = next((c for c in ['datetime', 'date', 'time'] if c in df.columns), None)
+    if time_col:
+        df[time_col] = pd.to_datetime(df[time_col])
+        df = df.set_index(time_col)
+
+    # 保留标准列
+    needed = ['open', 'high', 'low', 'close', 'volume']
+    existing = [c for c in needed if c in df.columns]
+    if not existing:
+        return None
+    df = df[existing].copy()
+    for col in needed:
+        if col not in df.columns:
+            df[col] = 0.0
+    df = df.astype({'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
+    df = df.sort_index()
+    return df
+
+
+# ─── Parquet 本地缓存 ─────────────────────────────────────────────────────────
+
+_PARQUET_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'bars')
+
+
+class ParquetCache:
+    """
+    日线数据本地 Parquet 缓存（Phase 1-C）。
+
+    - 首次下载后写入 data/bars/{symbol}.parquet
+    - 后续调用：加载本地缓存，若最新数据不足则增量更新
+    - 格式：DatetimeIndex + [open, high, low, close, volume]
+
+    用法：
+        cache = ParquetCache()
+        df = cache.load('510300')           # 加载缓存（无则 None）
+        cache.save('510300', df)            # 保存/追加
+        df = cache.upsert('510300', df_new) # 合并去重后保存
+    """
+
+    def __init__(self, cache_dir: str = _PARQUET_DIR):
+        self.cache_dir = cache_dir
+        os.makedirs(cache_dir, exist_ok=True)
+
+    def _path(self, symbol: str) -> str:
+        safe = symbol.replace('.', '_').replace('/', '_')
+        return os.path.join(self.cache_dir, f"{safe}.parquet")
+
+    def exists(self, symbol: str) -> bool:
+        return os.path.isfile(self._path(symbol))
+
+    def load(self, symbol: str) -> Optional[pd.DataFrame]:
+        """加载本地缓存。不存在返回 None。"""
+        path = self._path(symbol)
+        if not os.path.isfile(path):
+            return None
+        try:
+            df = pd.read_parquet(path)
+            if not pd.api.types.is_datetime64_any_dtype(df.index):
+                df.index = pd.to_datetime(df.index)
+            return df.sort_index()
+        except Exception as exc:
+            logger.warning("Parquet load failed for %s: %s", symbol, exc)
+            return None
+
+    def save(self, symbol: str, df: pd.DataFrame) -> bool:
+        """覆盖保存（DatetimeIndex）。"""
+        if df is None or df.empty:
+            return False
+        try:
+            path = self._path(symbol)
+            out = df.copy()
+            if not pd.api.types.is_datetime64_any_dtype(out.index):
+                out.index = pd.to_datetime(out.index)
+            out.to_parquet(path, engine='pyarrow', compression='snappy')
+            return True
+        except Exception as exc:
+            logger.warning("Parquet save failed for %s: %s", symbol, exc)
+            return False
+
+    def upsert(self, symbol: str, df_new: pd.DataFrame) -> pd.DataFrame:
+        """
+        合并新数据与本地缓存：去重、排序后保存。
+        返回合并后的完整 DataFrame。
+        """
+        df_old = self.load(symbol)
+        if df_old is not None and not df_old.empty:
+            combined = pd.concat([df_old, df_new])
+            combined = combined[~combined.index.duplicated(keep='last')]
+            combined = combined.sort_index()
+        else:
+            combined = df_new.sort_index()
+        self.save(symbol, combined)
+        return combined
+
+    def latest_date(self, symbol: str) -> Optional[pd.Timestamp]:
+        """返回缓存中最新的日期，无缓存返回 None。"""
+        df = self.load(symbol)
+        if df is None or df.empty:
+            return None
+        return df.index[-1]
+
+    def delete(self, symbol: str) -> bool:
+        """删除缓存文件。"""
+        path = self._path(symbol)
+        if os.path.isfile(path):
+            os.remove(path)
+            return True
+        return False
+
+
 # ─── DataLayer（实盘模式）────────────────────────────────────────────────────
 
 
@@ -296,6 +455,7 @@ class DataLayer:
     """
     A股统一数据接口 — 实盘模式。
     带 TTL 缓存，降级链：腾讯 → 新浪。
+    支持本地 Parquet 缓存（首次下载后存入 data/bars/）。
     """
 
     # 默认 TTL（秒）
@@ -303,8 +463,13 @@ class DataLayer:
     BAR_TTL     = 3600    # 日K线缓存 1 小时
     NORTH_TTL   = 60      # 北向资金缓存 60 秒
 
-    def __init__(self):
+    def __init__(self, use_parquet_cache: bool = True):
+        """
+        Args:
+            use_parquet_cache: 是否启用本地 Parquet 缓存（默认开启）
+        """
         self._cache = _TTLCache()
+        self._parquet = ParquetCache() if use_parquet_cache else None
 
     # ── 日K线 ────────────────────────────────────────────────────────────────
 
@@ -312,24 +477,90 @@ class DataLayer:
         """
         获取日K线数据（前复权）。
         返回 DataFrame，列：date(datetime64), open, high, low, close, volume
-        降级：腾讯 → 新浪
+
+        缓存策略：
+          1. 内存 TTL 缓存（30 min）
+          2. 本地 Parquet 缓存（首次下载后增量更新）
+          3. 网络抓取：腾讯 → 新浪（降级）
         """
         cache_key = f"bars:{symbol}:{days}"
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
 
-        df = _fetch_daily_bars_tencent(symbol, days)
-        if df is None or df.empty:
-            logger.info("Tencent bars failed for %s, trying Sina", symbol)
-            df = _fetch_daily_bars_sina(symbol, days)
+        df = None
 
+        # 尝试 Parquet 缓存
+        if self._parquet is not None:
+            cached_df = self._parquet.load(symbol)
+            if cached_df is not None and not cached_df.empty:
+                latest = self._parquet.latest_date(symbol)
+                today = pd.Timestamp.now().normalize()
+                # 缓存今日或昨日数据视为新鲜（非交易日不更新）
+                if latest is not None and (today - latest).days <= 3:
+                    df = cached_df
+                    logger.debug("Parquet cache hit for %s (latest=%s)", symbol, latest.date())
+
+        # 网络抓取（缓存过旧或不存在时）
         if df is None:
-            df = pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
-        else:
-            df = df.tail(days).reset_index(drop=True)
+            df_net = _fetch_daily_bars_tencent(symbol, max(days, 365))
+            if df_net is None or df_net.empty:
+                logger.info("Tencent bars failed for %s, trying Sina", symbol)
+                df_net = _fetch_daily_bars_sina(symbol, max(days, 365))
 
-        self._cache.set(cache_key, df, self.BAR_TTL)
+            if df_net is not None and not df_net.empty:
+                # 转换为 DatetimeIndex
+                df_net_idx = df_net.copy()
+                if 'date' in df_net_idx.columns:
+                    df_net_idx = df_net_idx.set_index('date')
+                if not pd.api.types.is_datetime64_any_dtype(df_net_idx.index):
+                    df_net_idx.index = pd.to_datetime(df_net_idx.index)
+                # 写入 Parquet（增量合并）
+                if self._parquet is not None:
+                    df = self._parquet.upsert(symbol, df_net_idx)
+                else:
+                    df = df_net_idx
+
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+
+        # 取最近 days 条，恢复 date 列风格（保持向后兼容）
+        result = df.tail(days).reset_index()
+        if 'index' in result.columns and 'date' not in result.columns:
+            result = result.rename(columns={'index': 'date'})
+
+        self._cache.set(cache_key, result, self.BAR_TTL)
+        return result
+
+    def get_minute_bars(
+        self,
+        symbol: str,
+        period: str = '1',
+        adjust: str = 'qfq',
+    ) -> pd.DataFrame:
+        """
+        获取分钟 K 线（通过 AKShare，免费，约 1 年历史）。
+
+        Args:
+            symbol: 标的代码，如 '510300' 或 '510300.SH'
+            period: '1' | '5' | '15' | '30' | '60'（分钟）
+            adjust: 复权方式 'qfq'|'hfq'|''
+
+        Returns:
+            DataFrame，DatetimeIndex，列：open, high, low, close, volume
+        """
+        cache_key = f"minute:{symbol}:{period}:{adjust}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        df = _fetch_minute_bars_akshare(symbol, period=period, adjust=adjust)
+        if df is None or df.empty:
+            logger.warning("分钟 K 线获取失败: %s", symbol)
+            df = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+        # 分钟数据缓存 5 分钟（交易时间内需要较频繁刷新）
+        self._cache.set(cache_key, df, 300)
         return df
 
     # ── 实时行情 ─────────────────────────────────────────────────────────────
