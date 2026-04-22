@@ -118,13 +118,14 @@ registry = FactorRegistry()
 def _auto_register() -> None:
     """自动注册所有内置因子。"""
     from core.factors.price_momentum import (
-        RSIFactor, BollingerFactor, MACDFactor, ATRFactor,
+        RSIFactor, BollingerFactor, MACDFactor, ATRFactor, OrderImbalanceFactor,
     )
 
     registry.register(RSIFactor, default_params={'period': 14})
     registry.register(BollingerFactor, default_params={'period': 20, 'nb_std': 2.0})
     registry.register(MACDFactor, default_params={'fast': 12, 'slow': 26, 'signal': 9})
     registry.register(ATRFactor, default_params={'period': 14, 'lookback': 20})
+    registry.register(OrderImbalanceFactor, default_params={'window': 10})
 
 
 _auto_register()

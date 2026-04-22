@@ -272,3 +272,123 @@ class ATRFactor(Factor):
     ) -> List[Signal]:
         # ATR 因子不直接产生交易信号，返回波动率级别
         return []
+
+
+class OrderImbalanceFactor(Factor):
+    """
+    订单不平衡度因子（OI，基于 OHLCV）。
+
+    衡量近期买方压力 vs 卖方压力的相对强弱：
+      - 当收盘价 > 开盘价（阳线），视为"买方主导"，计入买方成交量
+      - OI = 滚动窗口内买方成交量 / 总成交量，中心化后 z-score 归一化
+
+    取值含义：
+      evaluate() 返回 z-score：
+        > 0 → 买方压力高于历史均值（利多）
+        < 0 → 卖方压力高于历史均值（利空）
+      signals()：
+        OI z-score > buy_z  → BUY
+        OI z-score < sell_z → SELL
+
+    与 core/level2.py 中基于盘口快照的 OrderImbalanceFactor 的关系：
+      - 本因子使用 OHLCV 日/分钟数据，适用于回测和无 Level2 数据的环境
+      - 盘口版精度更高但需要实时 5 档盘口数据
+      - 当 Level2 数据可用时，可在 StrategyRunner 中替换本因子
+
+    IC 验证目标（TODO P2-B）：
+      日频 OI 因子 IC > 0.03（下一交易日收益率 vs OI z-score）
+    """
+
+    name = 'OrderImbalance'
+    category = FactorCategory.PRICE_MOMENTUM
+
+    def __init__(
+        self,
+        window: int = 10,
+        buy_z: float = 0.5,
+        sell_z: float = -0.5,
+        symbol: str = '',
+    ):
+        """
+        Parameters
+        ----------
+        window : int
+            计算滚动买方成交量占比的窗口（默认 10 bars）
+        buy_z : float
+            触发 BUY 信号的最低 z-score（默认 0.5）
+        sell_z : float
+            触发 SELL 信号的最高 z-score（默认 -0.5）
+        symbol : str
+            标的代码（写入 Signal.symbol）
+        """
+        self.window = window
+        self.buy_z = buy_z
+        self.sell_z = sell_z
+        self.symbol = symbol
+
+    def evaluate(self, data: pd.DataFrame) -> pd.Series:
+        """
+        计算 OI z-score 序列。
+        data 需含 open / close / volume 列。
+        """
+        close = data['close']
+        open_ = data['open']
+        volume = data['volume']
+
+        # 阳线买方成交量（close > open 时计入全部 volume，否则 0）
+        is_up = (close >= open_).astype(float)
+        buy_vol = volume * is_up
+
+        # 滚动买方成交量占比，[0,1]，中心化到 [-0.5, 0.5]
+        roll_buy = buy_vol.rolling(self.window, min_periods=1).sum()
+        roll_total = volume.rolling(self.window, min_periods=1).sum()
+        oi_ratio = roll_buy / roll_total.replace(0, np.nan)
+        oi_centered = oi_ratio.fillna(0.5) - 0.5   # [-0.5, 0.5]
+
+        return self.normalize(oi_centered)
+
+    def signals(
+        self,
+        factor_values: pd.Series,
+        price: float,
+    ) -> List[Signal]:
+        """从最新 OI z-score 生成买卖信号。"""
+        if len(factor_values) == 0:
+            return []
+
+        latest = factor_values.iloc[-1]
+        if np.isnan(latest):
+            return []
+
+        sigs = []
+        if latest > self.buy_z:
+            strength = min((latest - self.buy_z) / (2.0 - self.buy_z), 1.0)
+            sigs.append(Signal(
+                timestamp=pd.Timestamp.now(),
+                symbol=self.symbol,
+                direction='BUY',
+                strength=strength,
+                factor_name=self.name,
+                price=price,
+                metadata={
+                    'oi_z': round(latest, 4),
+                    'threshold': self.buy_z,
+                    'data_source': 'ohlcv',
+                },
+            ))
+        elif latest < self.sell_z:
+            strength = min((self.sell_z - latest) / (self.sell_z + 2.0), 1.0)
+            sigs.append(Signal(
+                timestamp=pd.Timestamp.now(),
+                symbol=self.symbol,
+                direction='SELL',
+                strength=strength,
+                factor_name=self.name,
+                price=price,
+                metadata={
+                    'oi_z': round(latest, 4),
+                    'threshold': self.sell_z,
+                    'data_source': 'ohlcv',
+                },
+            ))
+        return sigs

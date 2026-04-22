@@ -46,7 +46,7 @@ strategies:
     symbol: "510310.SH"
     factors:
       - name: RSI
-        weight: 0.5
+        weight: 0.4
         params:
           period: 14
           buy_threshold: 25
@@ -57,18 +57,25 @@ strategies:
           period: 14
           lookback: 20
       - name: MACD
-        weight: 0.3
+        weight: 0.2
         params:
           fast: 12
           slow: 26
           signal: 9
+      - name: OrderImbalance
+        weight: 0.2
+        params:
+          window: 10
+          buy_z: 0.5
+          sell_z: -0.5
+        _note: "P2-B: OI因子(OHLCV代理版)，IC>0.03目标，L2盘口版待接入"
     signal_threshold: 0.5   # combined_score 触发阈值
     bars_lookback: 120
     stop_loss: 0.05
     take_profit: 0.20
     atr_threshold: 0.85
     min_hold_days: 3
-    _note: "WFA最优: Sharpe=0.467 vs RSI_Only=0.319 (+74%). ATR(85%)过滤高波动."
+    _note: "P2-B: 加入OI因子(weight=0.2). WFA最优: Sharpe=0.467 vs RSI_Only=0.319 (+74%). ATR(85%)过滤高波动."
 
   MACD_600900:
     symbol: "600900.SH"
