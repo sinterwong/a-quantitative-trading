@@ -51,3 +51,4 @@ skills/
 # Temporary
 *.tmp
 *.bak
+live_params.json

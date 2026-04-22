@@ -1,7 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # Windows 控制台 UTF-8 修复（必须在最早执行）
+from quant.benchmark import quick_benchmark
+from quant.monte_carlo import MonteCarloSimulator
+from signal_generator import SignalGenerator
+from walkforward import WalkForwardAnalyzer
+from backtest import BacktestEngine
+from data_loader import DataLoader
+from datetime import datetime, timedelta
+import argparse
+import time
+import json
+import os
 import sys
+from typing import Dict
 _STREAMLIT = hasattr(sys, '_streamlit_version') or 'streamlit' in sys.modules
 if sys.platform == 'win32' and sys.stdout.encoding != 'utf-8' and not _STREAMLIT:
     try:
@@ -28,12 +40,6 @@ walkforward_job.py — Walk-Forward 自动训练任务
   - 最新参数写入 Backend，供盘中信号引擎实时调用
 """
 
-import os
-import sys
-import json
-import time
-import argparse
-from datetime import datetime, timedelta
 
 # 禁用代理
 for k in list(os.environ.keys()):
@@ -43,15 +49,10 @@ for k in list(os.environ.keys()):
 QUANT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'quant')
 sys.path.insert(0, QUANT_DIR)
 
-from data_loader import DataLoader
-from backtest import BacktestEngine
-from walkforward import WalkForwardAnalyzer
-from signal_generator import SignalGenerator
-from quant.monte_carlo import MonteCarloSimulator
-from quant.benchmark import quick_benchmark
 
 # ─── 持久化 ──────────────────────────────────────────────
-BACKEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backend')
+BACKEND_DIR = os.path.join(os.path.dirname(
+    os.path.abspath(__file__)), '..', 'backend')
 sys.path.insert(0, BACKEND_DIR)
 try:
     from services.walkforward_persistence import (
@@ -134,7 +135,8 @@ def make_signal_func(strategy_type: str):
                 losses.append(-d if d < 0 else 0.0)
             avg_gain = sum(gains) / period
             avg_loss = sum(losses) / period
-            rsi_vals[i] = 100 if avg_loss == 0 else 100 - (100 / (1 + avg_gain / avg_loss))
+            rsi_vals[i] = 100 if avg_loss == 0 else 100 - \
+                (100 / (1 + avg_gain / avg_loss))
 
         def signal_func(data: list, idx: int):
             if idx < period or rsi_vals[idx] is None or rsi_vals[idx - 1] is None:
@@ -160,9 +162,9 @@ def make_signal_func(strategy_type: str):
 
 # ─── 主训练流程 ────────────────────────────────────────────
 def run_walkforward_for_symbol(symbol: str,
-                                strategy: str = 'RSI',
-                                train_years: int = 2,
-                                test_years: int = 1) -> dict:
+                               strategy: str = 'RSI',
+                               train_years: int = 2,
+                               test_years: int = 1) -> dict:
     """对单个标的运行 Walk-Forward Analysis"""
 
     print(f"\n{'='*60}")
@@ -175,7 +177,8 @@ def run_walkforward_for_symbol(symbol: str,
     end_date = datetime.now().strftime('%Y%m%d')
     total_years = train_years + test_years
     # ATR warmup ≈ period*6 ≈ 84d，取 120d 缓冲确保够用
-    start_date = (datetime.now() - timedelta(days=total_years * 365 + 120)).strftime('%Y%m%d')
+    start_date = (datetime.now() - timedelta(days=total_years *
+                  365 + 120)).strftime('%Y%m%d')
 
     kline = loader.get_kline(symbol, start_date, end_date)
     # 实际需要: train * 252 + test * 252（每段窗口内 ATR 自己算）
@@ -185,11 +188,13 @@ def run_walkforward_for_symbol(symbol: str,
         listing_info = ''
         if kline:
             listing_info = f'（数据范围: {kline[0]["date"][:10]} ~ {kline[-1]["date"][:10]}）'
-        print(f'  [SKIP] 数据不足: 需要 ~{required} 天（{train_years}y train + {test_years}y test），实际 {len(kline)} 天 {listing_info}')
+        print(
+            f'  [SKIP] 数据不足: 需要 ~{required} 天（{train_years}y train + {test_years}y test），实际 {len(kline)} 天 {listing_info}')
         print(f'  提示: 如数据不足，可减少 train-years 或 test-years 参数，或检查股票上市时间')
         return None
 
-    print(f"  Data: {kline[0]['date'][:10]} ~ {kline[-1]['date'][:10]} ({len(kline)} days)")
+    print(
+        f"  Data: {kline[0]['date'][:10]} ~ {kline[-1]['date'][:10]} ({len(kline)} days)")
 
     # 构建参数网格
     param_grid = RSI_PARAM_GRID if strategy == 'RSI' else MACD_PARAM_GRID
@@ -221,7 +226,8 @@ def run_walkforward_for_symbol(symbol: str,
               f"(min={summary['min_return']:+.1f}%, max={summary['max_return']:+.1f}%)")
         print(f"     WinRate: {summary['avg_winrate']:.0f}%  |  "
               f"MaxDD: {summary['max_maxdd']:.1f}%")
-        print(f"     正收益窗口: {summary['positive_windows']}/{summary['n_windows']}")
+        print(
+            f"     正收益窗口: {summary['positive_windows']}/{summary['n_windows']}")
     else:
         print("  [WARN] No valid windows")
 
@@ -240,16 +246,22 @@ def run_walkforward_for_symbol(symbol: str,
     bench_result = None
     if results and 'equity_curve' in results[-1]:
         try:
-            bench_result = quick_benchmark(results[-1]['equity_curve'], '510310.SH')
+            bench_result = quick_benchmark(
+                results[-1]['equity_curve'], '510310.SH')
             if 'error' not in bench_result:
                 print(f"\n  [Benchmark] 沪深300 对比:")
-                print(f"     Alpha(年化): {bench_result['alpha_annualized']:+.2%}")
+                print(
+                    f"     Alpha(年化): {bench_result['alpha_annualized']:+.2%}")
                 print(f"     Beta: {bench_result['beta']:.2f}")
                 print(f"     信息比率: {bench_result['info_ratio']:.2f}")
-                print(f"     跑赢天数: {bench_result['outperformance_days_pct']:.1%}")
-                print(f"     策略MaxDD: {bench_result['strategy_maxdd_pct']:.1%}")
-                print(f"     沪深300 MaxDD: {bench_result['benchmark_maxdd_pct']:.1%}")
-                print(f"     相对MaxDD: {bench_result['relative_maxdd_pct']:+.1%}")
+                print(
+                    f"     跑赢天数: {bench_result['outperformance_days_pct']:.1%}")
+                print(
+                    f"     策略MaxDD: {bench_result['strategy_maxdd_pct']:.1%}")
+                print(
+                    f"     沪深300 MaxDD: {bench_result['benchmark_maxdd_pct']:.1%}")
+                print(
+                    f"     相对MaxDD: {bench_result['relative_maxdd_pct']:+.1%}")
             else:
                 print(f"  [WARN] Benchmark: {bench_result['error']}")
         except Exception as e:
@@ -304,7 +316,8 @@ def main():
                         help='守护进程模式，每季度自动运行')
     args = parser.parse_args()
 
-    print(f"\n[Walk-Forward Job] Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(
+        f"\n[Walk-Forward Job] Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     if args.symbol:
         symbols = [args.symbol]
@@ -314,7 +327,8 @@ def main():
             import urllib.request
             with urllib.request.urlopen('http://127.0.0.1:5555/positions', timeout=5) as r:
                 data = json.loads(r.read())
-                holdings = [p['symbol'] for p in data.get('positions', []) if p.get('shares', 0) > 0]
+                holdings = [p['symbol'] for p in data.get(
+                    'positions', []) if p.get('shares', 0) > 0]
         except:
             holdings = []
         symbols = get_symbols_to_train(portfolio_symbols=holdings)
@@ -369,7 +383,8 @@ def main():
                   f"Return={s['avg_return']:+.1f}%  WinRate={s['avg_winrate']:.0f}%  "
                   f"MaxDD={s['max_maxdd']:.1f}%  windows={s['n_windows']}")
 
-    print(f"\n[Walk-Forward Job] Done at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(
+        f"\n[Walk-Forward Job] Done at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 
 if __name__ == '__main__':
