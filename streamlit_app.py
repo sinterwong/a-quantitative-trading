@@ -73,6 +73,23 @@ def api_post(endpoint: str, data: dict, timeout: float = 8.0) -> dict:
     except urllib.error.URLError:
         return {}
 
+def api_put(endpoint: str, data: dict, timeout: float = 8.0) -> dict:
+    url = f"{BACKEND_URL}{endpoint}"
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    payload = json.dumps(data).encode()
+    try:
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0'},
+            method='PUT'
+        )
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            return json.loads(resp.read())
+    except urllib.error.URLError:
+        return {}
+
 # ─── 数据获取 ────────────────────────────────────────────────
 
 @st.cache_data(ttl=60)
@@ -209,6 +226,24 @@ page = st.sidebar.radio(
     ],
     index=0,
 )
+
+st.sidebar.markdown('---')
+
+# ─── 交易模式切换 ──────────────────────────────────────────────
+mode_response = api_get('/trading/mode')
+current_mode = mode_response.get('mode', 'simulation')
+
+if current_mode == 'live':
+    st.sidebar.success('🚀 实盘模式')
+else:
+    st.sidebar.info('🔒 模拟模式')
+
+mode_changed = st.sidebar.toggle('🎮 开启实盘交易', value=(current_mode == 'live'), help='开启后盘中监控将自动执行真实下单指令')
+
+if mode_changed != (current_mode == 'live'):
+    new_mode = 'live' if mode_changed else 'simulation'
+    put_resp = api_put('/trading/mode', {'mode': new_mode})
+    st.sidebar.rerun()
 
 st.sidebar.markdown('---')
 st.sidebar.caption('Powered by 小黑 · Streamlit')
