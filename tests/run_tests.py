@@ -241,11 +241,15 @@ def _run_test_module(module_name, label):
             for ln in result.stderr.splitlines()[:5]:
                 print('    ' + ln)
 
-_run_test_module('test_data_layer.py',     'DataLayer')
-_run_test_module('test_factor_pipeline.py','FactorRegistry+Pipeline')
-_run_test_module('test_strategy_runner.py','StrategyRunner')
-_run_test_module('test_portfolio_risk.py', 'PortfolioRisk')
-_run_test_module('test_config.py',         'Config')
+_run_test_module('test_data_layer.py',      'DataLayer')
+_run_test_module('test_factor_pipeline.py', 'FactorRegistry+Pipeline')
+_run_test_module('test_strategy_runner.py', 'StrategyRunner')
+_run_test_module('test_portfolio_risk.py',  'PortfolioRisk')
+_run_test_module('test_config.py',          'Config')
+# Phase 1 新增测试
+_run_test_module('test_backtest_engine.py', 'BacktestEngine(P1-A)')
+_run_test_module('test_walkforward.py',     'WalkForward(P1-B)')
+_run_test_module('test_data_quality.py',    'DataQuality(P1-C)')
 
 # ============================================================
 # Summary

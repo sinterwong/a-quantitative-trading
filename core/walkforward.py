@@ -26,12 +26,11 @@ core/walkforward.py — Walk-Forward Analysis 引擎（Phase 1 升级版）
 from __future__ import annotations
 
 import os
-import json
 import itertools
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, date
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type
+from datetime import date
+from typing import Any, Dict, List, Optional, Tuple, Type
 
 import numpy as np
 import pandas as pd

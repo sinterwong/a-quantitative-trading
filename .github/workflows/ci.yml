@@ -8,7 +8,7 @@ on:
 
 jobs:
   # ---------------------------------------------------------------
-  # Job 1: Linux - syntax check + portable test runner
+  # Job 1: Linux - syntax check + flake8 + unit tests
   # ---------------------------------------------------------------
   test-linux:
     runs-on: ubuntu-latest
@@ -25,10 +25,23 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install --upgrade pip pandas numpy requests flask werkzeug pyyaml
-
-      - name: Syntax check
         run: |
+          pip install --upgrade pip
+          pip install pandas numpy requests flask werkzeug pyyaml pyarrow
+          pip install flake8
+
+      - name: Syntax check (py_compile)
+        run: |
+          # core 模块（Phase 1 新增）
+          python -m py_compile core/backtest_engine.py
+          python -m py_compile core/walkforward.py
+          python -m py_compile core/data_quality.py
+          python -m py_compile core/data_layer.py
+          python -m py_compile core/factors/base.py
+          python -m py_compile core/event_bus.py
+          python -m py_compile core/portfolio.py
+          python -m py_compile core/oms.py
+          # scripts
           python -m py_compile scripts/dynamic_selector.py
           python -m py_compile scripts/stock_data_only.py
           python -m py_compile scripts/walkforward_job.py
@@ -40,6 +53,7 @@ jobs:
           python -m py_compile scripts/quant/news_quality.py
           python -m py_compile scripts/quant/monte_carlo.py
           python -m py_compile scripts/quant/benchmark.py
+          # backend
           python -m py_compile backend/services/portfolio.py
           python -m py_compile backend/services/broker.py
           python -m py_compile backend/services/signals.py
@@ -47,6 +61,7 @@ jobs:
           python -m py_compile backend/services/report_sender.py
           python -m py_compile backend/services/strategy_loader.py
           python -m py_compile backend/services/walkforward_persistence.py
+          # strategies
           python -m py_compile strategies/__init__.py
           python -m py_compile strategies/base.py
           python -m py_compile strategies/rsi_strategy.py
@@ -54,13 +69,21 @@ jobs:
           python -m py_compile strategies/bollinger_strategy.py
           python -m py_compile streamlit_app.py
 
+      - name: Flake8 lint (core modules — errors only, E/W 级别)
+        run: |
+          # 只检查 core/ 新增模块，忽略行长(E501)和复杂度警告
+          flake8 core/backtest_engine.py core/walkforward.py core/data_quality.py \
+            --max-line-length=120 \
+            --extend-ignore=E501,W503,W504,E203 \
+            --count
+
       - name: Run unit tests (portable, no pytest required)
         run: python tests/run_tests.py
 
   # ---------------------------------------------------------------
-  # Job 2: Linux - pytest (optional, for pytest-format output)
+  # Job 2: Linux - pytest + mypy (重点模块类型检查)
   # ---------------------------------------------------------------
-  test-pytest:
+  test-quality:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -74,11 +97,28 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install pytest
-        run: pip install --upgrade pip pytest pandas numpy requests flask werkzeug pyyaml
+      - name: Install tools
+        run: |
+          pip install --upgrade pip
+          pip install pytest pandas numpy requests flask werkzeug pyyaml pyarrow
+          pip install mypy types-requests
 
-      - name: Run pytest
-        run: python -m pytest tests/test_signal_generator.py -v --tb=short
+      - name: Mypy type check (core 重点模块)
+        run: |
+          mypy core/data_quality.py \
+            --ignore-missing-imports \
+            --no-strict-optional \
+            --allow-untyped-defs \
+            --no-error-summary \
+            || true   # mypy 错误不阻断 CI，仅展示结果
+
+      - name: Run pytest (新增 Phase 1 测试)
+        run: |
+          python -m pytest \
+            tests/test_backtest_engine.py \
+            tests/test_walkforward.py \
+            tests/test_data_quality.py \
+            -v --tb=short
 
   # ---------------------------------------------------------------
   # Job 3: Windows CI - single version (syntax + unit tests)
@@ -98,11 +138,15 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install --upgrade pip pandas numpy requests flask werkzeug pyyaml
+        run: pip install --upgrade pip pandas numpy requests flask werkzeug pyyaml pyarrow
 
       - name: Syntax check (Windows)
         shell: bash
         run: |
+          python -m py_compile core/backtest_engine.py
+          python -m py_compile core/walkforward.py
+          python -m py_compile core/data_quality.py
+          python -m py_compile core/data_layer.py
           python -m py_compile scripts/dynamic_selector.py
           python -m py_compile scripts/stock_data_only.py
           python -m py_compile scripts/walkforward_job.py

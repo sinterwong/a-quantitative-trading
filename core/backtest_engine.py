@@ -17,18 +17,15 @@ Phase 6 核心组件：
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
-from datetime import datetime, date, timedelta
-from typing import Dict, List, Optional, Callable, Any, Literal, Tuple
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, List, Optional, Literal, Tuple
 from collections import defaultdict
 import numpy as np
 import pandas as pd
-import copy
 
-from core.event_bus import EventBus, MarketEvent, SignalEvent, FillEvent
 from core.factors.base import Factor, Signal
-from core.oms import Order, Fill
-from core.portfolio import PortfolioResult
+from core.oms import Order
 
 
 # ─── 回测数据结构 ───────────────────────────────────────────────────────────
@@ -603,7 +600,6 @@ class BacktestEngine:
         sortino = (annual_return - self.config.risk_free_rate) / downside_vol if downside_vol > 0 else 0
 
         # 胜率
-        closed_trades = [t for t in self._trades if t.realized_pnl != 0]
         win_rate = self._wins / (self._wins + self._losses) if (self._wins + self._losses) > 0 else 0
         profit_factor = self._total_profit / self._total_loss if self._total_loss > 0 else float('inf')
 
@@ -646,8 +642,8 @@ class PerformanceAnalyzer:
         if not daily_stats:
             return {}
 
-        equity = pd.Series([s.equity for s in daily_stats])
-        returns = pd.Series([s.daily_return for s in daily_stats])
+        _ = pd.Series([s.equity for s in daily_stats])          # reserved for future use
+        _ = pd.Series([s.daily_return for s in daily_stats])    # reserved for future use
 
         # 按信号来源分组
         by_signal = defaultdict(list)
@@ -658,7 +654,6 @@ class PerformanceAnalyzer:
         signal_stats = {}
         for reason, pnls in by_signal.items():
             wins = sum(1 for p in pnls if p > 0)
-            losses = len(pnls) - wins
             signal_stats[reason] = {
                 'n_trades': len(pnls),
                 'win_rate': wins / len(pnls) if pnls else 0,

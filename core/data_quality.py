@@ -19,7 +19,6 @@ import logging
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-import numpy as np
 import pandas as pd
 
 logger = logging.getLogger("core.data_quality")
@@ -142,7 +141,7 @@ class DataQualityChecker:
             vol = out.loc[dt, 'volume']
             anomalies.append(AnomalyRecord(
                 date=dt, anomaly_type='zero_volume',
-                detail=f"成交量=0（停牌或数据缺失）", value=float(vol)
+                detail="成交量=0（停牌或数据缺失）", value=float(vol)
             ))
 
         # ── 2. 异常涨跌检测 ────────────────────────────────────────────────────
