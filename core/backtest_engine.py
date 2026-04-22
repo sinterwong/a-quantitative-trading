@@ -83,10 +83,12 @@ class BacktestConfig:
     initial_equity: float = 100_000
     commission_rate: float = 0.0003   # 万3
     min_commission: float = 5.0        # 最低佣金
+    stamp_tax_rate: float = 0.001      # 印花税 0.1%（A 股卖出单向）
     slippage_bps: float = 5.0          # 滑点 5bp
     risk_free_rate: float = 0.03       # 无风险利率
     allow_short: bool = False
     max_position_pct: float = 0.25    # 单标的最大仓位
+    bar_freq: str = 'daily'            # 'daily' | 'hourly' | 'minute'
 
 
 @dataclass
@@ -174,17 +176,32 @@ class BacktestEngine:
         self._holding_periods: List[int] = []
         self._position_entries: Dict[str, datetime] = {}  # symbol → entry time
 
-    def load_data(self, symbol: str, df: pd.DataFrame) -> 'BacktestEngine':
+    def load_data(
+        self,
+        symbol: str,
+        df: pd.DataFrame,
+        adj_type: str = 'qfq',
+    ) -> 'BacktestEngine':
         """
         加载 K 线数据。
         df 必须包含: open, high, low, close, volume 列。
         索引为 datetime。
+
+        adj_type: 复权类型，'qfq'=前复权（默认），'hfq'=后复权，'none'=不复权。
+        回测要求前复权数据以避免因复权引起的虚假信号。
         """
         required = {'open', 'high', 'low', 'close', 'volume'}
         missing = required - set(df.columns)
         if missing:
             raise ValueError(f"Missing columns: {missing}")
-        self._data[symbol] = df.copy()
+        if adj_type not in ('qfq', 'hfq', 'none'):
+            raise ValueError(f"adj_type must be 'qfq', 'hfq', or 'none', got '{adj_type}'")
+        data = df.copy()
+        # 标记停牌日（成交量为 0）
+        if 'is_suspended' not in data.columns:
+            data['is_suspended'] = data['volume'] == 0
+        data.attrs['adj_type'] = adj_type
+        self._data[symbol] = data
         return self
 
     def add_strategy(
@@ -196,6 +213,17 @@ class BacktestEngine:
         """添加策略因子"""
         self._strategies.append((factor, threshold, params))
         return self
+
+    def _bar_secs(self) -> int:
+        """根据 bar 频率返回每根 bar 对应的秒数"""
+        freq = self.config.bar_freq
+        if freq == 'daily':
+            return 86400
+        elif freq == 'hourly':
+            return 3600
+        elif freq == 'minute':
+            return 60
+        return 86400
 
     def run(self) -> BacktestResult:
         """执行回测"""
@@ -210,8 +238,10 @@ class BacktestEngine:
 
         self._reset()
 
-        for dt in all_dates:
-            self._on_bar(dt)
+        for i, dt in enumerate(all_dates):
+            # 下一根 bar 的 open（用于无前视偏差的成交价）
+            next_dt = all_dates[i + 1] if i + 1 < len(all_dates) else None
+            self._on_bar(dt, next_dt)
 
         return self._make_result()
 
@@ -228,29 +258,54 @@ class BacktestEngine:
         self._total_loss = 0.0
         self._holding_periods.clear()
 
-    def _on_bar(self, dt: datetime):
-        """处理每根 K 线"""
+    def _on_bar(self, dt: datetime, next_dt: Optional[datetime] = None):
+        """处理每根 K 线
+
+        信号用截止到当前 bar *之前*（排除当前 bar）的数据生成，
+        成交价用*下一根* bar 的 open（消除收盘价前视偏差）。
+        若已是最后一根 bar（next_dt 为 None），不开新仓，只更新持仓。
+        """
+        bar_secs = self._bar_secs()
+
         for symbol, df in self._data.items():
             if dt not in df.index:
                 continue
 
             bar = df.loc[dt]
+            is_suspended = bool(bar.get('is_suspended', False))
             pos = self._positions.get(symbol)
 
-            # 更新持仓当前价
+            # 更新持仓当前价（停牌日维持停牌前收盘价，不更新 entry_high）
             if pos and pos.shares > 0:
-                pos.current_price = float(bar['close'])
+                if not is_suspended:
+                    pos.current_price = float(bar['close'])
+                    if pos.current_price > pos.entry_high:
+                        pos.entry_high = pos.current_price
                 pos.unrealized_pnl = (pos.current_price - pos.avg_price) * pos.shares
                 pos.unrealized_pnl_pct = (pos.current_price - pos.avg_price) / pos.avg_price if pos.avg_price else 0
-                if pos.current_price > pos.entry_high:
-                    pos.entry_high = pos.current_price
-                pos.holding_secs += 1
+                # 正确累加持仓时长（按 bar 频率换算秒数）
+                pos.holding_secs += bar_secs
 
-            # 生成信号
+            if next_dt is None:
+                # 最后一根 bar，不生成新信号（无法用下一根 open 成交）
+                continue
+
+            if is_suspended:
+                # 停牌日跳过开仓信号，但允许已有持仓的收盘更新（已在上方处理）
+                continue
+
+            # 生成信号时仅用截止到*上一根* bar 的历史（排除当前 bar，消除前视偏差）
             signals = self._generate_signals(symbol, df, dt, bar)
 
             for sig in signals:
-                self._process_signal(sig, dt, bar)
+                # 下一根 bar 的 open 作为成交价
+                next_bar = df.loc[next_dt] if next_dt in df.index else None
+                if next_bar is None:
+                    continue
+                # 若下一根 bar 也是停牌日，跳过成交
+                if bool(next_bar.get('is_suspended', False)):
+                    continue
+                self._process_signal(sig, next_dt, next_bar)
 
         # 更新日终统计
         self._update_daily(dt)
@@ -262,18 +317,24 @@ class BacktestEngine:
         dt: datetime,
         bar: pd.Series,
     ) -> List[Signal]:
-        """用已发生的历史数据（含当前bar）计算因子信号"""
+        """用截止到当前 bar *之前*的历史数据计算因子信号（消除前视偏差）"""
         signals = []
 
-        # 取到当前时间点的所有历史数据
-        hist = df.loc[:dt].tail(100)  # 最多100根
+        # 排除当前 bar：只取 dt 之前的数据
+        idx = df.index.get_loc(dt)
+        if idx == 0:
+            return signals  # 没有历史数据，跳过
+        hist = df.iloc[max(0, idx - 100):idx]  # 最多 100 根历史 bar
+
+        # 信号强度参考当前 bar 的 close（仅用于 strength 计算，不用于成交）
+        ref_price = float(bar['close'])
 
         for factor, threshold, params in self._strategies:
             try:
                 fv = factor.evaluate(hist)
                 if len(fv) == 0:
                     continue
-                sigs = factor.signals(fv, price=float(bar['close']))
+                sigs = factor.signals(fv, price=ref_price)
                 signals.extend(sigs)
             except Exception:
                 pass
@@ -281,9 +342,16 @@ class BacktestEngine:
         return signals
 
     def _process_signal(self, sig: Signal, dt: datetime, bar: pd.Series):
-        """处理信号：风控检查 → 下单 → 成交"""
+        """处理信号：风控检查 → 下单 → 成交
+
+        dt / bar 均为*下一根* bar（next bar），成交价取该 bar 的 open。
+        这样彻底消除以收盘价成交的前视偏差。
+        """
         sym = sig.symbol
         pos = self._positions.get(sym)
+
+        # 用下一根 bar 的 open 作为基准成交价
+        exec_price = float(bar['open'])
 
         if sig.direction == 'BUY':
             # 检查是否已有持仓
@@ -291,21 +359,21 @@ class BacktestEngine:
                 return  # 已有持仓，不加仓
 
             # 风控：仓位上限
-            if not self._can_buy(sig.price, sig.metadata.get('shares')):
+            if not self._can_buy(exec_price, sig.metadata.get('shares')):
                 return
 
-            shares = sig.metadata.get('shares', self._calc_shares(sig))
+            shares = sig.metadata.get('shares', self._calc_shares_price(exec_price))
             if shares <= 0:
                 return
 
-            fill_price = self._simulate_fill(sig.direction, sig.price)
+            fill_price = self._simulate_fill(sig.direction, exec_price)
             self._execute_buy(sym, fill_price, shares, sig, dt)
 
         elif sig.direction == 'SELL':
             if not pos or pos.shares == 0:
                 return  # 无持仓
 
-            fill_price = self._simulate_fill(sig.direction, sig.price)
+            fill_price = self._simulate_fill(sig.direction, exec_price)
             self._execute_sell(sym, fill_price, pos.shares, sig, dt)
 
     def _can_buy(self, price: float, shares: int = None) -> bool:
@@ -318,20 +386,44 @@ class BacktestEngine:
             return False
         return True
 
-    def _calc_shares(self, sig: Signal) -> int:
-        """Kelly 半仓计算份额"""
+    def _calc_kelly_params(self) -> tuple[float, float, float]:
+        """从历史已平仓交易动态计算 win_rate / avg_win / avg_loss。
+        前 N 笔不足时退回默认值。"""
+        closed = [t for t in self._trades if t.realized_pnl != 0]
+        if len(closed) < 10:
+            # 历史不足，使用保守默认值
+            return 0.50, 0.015, 0.010
+        wins = [t.realized_pnl for t in closed if t.realized_pnl > 0]
+        losses = [abs(t.realized_pnl) for t in closed if t.realized_pnl < 0]
+        win_rate = len(wins) / len(closed)
+        avg_win_pnl = float(np.mean(wins)) if wins else 0.015
+        avg_loss_pnl = float(np.mean(losses)) if losses else 0.010
+        # 转换为收益率（相对于当前权益）
+        equity = max(self._get_equity(), 1)
+        avg_win = avg_win_pnl / equity
+        avg_loss = avg_loss_pnl / equity
+        return win_rate, max(avg_win, 1e-6), max(avg_loss, 1e-6)
+
+    def _calc_shares_price(self, price: float) -> int:
+        """基于动态 Kelly 公式计算买入份额"""
         try:
             equity = self._get_equity()
-            win_rate = 0.55
-            avg_win = 0.02
-            avg_loss = 0.01
-            kelly = (win_rate * avg_win - (1 - win_rate) * avg_loss) / (avg_win * avg_loss)
-            kelly = max(kelly, 0) * 0.5
-            shares = int(equity * kelly / sig.price)
+            win_rate, avg_win, avg_loss = self._calc_kelly_params()
+            # Kelly 公式: f = (p*b - q) / b，其中 b = avg_win/avg_loss
+            b = avg_win / avg_loss
+            kelly = (win_rate * b - (1 - win_rate)) / b
+            kelly = max(kelly, 0) * 0.5   # 半 Kelly
+            # 再叠加仓位上限约束
+            kelly = min(kelly, self.config.max_position_pct)
+            shares = int(equity * kelly / price)
             shares = (shares // 100) * 100
             return max(shares, 0)
         except Exception:
             return 0
+
+    def _calc_shares(self, sig: Signal) -> int:
+        """兼容旧接口（转发给 _calc_shares_price）"""
+        return self._calc_shares_price(sig.price)
 
     def _calc_shares_from_equity(self, price: float) -> int:
         shares = int(self._equity * 0.25 / price)
@@ -385,7 +477,7 @@ class BacktestEngine:
         self._trades.append(trade)
 
     def _execute_sell(self, symbol: str, price: float, shares: int, sig: Signal, dt: datetime):
-        """执行卖出"""
+        """执行卖出（含 A 股印花税）"""
         pos = self._positions.get(symbol)
         if not pos or pos.shares == 0:
             return
@@ -393,9 +485,11 @@ class BacktestEngine:
         actual_shares = min(shares, pos.shares)
         value = price * actual_shares
         commission = max(value * self.config.commission_rate, self.config.min_commission)
-        pnl = (price - pos.avg_price) * actual_shares - commission
+        stamp_tax = value * self.config.stamp_tax_rate   # 卖出印花税（A 股 0.1%）
+        total_fees = commission + stamp_tax
+        pnl = (price - pos.avg_price) * actual_shares - total_fees
 
-        self._cash += (value - commission)
+        self._cash += (value - commission - stamp_tax)
         pos.shares -= actual_shares
         # 平仓时计算实际持仓时长
         entry_time = self._position_entries.get(symbol, dt)
@@ -427,7 +521,7 @@ class BacktestEngine:
                 price=price,
                 shares=actual_shares,
                 value=value,
-                commission=commission,
+                commission=commission + stamp_tax,  # 含印花税
                 slippage_bps=self.config.slippage_bps,
                 signal_reason=sig.factor_name,
                 signal_strength=sig.strength,
