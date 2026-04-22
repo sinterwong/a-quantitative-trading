@@ -372,14 +372,19 @@ class FactorCategory(Enum):
     REGIME = auto()           # 环境：波动率/趋势/利率/汇率
     EXTERNAL = auto()          # 外部：美股期货/VIX/港股/KAMT
 
-# 当前系统因子映射
+# 当前系统因子映射（Phase 2 更新）
 FACTOR_MAP = {
-    'RSI(14)':        (FactorCategory.PRICE_MOMENTUM,  'signals.py evaluate_signal'),
-    'MACD(12,26,9)': (FactorCategory.PRICE_MOMENTUM,  'signals.py MACDSignalFunc'),
-    'ATR_ratio':      (FactorCategory.REGIME,          'regime_detector.py'),
-    '北向资金':        (FactorCategory.FUNDAMENTAL,    'northbound.py'),
-    'KAMT净流入':      (FactorCategory.FUNDAMENTAL,    'northbound.py'),
-    'News_sentiment': (FactorCategory.SENTIMENT,     'news_scorer.py'),
+    # ── 已接入 FactorRegistry（可通过 pipeline.add("Name") 使用）──
+    'RSI(14)':           (FactorCategory.PRICE_MOMENTUM, 'core/factors/price_momentum.py RSIFactor'),
+    'MACD(12,26,9)':    (FactorCategory.PRICE_MOMENTUM, 'core/factors/price_momentum.py MACDFactor'),
+    'BollingerBands':    (FactorCategory.PRICE_MOMENTUM, 'core/factors/price_momentum.py BollingerFactor'),
+    'ATR':               (FactorCategory.REGIME,         'core/factors/price_momentum.py ATRFactor'),
+    'OrderImbalance':    (FactorCategory.PRICE_MOMENTUM, 'core/factors/price_momentum.py OrderImbalanceFactor'),  # P2-B
+    # ── 趋势策略因子（直接接 WFA）──
+    'MACDTrend':         (FactorCategory.PRICE_MOMENTUM, 'core/strategies/macd_trend.py MACDTrendFactor'),  # P2-A
+    # ── 待接入 ──
+    '北向资金':          (FactorCategory.FUNDAMENTAL,    'backend/services/northbound.py'),
+    'News_sentiment':    (FactorCategory.SENTIMENT,      'scripts/quant/news_scorer.py'),
 }
 ```
 
@@ -500,19 +505,20 @@ core/
   event_bus.py        # 事件总线
   oms.py            # 订单管理 + Broker 抽象
   risk_engine.py     # 风控引擎
-  data_layer.py      # 数据层
-  backtester.py     # 事件驱动回测
-  factors/          # 因子库
-    rsi.py
-    macd.py
-    atr.py
-    bollinger.py
-    north_flow.py
-    sentiment.py
-  strategies/        # 策略模板
-    mean_reversion.py
-    momentum.py
-    regime_adaptive.py
+  data_layer.py      # 数据层（含 ParquetCache + 分钟K线）
+  backtest_engine.py # 事件驱动回测（修复前视偏差/印花税/Kelly）
+  walkforward.py     # Walk-Forward 分析（≥5窗口 + 参数热力图）
+  data_quality.py    # 数据质量检验
+  regime.py          # 市场环境检测（BULL/BEAR/VOLATILE/CALM）  ← P2-E
+  factor_registry.py # 因子注册表（registry.create("RSI", ...)）
+  factor_pipeline.py # 因子流水线（加权合成 + signals 汇总）
+  strategy_runner.py # 策略主循环（regime_aware Regime联动）  ← P2-E
+  factors/           # 因子库
+    base.py           # Factor(ABC) + Signal + FactorCategory
+    price_momentum.py # RSI/MACD/Bollinger/ATR/OrderImbalance  ← P2-B
+  strategies/        # 策略模块
+    signal_engine.py  # 单/多因子信号引擎
+    macd_trend.py     # MACDTrendFactor（ATR过滤，接入WFA）  ← P2-A
 scripts/
   morning_runner.py  # 重写为 StrategyRunner 调用
   afternoon_report.py

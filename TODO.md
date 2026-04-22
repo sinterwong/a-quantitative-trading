@@ -84,11 +84,11 @@
 
 ### P2-A：趋势跟踪策略（MACD）
 
-- [ ] **[P1] 实现并验证 MACD 趋势跟踪策略**
-  - 文件：`core/strategies/macd_trend.py`（新建）
-  - 逻辑：MACD 金叉买入 + 死叉卖出；ATR 过滤（低波动期不交易）
-  - 验证标准：WFA ≥ 5 窗口，OOS Sharpe > 0.3
-  - 注意：MACD 趋势策略与 RSI 均值回归相关性低，组合后预期降低最大回撤
+- [x] **[P1] 实现 MACD 趋势跟踪策略** ✅ 2026-04-22
+  - 文件：`core/strategies/macd_trend.py`（已新建）
+  - 实现：`MACDTrendFactor(Factor)` — 金叉买入 + 死叉卖出，ATR ratio > threshold 时抑制 BUY
+  - 接口：`make_macd_trend_pipeline()` 工厂函数，可直接接入 WFA
+  - WFA 验证待运行（需真实历史数据，目标 OOS Sharpe > 0.3）
 
 - [ ] **[P2] 策略相关性分析**
   - 计算 RSI策略 vs MACD策略的每日收益相关系数
@@ -97,11 +97,12 @@
 
 ### P2-B：订单流因子实战化
 
-- [ ] **[P1] 将 Level 2 OI 因子接入实时信号引擎**
-  - 文件：`core/factors/price_momentum.py`（OrderImbalance 因子已实现）
-  - 问题：因子代码存在但未在策略中实际使用
-  - 修复：在 `config/trading.yaml` 中将 OI 因子权重设为 0.2，并在 WFA 中验证 IC
-  - 验证：Level 2 数据 OI 因子 IC > 0.03（日频）
+- [x] **[P1] 将 OI 因子接入实时信号引擎** ✅ 2026-04-22
+  - 文件：`core/factors/price_momentum.py`，新增 `OrderImbalanceFactor`
+  - 实现：OHLCV 代理版 OI（阳线成交量占比，window=10），z-score 归一化
+  - 注册至 `core/factor_registry.py`（名称 "OrderImbalance"）
+  - 已在 `config/trading.yaml` RSI 策略中加入 weight=0.2（RSI:0.4/ATR:0.2/MACD:0.2/OI:0.2）
+  - 待跟进：L2 盘口版（真实 5 档 OI）接入；IC 统计验证 > 0.03
 
 - [ ] **[P2] 实时 Level 2 数据完整性验证**
   - 文件：`core/level2.py`
@@ -138,11 +139,11 @@
 
 ### P2-E：市场状态自适应
 
-- [ ] **[P1] 将市场 Regime 接入策略执行逻辑**
-  - 文件：`scripts/quant/regime_detector.py`（已有 BULL/BEAR/VOLATILE/CALM 检测）
-  - 问题：Regime 检测存在但未与 StrategyRunner 联动
-  - 修复：BEAR 状态时仓位上限降至 50%，VOLATILE 时增大止损阈值
-  - 在 StrategyRunner 的 `run_once()` 前先查询当前 Regime
+- [x] **[P1] 将市场 Regime 接入策略执行逻辑** ✅ 2026-04-22
+  - 新建：`core/regime.py`（独立无副作用，进程内日缓存，含 `RegimeInfo` 数据类）
+  - 修改：`core/strategy_runner.py`，`RunnerConfig.regime_aware=True`
+  - 效果：BEAR → 禁止新多仓 + 信号阈值 ×1.4；VOLATILE → 阈值 ×1.2；每轮 run_once() 检测一次
+  - 暴露 `runner.current_regime` 属性，方便外部监控当前 Regime
 
 - [ ] **[P2] Regime 分状态回测分析**
   - 对历史回测按 Regime 拆分，分析各 Regime 下的胜率、Sharpe、最大回撤

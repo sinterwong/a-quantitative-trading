@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased] — Phase 2 Alpha 扩展
+
+### Added
+
+#### P2-E — Regime → StrategyRunner 联动
+- **`core/regime.py`** — 独立市场环境检测模块（无副作用，进程内日缓存）
+  - `RegimeInfo` 数据类：`regime / close / ma20 / ma60 / atr_ratio / atr / reason`
+  - 属性快捷方式：`is_bull / is_bear / is_volatile / is_calm`
+  - 风控参数：`position_cap / signal_threshold_multiplier / allow_new_buys`
+  - `get_regime(force_refresh=False)` — 进程内同天缓存，避免重复请求
+- **`core/strategy_runner.py`** — Regime 联动
+  - `RunnerConfig.regime_aware: bool = True` — 可关闭
+  - `run_once()` 每轮开头检测一次 Regime（AkShare 上证日线）
+  - BEAR → 禁止新开多仓（返回 SKIPPED）+ 信号阈值 ×1.4
+  - VOLATILE → 信号阈值 ×1.2
+  - `runner.current_regime` 属性暴露当前环境供监控使用
+
+#### P2-A — MACD 趋势跟踪策略模块
+- **`core/strategies/macd_trend.py`** — `MACDTrendFactor(Factor)`
+  - 金叉（直方图负→正）→ BUY；死叉（直方图正→负）→ SELL
+  - ATR 过滤：`atr_ratio > atr_threshold`（高波动期）时抑制 BUY 信号
+  - 参数全部可网格搜索（`fast / slow / signal / atr_threshold`）
+  - 直接对接 `WalkForwardAnalyzer(factor_class=MACDTrendFactor, ...)`
+  - `make_macd_trend_pipeline()` 工厂函数，一行创建独立 pipeline
+
+#### P2-B — OrderImbalance 因子接入实时信号引擎
+- **`core/factors/price_momentum.py`** — 新增 `OrderImbalanceFactor(Factor)`
+  - 基于 OHLCV 的买方压力代理（阳线成交量占比，rolling window=10）
+  - `evaluate()` → z-score 归一化，> 0 = 买方压力高于均值
+  - `signals()` → BUY（z > buy_z=0.5）/ SELL（z < sell_z=-0.5）
+- **`core/factor_registry.py`** — 注册 `OrderImbalance`（`window=10` 默认）
+- **`config/trading.yaml`** — RSI 策略加入 OI 因子 weight=0.2
+  - 权重调整：RSI 0.5→0.4，MACD 0.3→0.2，ATR 0.2 不变，OI 新增 0.2
+
+### Changed
+- `RunnerConfig` 新增 `regime_aware: bool = True` 字段
+- `StrategyRunner._process_symbol()` 信号阈值改为动态计算（含 Regime 乘数）
+
+---
+
 ## [1.0.0] — 2026-04-12
 
 ### Added
