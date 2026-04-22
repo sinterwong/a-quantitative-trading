@@ -13,44 +13,36 @@
 
 ### P1-A：修复回测引擎中的关键 Bug（最高优先）
 
-- [ ] **[P0] 修复收盘价执行偏差（Look-ahead bias）**
+- [x] **[P0] 修复收盘价执行偏差（Look-ahead bias）** ✅ 2026-04-22
   - 文件：`core/backtest_engine.py`，`_on_bar()` / `_generate_signals()` / `_process_signal()`
-  - 问题：信号用当根 K 线的 `close` 价格生成 (`hist = df.loc[:dt]` 含当前 bar)，同时按该 close 价成交，等于偷用了收盘价下单
-  - 修复：信号用 `df.loc[:dt-1bar]` 计算（排除当前 bar），成交价用 **下一根 bar 的 open**（或加 slippage）
-  - 预期收益：消除 2~5% 的虚假 Alpha，回测更真实
+  - 修复：信号用 `df.iloc[:idx]` 历史生成（排除当前 bar），成交价改为下一根 bar 的 open
 
-- [ ] **[P0] 修复 holding_secs 计数逻辑**
-  - 文件：`core/backtest_engine.py` L247 `pos.holding_secs += 1`
-  - 问题：日线每 bar 加 1 秒，实际应加 86400（1天）
-  - 修复：自动感知 bar 频率（daily/hourly/minute）并正确换算
+- [x] **[P0] 修复 holding_secs 计数逻辑** ✅ 2026-04-22
+  - 文件：`core/backtest_engine.py`
+  - 修复：BacktestConfig.bar_freq + _bar_secs()，daily=86400 / hourly=3600 / minute=60
 
-- [ ] **[P0] 补齐 A 股卖出印花税**
+- [x] **[P0] 补齐 A 股卖出印花税** ✅ 2026-04-22
   - 文件：`core/backtest_engine.py`，`_execute_sell()`
-  - 问题：只扣佣金，未扣卖出印花税（当前 0.1%）
-  - 修复：卖出成交时额外扣 `stamp_tax = value * 0.001`，买入不扣
+  - 修复：BacktestConfig.stamp_tax_rate=0.001，卖出时扣 0.1% 印花税
 
-- [ ] **[P1] 修复 Kelly 仓位硬编码**
-  - 文件：`core/backtest_engine.py` L326-329
-  - 问题：win_rate=0.55 / avg_win=0.02 / avg_loss=0.01 全部硬编码，非从历史推断
-  - 修复：从前 N 笔历史交易动态计算 win_rate / avg_win / avg_loss，回退到等权时用 `max_position_pct`
+- [x] **[P1] 修复 Kelly 仓位硬编码** ✅ 2026-04-22
+  - 文件：`core/backtest_engine.py`，`_calc_kelly_params()` / `_calc_shares_price()`
+  - 修复：历史 ≥10 笔时动态计算 win_rate/avg_win/avg_loss，不足时退回保守默认值
 
-- [ ] **[P1] 添加复权与停牌处理**
-  - 文件：`core/data_layer.py`，`core/backtest_engine.py`
-  - 问题：日线数据未验证是否已前复权；停牌日 bar 缺失但代码仍循环
-  - 修复：加载时校验 qfq 标签；停牌日跳过开仓，持仓价值用停牌前收盘维持
+- [x] **[P1] 添加复权与停牌处理** ✅ 2026-04-22
+  - 文件：`core/backtest_engine.py`
+  - 修复：load_data adj_type 校验（qfq/hfq/none）；volume=0 自动标 is_suspended；停牌日跳过开仓
 
 ### P1-B：Walk-Forward 多窗口统计验证
 
-- [ ] **[P1] 增加 WFA 窗口数量至 ≥ 5 个**
-  - 文件：`scripts/quant/walkforward.py`，`backend/services/walkforward_persistence.py`
-  - 问题：当前仅 1 个有效窗口（2018-2019），Sharpe=0.467 统计意义弱
-  - 方案：训练窗口 18 个月 + 测试窗口 6 个月 + 步进 6 个月，2013-2026 可产生 ≥ 10 个窗口
-  - 输出：各窗口 OOS Sharpe 分布，检验 Sharpe > 0 的比例
+- [x] **[P1] 增加 WFA 窗口数量至 ≥ 5 个** ✅ 2026-04-22
+  - 文件：`core/walkforward.py`（新建，替代 scripts 版）
+  - 修复：train=18m/test=6m/step=6m，13年数据产生 22 个滚动窗口
+  - 输出：WFASummary（OOS Sharpe 分布、正 Sharpe 比例）
 
-- [ ] **[P1] 添加参数稳健性检验（Sensitivity Analysis）**
-  - 验证 RSI(25/65) 在相邻参数 ±5 区间的 Sharpe 变化
-  - 若参数敏感度高（峰值明显），需重新审视是否过拟合
-  - 输出：参数热力图写入 `outputs/sensitivity_heatmap.png`
+- [x] **[P1] 添加参数稳健性检验（Sensitivity Analysis）** ✅ 2026-04-22
+  - 文件：`core/walkforward.py`，`SensitivityAnalyzer` 类
+  - 双参数网格扫描 → Sharpe 热力图（PNG/CSV），peak_sensitivity_ratio() 量化稳健度
 
 - [ ] **[P2] 扩展回测标的：沪深 300 成分股中选 10 支**
   - 当前仅在 HS300 ETF（510300）单一标的验证
@@ -59,26 +51,24 @@
 
 ### P1-C：数据层加固
 
-- [ ] **[P1] 增加分钟 K 线回测支持**
-  - 文件：`core/data_layer.py`，`core/backtest_engine.py`
-  - 方案：通过 AKShare 获取分钟 K 线（免费，限 1 年历史）；BacktestEngine 自动区分 daily/minute 频率
-  - 用途：在分钟级别验证信号真实触发时间，减少日线收盘偏差
+- [x] **[P1] 增加分钟 K 线回测支持** ✅ 2026-04-22
+  - 文件：`core/data_layer.py`，`DataLayer.get_minute_bars()`
+  - 通过 AKShare 获取 1/5/15/30/60 分钟 K 线；BacktestEngine bar_freq='minute' 支持
 
-- [ ] **[P2] 日线历史数据本地缓存（SQLite/Parquet）**
-  - 问题：每次回测重新从腾讯 API 抓日线，耗时且有频率限制
-  - 方案：首次下载后写入本地 Parquet 文件 (`data/bars/{symbol}.parquet`)，增量更新
-  - 好处：回测速度提升 10x，离线可用
+- [x] **[P2] 日线历史数据本地缓存（Parquet）** ✅ 2026-04-22
+  - 文件：`core/data_layer.py`，`ParquetCache` 类
+  - data/bars/{symbol}.parquet，upsert 增量更新，缓存新鲜时跳过网络请求
 
-- [ ] **[P2] 数据质量检验模块**
-  - 检测缺口（跳空日）、异常涨跌（±20% 以上）、成交量为 0 日
-  - 异常 bar 自动标记或剔除，防止脏数据污染回测
+- [x] **[P2] 数据质量检验模块** ✅ 2026-04-22
+  - 文件：`core/data_quality.py`（新建）
+  - DataQualityChecker：跳空/异常涨跌/零成交量检测，质量评分，drop_anomalies()
 
 ### P1-D：工程质量
 
-- [ ] **[P1] 添加 CI/CD（GitHub Actions）**
-  - 配置：推送 master 时自动运行 `tests/run_tests.py`（273 个测试）
-  - 额外检查：代码语法检查（flake8），类型检查（mypy 重点模块）
-  - 目标：每次提交有基础质量保障
+- [x] **[P1] 添加 CI/CD（GitHub Actions）** ✅ 2026-04-22
+  - 配置：`.github/workflows/ci.yml`，推送 master 自动运行 500 个测试
+  - flake8 lint（core 重点模块）+ mypy 类型检查 + pytest Phase 1 新测试
+  - Linux(3.10/3.11/3.12) + Windows(3.11) 四矩阵并行
 
 - [ ] **[P2] 清理 scripts/ 目录**
   - 将 `scripts/test_*.py` 临时调试脚本移入 `tests/` 或删除
