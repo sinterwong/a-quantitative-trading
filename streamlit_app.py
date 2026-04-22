@@ -294,7 +294,7 @@ if page == '📊 组合概览':
             )
             fig.update_traces(textposition='inside', textinfo='percent+label')
             fig.update_layout(margin=dict(t=30, b=30))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
     # 持仓表格
     st.subheader('持仓明细')
@@ -323,7 +323,7 @@ if page == '📊 组合概览':
             rows.append(row)
         if rows:
             df = pd.DataFrame(rows)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)
     else:
         st.info('暂无持仓')
 
@@ -362,7 +362,7 @@ elif page == '📈 实时信号':
                 '原因':    s.get('reason', '')[:40],
             })
         df = pd.DataFrame(rows)
-        st.dataframe(df.sort_values('时间', ascending=False), use_container_width=True, hide_index=True)
+        st.dataframe(df.sort_values('时间', ascending=False), width="stretch", hide_index=True)
     else:
         st.info('暂无信号记录')
 
@@ -394,7 +394,7 @@ elif page == '📈 实时信号':
             })
         if live_rows:
             df = pd.DataFrame(live_rows)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)
     else:
         st.info('暂无持仓')
 
@@ -471,8 +471,8 @@ elif page == '🔍 动态选股':
                         title='热门板块TOP15',
                         color_continuous_scale='RdYlGn',
                     )
-                    st.plotly_chart(fig, use_container_width=True)
-                    st.dataframe(df.head(20), use_container_width=True, hide_index=True)
+                    st.plotly_chart(fig, width="stretch")
+                    st.dataframe(df.head(20), width="stretch", hide_index=True)
             except Exception as e:
                 st.error(f'读取缓存失败: {e}')
     else:
@@ -505,7 +505,7 @@ elif page == '📉 回测分析':
                 '最优参数': str(params)[:40],
             })
         df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
 
         # Sharpe 柱状图
         fig = px.bar(
@@ -513,7 +513,7 @@ elif page == '📉 回测分析':
             color='测试Sharpe', color_continuous_scale='RdYlGn',
             title='各窗口测试集 Sharpe',
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     else:
         st.info('暂无 WFA 结果。运行 walkforward_job.py 生成。')
 
@@ -730,7 +730,7 @@ elif page == '📋 历史交易':
                 '原因/备注': t.get('reason', '')[:30] if t.get('reason') else '',
             })
         df = pd.DataFrame(rows)
-        st.dataframe(df.sort_values('时间', ascending=False), use_container_width=True, hide_index=True)
+        st.dataframe(df.sort_values('时间', ascending=False), width="stretch", hide_index=True)
 
         # 买卖统计
         buys  = [r for r in rows if '买入' in r['方向']]
@@ -791,7 +791,7 @@ elif page == '📋 实盘记录':
                 '盈亏%': f'{pnl_pct:+.1%}',
                 '今日': f'{day_pct:+.2f}%',
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     else:
         st.info('当前无持仓（市场收盘或已清仓）')
 
@@ -808,7 +808,7 @@ elif page == '📋 实盘记录':
             markers=True,
         )
         fig.update_layout(hovermode='x unified')
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         start_eq = df_daily.iloc[0]['equity'] if not df_daily.empty else equity
         st.caption(f'起始: ¥{start_eq:,.0f} → 当前: ¥{equity:,.0f} | 收益率: {(equity-start_eq)/start_eq*100:+.1f}%')
     else:
@@ -827,10 +827,10 @@ elif page == '📋 实盘记录':
                 '价格':    f'¥{t.get("price", 0):.3f}',
                 '股数':    t.get('shares', 0),
                 '总额':    f'¥{t.get("shares", 0) * t.get("price", 0):,.0f}',
-                '滑点':    f'{t.get("slippage_bps", 0):+.1f}bps',
+                '滑点':    f'{t.get("slippage_bps") or 0:+.1f}bps',
                 '单笔盈亏': f'{t.get("pnl", 0):+.0f}' if t.get('pnl') is not None else '—',
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     else:
         st.info('暂无成交记录')
 
@@ -873,7 +873,7 @@ elif page == '📋 实盘记录':
                 '今日涨跌': f'{day_pct:+.2f}%',
                 '预警阈值': f"±{w.get('alert_pct', 5):.1f}%",
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     else:
         st.info('候选标的为空（今日五维选股尚未运行）')
 
