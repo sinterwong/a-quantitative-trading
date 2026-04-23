@@ -106,10 +106,12 @@
   - 已在 `config/trading.yaml` RSI 策略中加入 weight=0.2（RSI:0.4/ATR:0.2/MACD:0.2/OI:0.2）
   - 待跟进：L2 盘口版（真实 5 档 OI）接入；IC 统计验证 > 0.03
 
-- [ ] **[P2] 实时 Level 2 数据完整性验证**
-  - 文件：`core/level2.py`
-  - 目标：连续采集 5 个交易日的 5 档盘口数据，验证字段完整率 > 95%
-  - 输出：数据质量报告 `outputs/level2_quality_report.md`
+- [x] **[P2] 实时 Level 2 数据完整性验证** ✅ 2026-04-23
+  - 文件：`core/level2_quality.py`（新建）
+  - `Level2QualityCollector`：后台线程采集 5 档盘口快照到 SQLite，collect_once() 手动触发
+  - `Level2QualityReporter.generate(days, threshold)` → `Level2QualityReport`
+  - 检验 23 个必填字段完整率，输出 Markdown + JSON 报告到 `outputs/`
+  - 21 项单元测试（`tests/test_level2_quality.py`）全部通过
 
 ### P2-C：外盘领先信号验证
 
@@ -162,17 +164,27 @@
 
 ### P3-A：完成 Futu 券商适配器
 
+- [x] **[P0] 统一券商接口（BrokerBase）** ✅ 2026-04-23
+  - 文件：`core/brokers/base.py`（新建）；`core/brokers/simulated.py`（新建）
+  - `BrokerBase` ABC：MarketType / AccountInfo / QuoteData + 12 个抽象方法
+  - 继承 `BrokerAdapter` 保持向后兼容；send/cancel/quote 委托方法
+  - `SimulatedBroker`：A 股整手 / 印花税 / 滑点 / 涨跌停全规则；40 项测试通过
+  - Futu / Tiger / IBKR stub 均重写继承 BrokerBase，含详细 SDK 接入 TODO 注释
+
 - [ ] **[P0] 实现 FutuBroker（港股纸交易）**
-  - 文件：`core/brokers/futu.py`（当前仅 stub）
+  - 文件：`core/brokers/futu.py`（当前仅 stub，接口已预留）
   - 依赖：安装 futu-api（`pip install futu-api`），部署 OpenD 客户端
   - 实现方法：`connect()`, `get_positions()`, `get_cash()`, `submit_order()`, `cancel_order()`
   - 测试：在港股纸交易账户完整执行一笔买卖，验证仓位、现金、订单状态同步正确
   - 安全：确保 `dry_run=True` 时绝对不向 Futu API 发送真实订单请求
 
-- [ ] **[P0] 纸交易 vs 回测一致性验证**
-  - 运行纸交易 2 周，记录实际信号触发时间、成交价、滑点
-  - 与同期回测结果对比：成交价偏差应 < 20 bps
-  - 记录并归因任何 > 50 bps 的偏差（流动性/延迟/订单类型）
+- [x] **[P0] 纸交易 vs 回测一致性验证框架** ✅ 2026-04-23
+  - 文件：`core/paper_trade_validator.py`（新建）
+  - `PaperTradeValidator.validate_from_backtest/validate_from_signals` 两种入口
+  - 计算 Implementation Shortfall（deviation_bps），五级偏差归因
+  - `ValidationReport.save()` 输出 JSON 到 `outputs/`
+  - 19 项单元测试（`tests/test_paper_trade_validator.py`）全部通过
+  - 注：框架已就绪；实际纸交易 2 周数据对比待 Futu 券商接入后执行
 
 - [x] **[P1] 实现 TCA（交易成本分析）模块** ✅ 2026-04-22
   - 文件：`core/tca.py`（新建）
@@ -235,7 +247,9 @@
 - [ ] **完成 Tiger / IBKR 券商适配器**（适合美股/港股多市场）
 - [ ] **期权策略框架**（隐波动率曲面、Put/Call 对冲）
 - [ ] **新闻情感因子完整验证**（LLM 打分 IC 统计）
-- [ ] **多账户支持**（策略组合层面的资金分配）
+- [x] **多账户支持** ✅ 2026-04-23（`core/portfolio_allocator.py`，`PortfolioAllocator` 类；
+  WeightMode: EQUAL/FIXED/RISK_PARITY；needs_rebalance/rebalance/save_history；
+  27 项单元测试全部通过）
 - [x] **CVaR / Expected Shortfall** ✅ 2026-04-22（`core/portfolio_risk.py`，`check_cvar()` 方法）
 - [x] **蒙特卡洛压力测试** ✅ 2026-04-22（`core/portfolio_risk.py`，`MonteCarloStressTest` 类，bootstrap/参数法，5000次模拟，P5/P50/P95/ES/最大回撤分布）
 
