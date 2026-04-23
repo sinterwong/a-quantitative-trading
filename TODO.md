@@ -1,6 +1,6 @@
 # TODO — 专业实盘级量化系统开发计划
 
-> 评估日期：2026-04-22  
+> 评估日期：2026-04-23（最新）  
 > 目标：从"可用的个人模拟系统（62分）"升级为"专业实盘级系统（90分）"  
 > 策略：三阶段推进，每阶段可独立交付，优先解决数据+回测严谨性，再扩展策略，最后接实盘
 
@@ -44,10 +44,11 @@
   - 文件：`core/walkforward.py`，`SensitivityAnalyzer` 类
   - 双参数网格扫描 → Sharpe 热力图（PNG/CSV），peak_sensitivity_ratio() 量化稳健度
 
-- [ ] **[P2] 扩展回测标的：沪深 300 成分股中选 10 支**
-  - 当前仅在 HS300 ETF（510300）单一标的验证
-  - 选取流动性前 10 的成分股分别回测，检验策略泛化能力
-  - 合格标准：≥ 7/10 标的 OOS Sharpe > 0
+- [x] **[P2] 扩展回测标的：沪深 300 成分股中选 10 支** ✅ 2026-04-23
+  - 文件：`core/multi_symbol_backtest.py`（新建）
+  - `MultiSymbolBacktest.run(symbols, years)` 对 10 支成分股批量运行 WFA
+  - `DEFAULT_CSI300_TOP10`：茅台/宁德/招行/平安/东财/五粮液/比亚迪/迈瑞/立讯/恒瑞
+  - `MultiSymbolResult.print_report()` 汇总通过率；合格标准 ≥ 7/10 OOS Sharpe > 0
 
 ### P1-C：数据层加固
 
@@ -112,17 +113,17 @@
 
 ### P2-C：外盘领先信号验证
 
-- [ ] **[P2] 验证 SP500 期货对 A 股次日开盘的领先效应**
-  - 文件：`core/data_sources.py`（数据源已有）
-  - 方法：计算 SP500 期货隔夜涨跌 vs 沪深 300 次日开盘涨跌的 Granger 因果检验
-  - 合格标准：Granger p-value < 0.05，且 IC > 0.05
-  - 用途：做为开盘方向的过滤条件（外盘大跌时，抑制 A 股买入信号）
+- [x] **[P2] 验证 SP500 期货对 A 股次日开盘的领先效应** ✅ 2026-04-23
+  - 文件：`core/external_signal.py`，`SP500GrangerAnalyzer` 类
+  - 纯 numpy 实现 Granger F 检验（不依赖 statsmodels）+ Spearman IC
+  - `analyze(days=500, max_lag=3)` → `SP500GrangerResult`（p_value/IC/passed）
+  - `run_full_analysis()` 一键输出 JSON 报告到 `outputs/`
 
-- [ ] **[P2] 北向资金信号统计验证**
-  - 文件：`backend/services/northbound.py`
-  - 方法：验证北向净流入 > 50 亿当天，A 股指数次日涨跌分布
-  - 需至少 100 个样本点
-  - 合格标准：净流入 > 50 亿时次日上涨概率 > 55%
+- [x] **[P2] 北向资金信号统计验证** ✅ 2026-04-23
+  - 文件：`core/external_signal.py`，`NorthboundStatsAnalyzer` 类
+  - 方法：北向净流入 > 50 亿时次日上涨概率 vs 基准，计算 lift
+  - `analyze(days=500)` → `NorthboundStatsResult`（条件概率/lift/passed）
+  - 合格：n_above ≥ 100 且条件上涨概率 > 55%
 
 ### P2-D：多因子组合优化
 
@@ -181,11 +182,12 @@
 
 ### P3-B：异步事件循环升级
 
-- [ ] **[P2] 将 StrategyRunner 升级为 asyncio 驱动**
-  - 文件：`core/strategy_runner.py`，`core/event_bus.py`
-  - 当前：同步 `time.sleep()` 轮询，EventBus 同步分发
-  - 升级：`asyncio` 事件循环 + `asyncio.Queue` 替换同步 EventBus，支持真正并发的数据获取和信号处理
-  - 好处：多标的并行获取行情，延迟从 200ms 降至 20ms 量级
+- [x] **[P2] 将 StrategyRunner 升级为 asyncio 驱动** ✅ 2026-04-23
+  - 文件：`core/async_runner.py`（新建，不破坏原 StrategyRunner）
+  - `AsyncStrategyRunner`：`asyncio.gather()` 并发处理所有标的，N 标的延迟从 N×200ms → 200ms
+  - `AsyncEventBus`：`asyncio.Queue` 替代线程 Queue，零锁竞争
+  - `run_once_sync()` / `run_sync(duration)` 供非 async 代码无缝调用
+  - `benchmark_concurrency()` 可量化加速效果
 
 - [ ] **[P2] 行情数据推送订阅（Websocket）**
   - 文件：`core/data_layer.py`
@@ -214,10 +216,12 @@
   - `check_series()` 返回逐日时序 DataFrame（供 Streamlit 折线图）
   - `HealthReport.to_feishu_text()` 一键生成飞书告警文本
 
-- [ ] **[P1] 实现每日回测 vs 实盘对比报告**
-  - 每个交易日收盘后，自动对比当日回测信号 vs 实际纸交易信号
-  - 记录任何不一致（信号方向差异、触发时间差异）
-  - 输出：`reports/daily_bt_live_diff_{date}.json`
+- [x] **[P1] 实现每日回测 vs 实盘对比报告** ✅ 2026-04-23
+  - 文件：`core/daily_diff_reporter.py`（新建）
+  - `DailyDiffReporter.compare(live_results, bt_trades, date)` → `DailyDiffReport`
+  - 检测：方向不一致 / 回测独有 / 实盘独有；一致率 ≥ 80% 且无方向不一致 → healthy
+  - `save()` 输出 `reports/daily_bt_live_diff_{date}.json`；`format_text()` 生成人读摘要
+  - `list_reports()` 列出历史报告；`load(date)` 回读历史
 
 - [x] **[P2] 添加 Dashboard 实盘监控页面** ✅ 2026-04-22
   - 文件：`streamlit_app.py`（新增第 8 页「🏥 策略健康」）
