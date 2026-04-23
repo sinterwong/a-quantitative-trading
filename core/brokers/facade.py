@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional, Any
 import os
 
+from core.brokers.base import BrokerBase
 from core.oms import BrokerAdapter
 
 
@@ -137,8 +138,10 @@ class BrokerFactory:
         return self._broker
 
     def _create_paper_broker(self):
-        from core.brokers.paper import PaperBroker
-        return PaperBroker()
+        from core.brokers.simulated import SimulatedBroker, SimConfig
+        broker = SimulatedBroker(SimConfig())
+        broker.connect()
+        return broker
 
     def _create_live_broker(self):
         cfg_path = os.environ.get('QUANT_BROKER_CONFIG', self.DEFAULT_CONFIG_PATH)
@@ -153,24 +156,41 @@ class BrokerFactory:
         broker = cfg.get('broker', '').lower()
         if broker == 'futu':
             from core.brokers.futu import FutuBroker
-            return FutuBroker(
+            b = FutuBroker(
                 host=cfg.get('futu_host', '127.0.0.1'),
                 port=cfg.get('futu_port', 11111),
+                trade_env=cfg.get('futu_trade_env', 'SIMULATE'),
             )
+            b.connect()
+            return b
         elif broker == 'tiger':
             from core.brokers.tiger import TigerBroker
-            return TigerBroker(
+            b = TigerBroker(
                 tiger_id=cfg.get('tiger_id', ''),
                 account=cfg.get('tiger_account', ''),
+                private_key_path=cfg.get('tiger_private_key', ''),
             )
+            b.connect()
+            return b
         elif broker == 'ibkr':
             from core.brokers.ibkr import IBBroker
-            return IBBroker(
+            b = IBBroker(
                 host=cfg.get('ibkr_host', '127.0.0.1'),
                 port=cfg.get('ibkr_port', 4001),
+                client_id=cfg.get('ibkr_client_id', 1),
             )
+            b.connect()
+            return b
+        elif broker == 'simulated':
+            from core.brokers.simulated import SimulatedBroker, SimConfig
+            b = SimulatedBroker(SimConfig(
+                initial_cash=cfg.get('initial_cash', 1_000_000),
+                slippage_bps=cfg.get('slippage_bps', 5.0),
+            ))
+            b.connect()
+            return b
         else:
-            print(f'[BrokerFactory] Unknown broker "{broker}", using PaperBroker')
+            print(f'[BrokerFactory] Unknown broker "{broker}", using SimulatedBroker')
             return self._create_paper_broker()
 
     def assert_safe(self, operation: str = 'order'):
