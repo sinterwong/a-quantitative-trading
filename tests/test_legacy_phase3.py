@@ -30,28 +30,33 @@ class TestBrokerFactory(unittest.TestCase):
         self.assertEqual(broker.name, 'PaperBroker')
         print(f'\nPaperBroker name: {broker.name} OK')
 
-    def test_futu_stub_rejects_in_paper(self):
-        from core.brokers.facade import BrokerFactory, BrokerSecurityError
-        factory = BrokerFactory()
-        with self.assertRaises(BrokerSecurityError) as ctx:
-            from core.brokers.futu import FutuBroker
-            FutuBroker()
-        self.assertIn('PAPER', str(ctx.exception))
-        print(f'\nFutuBroker rejected in PAPER mode OK')
+    def test_futu_stub_rejects_submit_order(self):
+        """FutuBroker stub 可实例化，但 submit_order 应抛 NotImplementedError。"""
+        from core.brokers.futu import FutuBroker
+        from core.oms import Order
+        b = FutuBroker()
+        with self.assertRaises(NotImplementedError):
+            b.submit_order(Order(symbol='00700.HK', direction='BUY',
+                                 order_type='MARKET', shares=100))
+        print('\nFutuBroker submit_order raises NotImplementedError OK')
 
-    def test_tiger_stub_rejects_in_paper(self):
-        from core.brokers.facade import BrokerFactory, BrokerSecurityError
-        with self.assertRaises(BrokerSecurityError):
-            from core.brokers.tiger import TigerBroker
-            TigerBroker()
-        print('\nTigerBroker rejected in PAPER mode OK')
+    def test_tiger_stub_rejects_submit_order(self):
+        from core.brokers.tiger import TigerBroker
+        from core.oms import Order
+        b = TigerBroker()
+        with self.assertRaises(NotImplementedError):
+            b.submit_order(Order(symbol='AAPL', direction='BUY',
+                                 order_type='MARKET', shares=100))
+        print('\nTigerBroker submit_order raises NotImplementedError OK')
 
-    def test_ibkr_stub_rejects_in_paper(self):
-        from core.brokers.facade import BrokerFactory, BrokerSecurityError
-        with self.assertRaises(BrokerSecurityError):
-            from core.brokers.ibkr import IBBroker
-            IBBroker()
-        print('\nIBBroker rejected in PAPER mode OK')
+    def test_ibkr_stub_rejects_submit_order(self):
+        from core.brokers.ibkr import IBBroker
+        from core.oms import Order
+        b = IBBroker()
+        with self.assertRaises(NotImplementedError):
+            b.submit_order(Order(symbol='AAPL', direction='BUY',
+                                 order_type='MARKET', shares=100))
+        print('\nIBBroker submit_order raises NotImplementedError OK')
 
     def test_require_live_rejects_without_unlock(self):
         from core.brokers.facade import BrokerFactory, BrokerSecurityError
@@ -61,17 +66,20 @@ class TestBrokerFactory(unittest.TestCase):
         self.assertIn('unlock', str(ctx.exception).lower())
         print(f'\nrequire_live() rejected without unlock OK')
 
-    def test_factory_get_broker_returns_paper(self):
+    def test_factory_get_broker_returns_simulated(self):
+        """PAPER 模式下 factory 返回 SimulatedBroker（已取代旧 PaperBroker）。"""
         from core.brokers.facade import BrokerFactory
+        from core.brokers.simulated import SimulatedBroker
         factory = BrokerFactory()
         broker = factory.get_broker()
-        self.assertEqual(broker.name, 'PaperBroker')
+        self.assertIsInstance(broker, SimulatedBroker)
         print(f'\nget_broker() returns: {broker.name} OK')
 
     def test_create_broker_convenience(self):
         from core.brokers.facade import create_broker
+        from core.brokers.simulated import SimulatedBroker
         broker = create_broker()
-        self.assertEqual(broker.name, 'PaperBroker')
+        self.assertIsInstance(broker, SimulatedBroker)
         print(f'\ncreate_broker() returns: {broker.name} OK')
 
 
