@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-streamlit_app.py — 量化系统 Web UI（重构版）
-=============================================
-系统定位：稳定模拟实盘 · SimulatedBroker · A 股市场
+streamlit_app.py — 量化系统 Web UI
+====================================
+系统定位：SimulatedBroker 模拟实盘 · A 股市场 · ~95 分专业化量化平台
 
 启动方式：
   streamlit run streamlit_app.py --server.port 8501
 
 页面结构：
-  1. 📊 仪表盘     — 系统状态、账户摘要、今日关键指标
-  2. 💼 组合管理   — 持仓明细、权益曲线、历史成交
-  3. 🎯 策略分配   — 多策略资金分配（PortfolioAllocator）
-  4. 📈 交易信号   — 实时信号、持仓行情、候选标的
-  5. 📉 回测验证   — Walk-Forward 分析、模拟一致性验证
-  6. 🔍 数据质量   — Level2 完整率、数据源健康状态
-  7. 🏥 策略健康   — Rolling Sharpe、TCA、CVaR/Monte Carlo
+  1. 📊 仪表盘      — 账户摘要、市场 Regime、近期告警、Top 信号
+  2. 🎯 因子工作台  — 22 因子评分、动态权重、NLP 情感、IC 分析
+  3. 🤖 ML 模型     — 模型注册表、Walk-Forward 训练、特征重要性
+  4. ⚖️ 组合优化    — MVO/BL/风险平价 + PortfolioAllocator
+  5. 📈 信号 & 执行 — 实时信号、VWAP/TWAP 算法下单、成交记录
+  6. 📉 回测验证    — Walk-Forward、敏感性热力图、一致性验证
+  7. 🏥 监控 & 告警 — 策略健康、数据质量、AlertManager
 """
 
 from __future__ import annotations
@@ -27,9 +27,10 @@ import ssl
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -42,7 +43,6 @@ for k in list(os.environ.keys()):
 
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.join(BASE_DIR, 'backend')
-CORE_DIR    = os.path.join(BASE_DIR, 'core')
 DATA_DIR    = os.path.join(BASE_DIR, 'data')
 OUTPUTS_DIR = os.path.join(BASE_DIR, 'outputs')
 
@@ -51,7 +51,6 @@ sys.path.insert(0, BACKEND_DIR)
 
 BACKEND_URL = os.environ.get('BACKEND_URL', 'http://127.0.0.1:5555')
 
-# ─── SSL context ────────────────────────────────────────────
 _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
 _SSL_CTX.verify_mode = ssl.CERT_NONE
@@ -64,7 +63,7 @@ _SSL_CTX.verify_mode = ssl.CERT_NONE
 def api_get(endpoint: str, timeout: float = 8.0) -> dict:
     url = f"{BACKEND_URL}{endpoint}"
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'QuantUI/2.0'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'QuantUI/3.0'})
         with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
             return json.loads(r.read())
     except Exception:
@@ -77,7 +76,7 @@ def api_post(endpoint: str, data: dict, timeout: float = 8.0) -> dict:
     try:
         req = urllib.request.Request(
             url, data=payload,
-            headers={'Content-Type': 'application/json', 'User-Agent': 'QuantUI/2.0'},
+            headers={'Content-Type': 'application/json', 'User-Agent': 'QuantUI/3.0'},
             method='POST',
         )
         with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
@@ -111,7 +110,7 @@ def load_signals(limit: int = 30) -> list:
 
 
 @st.cache_data(ttl=60)
-def load_daily_equity(limit: int = 60) -> list:
+def load_daily_equity(limit: int = 90) -> list:
     return api_get(f'/portfolio/daily?limit={limit}').get('daily', [])
 
 
@@ -137,7 +136,7 @@ def load_daily_stats(limit: int = 250) -> list:
 
 
 @st.cache_data(ttl=300)
-def load_wf_results(limit: int = 20) -> list:
+def load_wf_results(limit: int = 30) -> list:
     for db_path in [
         os.path.join(BASE_DIR, 'backend', 'wf_results.db'),
         os.path.join(BACKEND_DIR, 'services', 'wf_results.db'),
@@ -147,8 +146,7 @@ def load_wf_results(limit: int = 20) -> list:
                 conn = sqlite3.connect(db_path)
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
-                    "SELECT * FROM wf_results ORDER BY created_at DESC LIMIT ?",
-                    (limit,)
+                    "SELECT * FROM wf_results ORDER BY created_at DESC LIMIT ?", (limit,)
                 ).fetchall()
                 conn.close()
                 return [dict(r) for r in rows]
@@ -159,7 +157,6 @@ def load_wf_results(limit: int = 20) -> list:
 
 @st.cache_data(ttl=30)
 def load_realtime(symbol: str) -> dict:
-    """从腾讯财经拉取实时行情。"""
     u = symbol.upper()
     if u.endswith('.SH'):
         sym = 'sh' + u[:-3]
@@ -181,12 +178,12 @@ def load_realtime(symbol: str) -> dict:
         if len(f) < 40:
             return {}
         return {
-            'price':     float(f[3])  if f[3]  not in ('', '-') else 0.0,
-            'prev_close': float(f[4]) if f[4]  not in ('', '-') else 0.0,
-            'pct':       float(f[32]) if f[32] not in ('', '-') else 0.0,
-            'vol_ratio': float(f[38]) if len(f) > 38 and f[38] not in ('', '-', '0') else None,
-            'high':      float(f[33]) if len(f) > 33 and f[33] not in ('', '-') else 0.0,
-            'low':       float(f[34]) if len(f) > 34 and f[34] not in ('', '-') else 0.0,
+            'price':      float(f[3])  if f[3]  not in ('', '-') else 0.0,
+            'prev_close': float(f[4])  if f[4]  not in ('', '-') else 0.0,
+            'pct':        float(f[32]) if f[32] not in ('', '-') else 0.0,
+            'vol_ratio':  float(f[38]) if len(f) > 38 and f[38] not in ('', '-', '0') else None,
+            'high':       float(f[33]) if len(f) > 33 and f[33] not in ('', '-') else 0.0,
+            'low':        float(f[34]) if len(f) > 34 and f[34] not in ('', '-') else 0.0,
         }
     except Exception:
         return {}
@@ -197,25 +194,16 @@ def load_watchlist() -> list:
     return api_get('/watchlist').get('watchlist', [])
 
 
-@st.cache_data(ttl=60)
-def load_alerts(limit: int = 20) -> list:
-    return api_get(f'/alerts/history?limit={limit}').get('alerts', [])
-
-
 @st.cache_data(ttl=300)
 def load_trading_config() -> dict:
-    """读取 config/trading.yaml。"""
     cfg_path = os.path.join(BASE_DIR, 'config', 'trading.yaml')
     if not os.path.exists(cfg_path):
         return {}
     try:
-        import yaml  # type: ignore
+        import yaml
         with open(cfg_path, encoding='utf-8') as f:
             docs = list(yaml.safe_load_all(f))
         return docs[0] if docs else {}
-    except ImportError:
-        # 如果没有 pyyaml，尝试简单解析
-        return {}
     except Exception:
         return {}
 
@@ -229,6 +217,31 @@ def limit_up_pct(symbol: str) -> float:
     return 0.10
 
 
+def _make_price_df_from_akshare(symbol: str, days: int = 300) -> Optional[pd.DataFrame]:
+    """从 AKShare 拉取日线数据用于因子计算。"""
+    try:
+        import akshare as ak
+        code = symbol.split('.')[0]
+        mkt = 'sh' if symbol.upper().endswith('.SH') else 'sz'
+        df = ak.stock_zh_a_hist(
+            symbol=code, period='daily',
+            start_date=(datetime.now() - timedelta(days=days * 2)).strftime('%Y%m%d'),
+            end_date=datetime.now().strftime('%Y%m%d'),
+            adjust='qfq',
+        )
+        if df is None or df.empty:
+            return None
+        df = df.rename(columns={
+            '日期': 'date', '开盘': 'open', '最高': 'high',
+            '最低': 'low', '收盘': 'close', '成交量': 'volume',
+        })
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.set_index('date').sort_index()
+        return df[['open', 'high', 'low', 'close', 'volume']].tail(days)
+    except Exception:
+        return None
+
+
 # ============================================================
 # Page config & global CSS
 # ============================================================
@@ -237,32 +250,22 @@ st.set_page_config(
     page_title='量化系统',
     page_icon='📊',
     layout='wide',
-    menu_items={'About': '## 量化系统 · 稳定模拟实盘\nSimulatedBroker · A 股市场'},
+    menu_items={'About': '## 量化系统 v3 · SimulatedBroker · A 股 · ~95分'},
 )
 
 st.markdown("""
 <style>
-.metric-card {
-    background: #1e2130;
-    border-radius: 8px;
-    padding: 16px;
-    border-left: 4px solid #4c78a8;
-}
 .broker-badge {
-    background: #0e4429;
-    color: #3fb950;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 0.85rem;
-    font-weight: 600;
+    background: #0e4429; color: #3fb950;
+    padding: 4px 12px; border-radius: 20px;
+    font-size: 0.85rem; font-weight: 600;
 }
-.mode-badge {
-    background: #161b22;
-    color: #8b949e;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 0.82rem;
-}
+.regime-bull   { background:#0e4429; color:#3fb950; padding:4px 10px; border-radius:16px; font-weight:700; }
+.regime-bear   { background:#3d0f0f; color:#f85149; padding:4px 10px; border-radius:16px; font-weight:700; }
+.regime-vol    { background:#2d1f00; color:#e3b341; padding:4px 10px; border-radius:16px; font-weight:700; }
+.regime-calm   { background:#161b22; color:#8b949e; padding:4px 10px; border-radius:16px; font-weight:700; }
+.factor-bar-pos { color:#3fb950; }
+.factor-bar-neg { color:#f85149; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -274,33 +277,29 @@ st.markdown("""
 st.sidebar.title('量化系统')
 st.sidebar.caption(datetime.now().strftime('%Y-%m-%d  %H:%M'))
 
-# 系统状态
 backend_ok = api_get('/health', timeout=3).get('status') == 'ok'
 if backend_ok:
     st.sidebar.success('Backend 运行中')
 else:
-    st.sidebar.error('Backend 未连接')
+    st.sidebar.warning('Backend 未连接（部分功能受限）')
 
-# Broker 模式（固定，不可切换）
 st.sidebar.markdown(
-    '<span class="broker-badge">SimulatedBroker</span>'
-    '&nbsp;<span class="mode-badge">模拟实盘</span>',
+    '<span class="broker-badge">SimulatedBroker</span>',
     unsafe_allow_html=True,
 )
-st.sidebar.caption('券商接口：A 股规则 · 整手 · 印花税 · 滑点')
-
+st.sidebar.caption('A 股规则 · 整手 · 印花税 0.1% · 涨跌停保护')
 st.sidebar.markdown('---')
 
 page = st.sidebar.radio(
     '导航',
     [
         '📊 仪表盘',
-        '💼 组合管理',
-        '🎯 策略分配',
-        '📈 交易信号',
+        '🎯 因子工作台',
+        '🤖 ML 模型',
+        '⚖️ 组合优化',
+        '📈 信号 & 执行',
         '📉 回测验证',
-        '🔍 数据质量',
-        '🏥 策略健康',
+        '🏥 监控 & 告警',
     ],
     index=0,
 )
@@ -316,995 +315,1458 @@ st.sidebar.button('全局刷新', on_click=st.cache_data.clear, use_container_wi
 if page == '📊 仪表盘':
     st.title('📊 仪表盘')
 
+    # ── 账户摘要 ──────────────────────────────────────────────
     portfolio = load_portfolio_summary()
-    cash      = portfolio.get('cash', 0)
-    equity    = portfolio.get('total_equity', cash)
-    pos_val   = portfolio.get('position_value', pos_val := portfolio.get('position_value', 0))
-    unreal    = portfolio.get('unrealized_pnl', 0)
-    real_pnl  = portfolio.get('realized_pnl', 0)
-    total_pnl = portfolio.get('total_pnl', 0)
-    updated   = portfolio.get('updated_at', '—')[:16]
+    cash      = float(portfolio.get('cash', 0) or 0)
+    equity    = float(portfolio.get('total_equity', cash) or cash)
+    pos_val   = float(portfolio.get('position_value', 0) or 0)
+    unreal    = float(portfolio.get('unrealized_pnl', 0) or 0)
 
-    # ── 账户指标 ─────────────────────────────────────────────
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric('总权益', f'¥{equity:,.0f}',
-              delta=f'{unreal:+,.0f}' if unreal else None)
-    c2.metric('可用现金', f'¥{cash:,.0f}')
-    c3.metric('持仓市值', f'¥{pos_val:,.0f}')
-    c4.metric('浮动盈亏', f'{unreal:+,.0f}',
-              delta=f'{unreal/equity*100:+.1f}%' if equity else None)
-    c5.metric('累计已实现', f'{real_pnl:+,.0f}')
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric('总权益', f'¥{equity:,.0f}', delta=f'{unreal:+,.0f}' if unreal else None)
+    c2.metric('持仓市值', f'¥{pos_val:,.0f}')
+    c3.metric('可用现金', f'¥{cash:,.0f}')
+    c4.metric('持仓比例', f'{pos_val/equity*100:.1f}%' if equity > 0 else '—')
 
-    st.markdown(f'*数据更新时间: {updated}*')
     st.markdown('---')
 
-    # ── 系统状态卡片 ─────────────────────────────────────────
-    col_a, col_b = st.columns(2)
+    col_left, col_right = st.columns([2, 1])
 
-    with col_a:
-        st.subheader('系统状态')
+    # ── 净值曲线 ──────────────────────────────────────────────
+    with col_left:
+        st.subheader('净值曲线')
+        daily = load_daily_equity(90)
+        if daily:
+            df_eq = pd.DataFrame(daily)
+            date_col  = next((c for c in df_eq.columns if 'date' in c.lower()), None)
+            eq_col    = next((c for c in df_eq.columns if 'equity' in c.lower()), None)
+            if date_col and eq_col:
+                df_eq[date_col] = pd.to_datetime(df_eq[date_col])
+                fig = px.area(
+                    df_eq, x=date_col, y=eq_col,
+                    labels={date_col: '', eq_col: '净值 (¥)'},
+                    color_discrete_sequence=['#4c78a8'],
+                )
+                fig.update_layout(margin=dict(t=10, b=20), height=260)
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info('暂无净值记录')
+
+    # ── 市场 Regime + 快速指标 ────────────────────────────────
+    with col_right:
+        st.subheader('市场状态')
+        try:
+            from core.regime import get_market_regime
+            daily_stats = load_daily_stats(60)
+            if daily_stats:
+                df_reg = pd.DataFrame(daily_stats)
+                regime_info = get_market_regime(df_reg)
+                regime = regime_info.regime if hasattr(regime_info, 'regime') else str(regime_info)
+            else:
+                regime = 'UNKNOWN'
+        except Exception:
+            regime = 'UNKNOWN'
+
+        regime_cls = {
+            'BULL': 'regime-bull', 'BEAR': 'regime-bear',
+            'VOLATILE': 'regime-vol', 'CALM': 'regime-calm',
+        }.get(regime, 'regime-calm')
+        regime_zh = {'BULL': '牛市', 'BEAR': '熊市', 'VOLATILE': '震荡', 'CALM': '平静', 'UNKNOWN': '未知'}
+        st.markdown(
+            f'<span class="{regime_cls}">{regime_zh.get(regime, regime)}</span>',
+            unsafe_allow_html=True,
+        )
+        st.caption('基于 MA20/MA60 + ATR ratio 识别')
+
+        st.markdown('---')
         positions = load_positions()
-        signals   = load_signals(10)
-        trades    = load_trades(10)
+        active = [p for p in positions if p.get('shares', 0) > 0]
+        signals = load_signals(20)
+        buy_sigs  = [s for s in signals if s.get('direction') == 'BUY']
+        sell_sigs = [s for s in signals if s.get('direction') == 'SELL']
 
-        info = {
-            'Backend API':      '运行中' if backend_ok else '未连接',
-            'Broker 模式':      'SimulatedBroker (A 股模拟)',
-            'A 股整手规则':     '启用 (100 股/手)',
-            '印花税':           '0.1%（卖出）',
-            '佣金率':           '0.03%',
-            '默认滑点':         '5 bps',
-            '当前持仓数':       f'{sum(1 for p in positions if p.get("shares", 0) > 0)} 只',
-            '今日信号数':       f'{len(signals)} 条',
-            '历史成交数':       f'{len(trades)} 笔',
-        }
-        for k, v in info.items():
-            st.markdown(f'**{k}：** {v}')
+        st.metric('持仓标的数', len(active))
+        st.metric('今日 BUY 信号', len(buy_sigs))
+        st.metric('今日 SELL 信号', len(sell_sigs))
 
-    with col_b:
-        st.subheader('最近信号')
+    st.markdown('---')
+
+    # ── Top 信号 + 近期告警 ────────────────────────────────────
+    col_sig, col_alert = st.columns(2)
+
+    with col_sig:
+        st.subheader('最新交易信号（近 10 条）')
         if signals:
             rows = []
-            for s in signals[:8]:
+            for s in signals[:10]:
+                d = s.get('direction', '')
                 rows.append({
-                    '时间':  str(s.get('emitted_at', ''))[:16],
-                    '代码':  s.get('symbol', ''),
-                    '信号':  s.get('signal', ''),
-                    '方向':  s.get('direction', ''),
-                    '原因':  str(s.get('reason', ''))[:30],
+                    '时间':   str(s.get('timestamp', s.get('created_at', '')))[:16],
+                    '标的':   s.get('symbol', ''),
+                    '方向':   f"🟢 {d}" if d == 'BUY' else f"🔴 {d}" if d == 'SELL' else d,
+                    '强度':   f"{float(s.get('strength', 0)):.2f}",
+                    '因子':   s.get('factor', s.get('signal_type', '')),
                 })
             st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
         else:
-            st.info('暂无信号')
+            st.info('暂无信号记录')
 
-    st.markdown('---')
-
-    # ── 近期预警 ─────────────────────────────────────────────
-    st.subheader('近期预警（最近 5 条）')
-    alerts = load_alerts(5)
-    if alerts:
-        for a in alerts:
-            pct = a.get('pct_change', 0)
-            icon = '🔴' if pct < 0 else '🟢'
-            msg = a.get('message', '')
-            ts  = str(a.get('triggered_at', ''))[:16]
-            st.markdown(f"{icon} `{a.get('symbol','')}` · {msg[:60]} · **{pct:+.2f}%** · {ts}")
-    else:
-        st.info('暂无近期预警')
-
-
-# ============================================================
-# Page 2: 组合管理
-# ============================================================
-
-elif page == '💼 组合管理':
-    st.title('💼 组合管理')
-
-    portfolio = load_portfolio_summary()
-    positions = load_positions()
-    trades    = load_trades(100)
-
-    # ── 持仓明细 ─────────────────────────────────────────────
-    st.subheader('持仓明细')
-    active = [p for p in positions if p.get('shares', 0) > 0]
-
-    if active:
-        col_chart, col_table = st.columns([1, 2])
-        rows = []
-        pie_labels, pie_values = [], []
-        for p in active:
-            sym   = p['symbol']
-            snap  = load_realtime(sym)
-            entry = p.get('entry_price', 0)
-            cur   = snap.get('price', entry) if snap else entry
-            sh    = p['shares']
-            mv    = cur * sh
-            pnl   = (cur - entry) * sh
-            pnl_pct = pnl / (entry * sh) if entry * sh else 0
-            pie_labels.append(sym)
-            pie_values.append(mv)
-            rows.append({
-                '代码':   sym,
-                '股数':   sh,
-                '成本':   f'¥{entry:.3f}',
-                '现价':   f'¥{cur:.3f}' if cur else '—',
-                '市值':   f'¥{mv:,.0f}',
-                '浮动盈亏': f'{pnl:+,.0f}',
-                '盈亏%':  f'{pnl_pct:+.2%}',
-                '今日':   f'{snap.get("pct", 0):+.2f}%' if snap else '—',
-            })
-
-        with col_chart:
-            fig = px.pie(
-                names=pie_labels, values=pie_values,
-                title='持仓分布',
-                hole=0.45,
-                color_discrete_sequence=px.colors.qualitative.Pastel,
-            )
-            fig.update_traces(textposition='inside', textinfo='percent+label')
-            fig.update_layout(margin=dict(t=30, b=10, l=10, r=10), showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
-
-        with col_table:
-            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-    else:
-        st.info('当前无持仓')
-
-    st.markdown('---')
-
-    # ── 权益曲线 ─────────────────────────────────────────────
-    st.subheader('权益曲线')
-    daily = load_daily_equity(60)
-    if daily:
-        df_eq = pd.DataFrame(daily).sort_values('trade_date')
-        if 'equity' in df_eq.columns:
-            fig = px.line(
-                df_eq, x='trade_date', y='equity',
-                labels={'trade_date': '日期', 'equity': '总权益 (¥)'},
-                markers=True,
-            )
-            fig.update_layout(hovermode='x unified', margin=dict(t=20, b=30))
-            st.plotly_chart(fig, use_container_width=True)
-            eq0 = df_eq.iloc[0]['equity']
-            eq1 = df_eq.iloc[-1]['equity']
-            st.caption(f'起始: ¥{eq0:,.0f} → 当前: ¥{eq1:,.0f}  |  收益率: {(eq1-eq0)/eq0*100:+.2f}%')
-    else:
-        st.info('暂无权益曲线数据（需运行至少一个交易日）')
-
-    st.markdown('---')
-
-    # ── 历史成交 ─────────────────────────────────────────────
-    st.subheader('历史成交记录')
-    if trades:
-        rows = []
-        for t in trades:
-            direction = str(t.get('direction', '')).upper()
-            rows.append({
-                '时间':      str(t.get('date', t.get('executed_at', '')))[:16],
-                '代码':      t.get('symbol', ''),
-                '方向':      '🔴 卖出' if direction in ('SELL', 'sell') else '🟢 买入',
-                '价格':      f'¥{t.get("price", 0):.3f}',
-                '股数':      t.get('shares', 0),
-                '金额':      f'¥{t.get("shares", 0) * t.get("price", 0):,.0f}',
-                '滑点':      f'{t.get("slippage_bps") or 0:+.1f}bps' if t.get('slippage_bps') is not None else '—',
-                '单笔盈亏':  f'{t.get("pnl", 0):+.0f}' if t.get('pnl') is not None else '—',
-            })
-        df_tr = pd.DataFrame(rows).sort_values('时间', ascending=False)
-        st.dataframe(df_tr, hide_index=True, use_container_width=True)
-
-        buys  = sum(1 for r in rows if '买入' in r['方向'])
-        sells = sum(1 for r in rows if '卖出' in r['方向'])
-        c1, c2, c3 = st.columns(3)
-        c1.metric('买入次数', buys)
-        c2.metric('卖出次数', sells)
-        c3.metric('共计成交', len(rows))
-    else:
-        st.info('暂无成交记录')
+    with col_alert:
+        st.subheader('近期系统告警')
+        try:
+            from core.alerting import get_alert_manager
+            am = get_alert_manager()
+            history = am.get_history(last_n=8)
+            if history:
+                for rec in reversed(history):
+                    icon = {'CRITICAL': '🔴', 'WARNING': '🟡', 'INFO': '🔵'}.get(rec.level, '⚪')
+                    st.markdown(f"{icon} **[{rec.level}]** {rec.message[:80]}")
+                    st.caption(f"  {rec.timestamp[:16]} · {rec.channel}")
+            else:
+                st.success('无未处理告警')
+        except Exception:
+            alerts = load_daily_stats(1)
+            st.info('AlertManager 未初始化（将在策略运行后生效）')
 
 
 # ============================================================
-# Page 3: 策略分配
+# Page 2: 因子工作台
 # ============================================================
 
-elif page == '🎯 策略分配':
-    st.title('🎯 策略分配')
-    st.caption('基于 PortfolioAllocator · 支持等权 / 固定权重 / 风险平价')
+elif page == '🎯 因子工作台':
+    st.title('🎯 因子工作台')
+    st.caption('22 个因子实时评分 · 动态 IC 权重 · NLP 情感 · 因子相关性')
 
-    try:
-        from core.portfolio_allocator import (
-            AllocConfig, PortfolioAllocator, WeightMode,
-        )
-        alloc_available = True
-    except ImportError as e:
-        st.error(f'PortfolioAllocator 导入失败: {e}')
-        alloc_available = False
+    cfg = load_trading_config()
+    live_syms = cfg.get('live_symbols', [])
+    default_syms = [s['symbol'] for s in live_syms] if live_syms else ['000001.SZ', '600519.SH']
 
-    if alloc_available:
-        # ── 配置面板 ─────────────────────────────────────────
-        cfg = load_trading_config()
-        strategies_cfg = cfg.get('strategies', {})
-        portfolio_cfg  = cfg.get('portfolio', {})
-        total_capital  = float(portfolio_cfg.get('capital', 100_000))
+    col_ctrl, col_main = st.columns([1, 3])
 
-        col_cfg, col_result = st.columns([1, 2])
+    with col_ctrl:
+        symbol = st.selectbox('选择标的', default_syms + ['自定义'])
+        if symbol == '自定义':
+            symbol = st.text_input('输入代码（如 600519.SH）', '600519.SH')
 
-        with col_cfg:
-            st.subheader('分配配置')
-            total_capital = st.number_input(
-                '总资金（元）',
-                value=total_capital, min_value=10_000.0, step=10_000.0,
-                format='%.0f',
-            )
-            mode_label = st.selectbox(
-                '权重模式',
-                ['等权 (EQUAL)', '固定权重 (FIXED)', '风险平价 (RISK_PARITY)'],
-                index=0,
-            )
-            mode_map = {
-                '等权 (EQUAL)': WeightMode.EQUAL,
-                '固定权重 (FIXED)': WeightMode.FIXED,
-                '风险平价 (RISK_PARITY)': WeightMode.RISK_PARITY,
-            }
-            weight_mode = mode_map[mode_label]
-
-            reserve_pct = st.slider('保留现金比例 (%)', 0, 20, 5, step=1, format='%d%%')
-            reserve = reserve_pct / 100
-
-            st.markdown('**策略权重（固定权重模式有效）**')
-            custom_weights = {}
-            default_names = list(strategies_cfg.keys()) or ['RSI', 'MACD', 'Bollinger']
-            for name in default_names:
-                w = st.number_input(f'{name}', value=1.0/len(default_names),
-                                    min_value=0.0, max_value=1.0, step=0.05,
-                                    key=f'w_{name}', format='%.2f')
-                custom_weights[name] = w
-
-        with col_result:
-            st.subheader('分配结果')
-            try:
-                config = AllocConfig(
-                    mode=weight_mode,
-                    reserve_ratio=reserve,
-                    min_strategy_weight=0.05,
-                    max_strategy_weight=0.60,
-                )
-                allocator = PortfolioAllocator(total_capital=total_capital, config=config)
-
-                for name in default_names:
-                    w = custom_weights[name] if weight_mode == WeightMode.FIXED else None
-                    allocator.add_strategy(name, weight=w)
-
-                # 读取当前持仓市值并更新 usage
-                positions = load_positions()
-                pos_by_sym = {p['symbol']: p for p in positions if p.get('shares', 0) > 0}
-                for name in default_names:
-                    strat_cfg = strategies_cfg.get(name, {})
-                    sym = strat_cfg.get('symbol', '')
-                    if sym and sym in pos_by_sym:
-                        p   = pos_by_sym[sym]
-                        snap = load_realtime(sym)
-                        cur  = snap.get('price', p.get('entry_price', 0)) if snap else p.get('entry_price', 0)
-                        mv   = cur * p['shares']
-                        allocator.update_usage(name, mv)
-
-                summary = allocator.summary()
-                strat_info = summary['strategies']
-
-                # 分配表格
-                rows = []
-                for sname, info in strat_info.items():
-                    strat_sym = strategies_cfg.get(sname, {}).get('symbol', '—')
-                    rows.append({
-                        '策略':    sname,
-                        '标的':    strat_sym,
-                        '权重':    f'{info["weight"]:.1%}',
-                        '额度(¥)': f'{info["budget"]:,.0f}',
-                        '已用(¥)': f'{info["used"]:,.0f}',
-                        '可用(¥)': f'{info["available"]:,.0f}',
-                        '利用率':  f'{info["utilization"]:.1%}',
-                    })
-                st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-
-                # 汇总
-                s1, s2, s3, s4 = st.columns(4)
-                s1.metric('总资金', f'¥{summary["total_capital"]:,.0f}')
-                s2.metric('已分配', f'¥{summary["total_budget"]:,.0f}')
-                s3.metric('已使用', f'¥{summary["total_used"]:,.0f}')
-                s4.metric('保留现金', f'¥{summary["reserve"]:,.0f}')
-
-                # 分配可视化
-                if rows:
-                    budgets = [float(r['额度(¥)'].replace(',', '')) for r in rows]
-                    fig = px.bar(
-                        x=[r['策略'] for r in rows],
-                        y=budgets,
-                        color=[r['策略'] for r in rows],
-                        labels={'x': '策略', 'y': '分配额度 (¥)'},
-                        title='各策略资金分配',
-                        color_discrete_sequence=px.colors.qualitative.Set2,
-                    )
-                    fig.update_layout(showlegend=False, margin=dict(t=40, b=20))
-                    st.plotly_chart(fig, use_container_width=True)
-
-                # 再平衡检测
-                st.markdown('---')
-                st.subheader('再平衡检测')
-                current_mv = {
-                    name: strat_info[name]['used']
-                    for name in strat_info
-                }
-                if allocator.needs_rebalance(current_mv):
-                    st.warning('持仓偏离超过阈值，建议执行再平衡。')
-                    if st.button('执行再平衡'):
-                        new_budgets = allocator.rebalance(trigger='manual')
-                        st.success(f'再平衡完成，新额度：{new_budgets}')
-                else:
-                    st.success('持仓权重正常，无需再平衡。')
-
-            except Exception as e:
-                st.error(f'PortfolioAllocator 运行错误: {e}')
+        days = st.slider('历史数据天数', 60, 300, 120, step=20)
+        run_btn = st.button('运行因子分析', type='primary', use_container_width=True)
 
         st.markdown('---')
-        st.subheader('模式说明')
-        st.markdown("""
-| 模式 | 说明 | 适用场景 |
-|------|------|---------|
-| **等权 (EQUAL)** | 所有策略平均分配资金 | 策略差异不明显时 |
-| **固定权重 (FIXED)** | 按用户设定比例分配 | 手动控制各策略敞口 |
-| **风险平价 (RISK_PARITY)** | 按滚动波动率倒数加权（低波动 → 高权重） | 追求风险贡献均衡 |
+        st.markdown('**注册因子列表（22个）**')
+        try:
+            from core.factor_registry import registry
+            for name in registry.list_factors():
+                st.caption(f'• {name}')
+        except Exception as e:
+            st.warning(f'注册表加载失败: {e}')
+
+    with col_main:
+        if run_btn:
+            with st.spinner(f'拉取 {symbol} 数据并计算因子...'):
+                df = _make_price_df_from_akshare(symbol, days)
+
+            if df is None or df.empty:
+                st.error('无法获取历史数据，请检查网络或标的代码。')
+            else:
+                # ── 单因子评分 ─────────────────────────────────
+                st.subheader(f'{symbol} · 因子评分（最新一日）')
+                try:
+                    from core.factor_registry import registry
+                    from core.factors.base import FactorCategory
+
+                    snap = load_realtime(symbol)
+                    price = snap.get('price', float(df['close'].iloc[-1]))
+
+                    factor_rows = []
+                    for fname in registry.list_factors():
+                        try:
+                            fobj = registry.create(fname)
+                            vals = fobj.evaluate(df)
+                            score = float(vals.iloc[-1]) if len(vals) > 0 else 0.0
+                            if not np.isfinite(score):
+                                score = 0.0
+                            factor_rows.append({'因子': fname, '得分': score})
+                        except Exception:
+                            factor_rows.append({'因子': fname, '得分': 0.0})
+
+                    df_scores = pd.DataFrame(factor_rows).sort_values('得分', ascending=False)
+
+                    fig = px.bar(
+                        df_scores, x='得分', y='因子', orientation='h',
+                        color='得分', color_continuous_scale='RdYlGn',
+                        color_continuous_midpoint=0,
+                        title='因子 Z-Score（正=偏多，负=偏空）',
+                    )
+                    fig.update_layout(height=550, margin=dict(t=40, b=10),
+                                      yaxis={'categoryorder': 'total ascending'})
+                    st.plotly_chart(fig, use_container_width=True)
+
+                except Exception as e:
+                    st.error(f'因子计算失败: {e}')
+
+                # ── 综合流水线评分 ─────────────────────────────
+                st.markdown('---')
+                st.subheader('多因子流水线综合评分')
+                try:
+                    from core.factor_pipeline import DynamicWeightPipeline
+                    pipeline = DynamicWeightPipeline(update_freq_days=21)
+                    pipeline.add('RSI',            weight=0.15)
+                    pipeline.add('MACD',           weight=0.12)
+                    pipeline.add('ATR',            weight=0.08)
+                    pipeline.add('BollingerBands', weight=0.10)
+                    pipeline.add('OrderImbalance', weight=0.08)
+                    pipeline.add('SectorMomentum', weight=0.10)
+                    pipeline.add('PEPercentile',   weight=0.08)
+                    pipeline.add('ROEMomentum',    weight=0.08)
+                    pipeline.add('MarginTrading',  weight=0.07)
+                    pipeline.add('NorthboundFlow', weight=0.07)
+                    pipeline.add('MLPrediction',   weight=0.07)
+
+                    result = pipeline.run(symbol=symbol, data=df, price=price)
+
+                    c1, c2, c3 = st.columns(3)
+                    score_color = 'normal' if abs(result.combined_score) < 0.5 else (
+                        'inverse' if result.combined_score < 0 else 'off'
+                    )
+                    c1.metric('综合评分', f'{result.combined_score:+.3f}')
+                    c2.metric('主信号', result.dominant_signal or 'HOLD')
+                    c3.metric('信号数量', len(result.signals))
+
+                    if result.signals:
+                        sig_rows = [{'因子': s.factor_name, '方向': s.direction,
+                                     '强度': f'{s.strength:.3f}', '价格': f'{s.price:.2f}'}
+                                    for s in result.signals]
+                        st.dataframe(pd.DataFrame(sig_rows), hide_index=True,
+                                     use_container_width=True)
+
+                    # 当前动态权重
+                    try:
+                        w_df = pipeline.current_weights()
+                        if w_df is not None and not w_df.empty:
+                            st.caption('当前动态权重（基于滚动 IC）')
+                            st.dataframe(w_df.reset_index(), hide_index=True,
+                                         use_container_width=True)
+                    except Exception:
+                        pass
+
+                except Exception as e:
+                    st.warning(f'流水线评分失败: {e}')
+
+                # ── NLP 情感 ───────────────────────────────────
+                st.markdown('---')
+                st.subheader('新闻情感（NewsSentimentFactor）')
+                try:
+                    from core.factors.nlp import NewsSentimentFactor, _fetch_news_eastmoney
+                    headlines = _fetch_news_eastmoney(symbol, n=5)
+                    if headlines:
+                        st.caption('最新新闻标题：')
+                        for h in headlines:
+                            st.markdown(f'- {h}')
+                        f_nlp = NewsSentimentFactor(symbol=symbol, use_api=False)
+                        nlp_vals = f_nlp.evaluate(df)
+                        latest_nlp = float(nlp_vals.iloc[-1])
+                        sentiment_label = (
+                            '🟢 正面' if latest_nlp > 0.2 else
+                            '🔴 负面' if latest_nlp < -0.2 else '⚪ 中性'
+                        )
+                        st.metric('情感得分（Z-score）', f'{latest_nlp:+.3f}', delta=sentiment_label)
+                    else:
+                        st.info('未获取到新闻数据（网络限制或标的不支持）')
+                except Exception as e:
+                    st.info(f'NLP 因子未激活（需配置 ANTHROPIC_API_KEY）: {e}')
+
+        else:
+            st.info('👈 选择标的后点击「运行因子分析」')
+            st.markdown("""
+**因子分类说明：**
+
+| 类别 | 因子 | 数量 |
+|------|------|------|
+| 价格动量 | RSI / Bollinger / MACD / ATR / OrderImbalance | 5 |
+| 技术微观 | IntraVWAP / OpenGap / VolAcceleration / BidAskSpread / BuyingPressure / SectorMomentum / IndexRelativeStrength | 7 |
+| 基本面 | PEPercentile / ROEMomentum / EarningsSurprise / RevenueGrowth / CashFlowQuality | 5 |
+| 情绪 | MarginTrading / NorthboundFlow / ShortInterest | 3 |
+| ML 预测 | MLPrediction（XGBoost Walk-Forward） | 1 |
+| NLP 情感 | NewsSentiment（东财新闻 + Claude API） | 1 |
 """)
 
 
 # ============================================================
-# Page 4: 交易信号
+# Page 3: ML 模型
 # ============================================================
 
-elif page == '📈 交易信号':
-    st.title('📈 交易信号')
+elif page == '🤖 ML 模型':
+    st.title('🤖 ML 模型')
+    st.caption('XGBoost Walk-Forward 训练 · 模型注册表 · 特征重要性')
 
-    signals   = load_signals(50)
-    positions = load_positions()
-    watchlist = load_watchlist()
+    try:
+        from core.ml.model_registry import ModelRegistry
+        from core.ml.price_predictor import MLPredictionFactor, WalkForwardTrainer
+        from core.ml.feature_store import FeatureStore
+        ml_available = True
+    except ImportError as e:
+        st.error(f'ML 模块加载失败: {e}')
+        ml_available = False
 
-    # ── 信号统计 ──────────────────────────────────────────────
-    if signals:
-        sig_types: Dict[str, int] = {}
-        for s in signals:
-            t = s.get('signal', 'OTHER')
-            sig_types[t] = sig_types.get(t, 0) + 1
-        cols = st.columns(min(len(sig_types), 5))
-        for i, (sig, cnt) in enumerate(sorted(sig_types.items())):
-            cols[i % 5].metric(sig, f'{cnt} 次')
+    if ml_available:
+        reg = ModelRegistry()
 
-    # ── 信号详情表格 ──────────────────────────────────────────
-    st.subheader('最近信号')
-    if signals:
-        rows = []
-        for s in signals:
-            rows.append({
-                '时间':    str(s.get('emitted_at', ''))[:16],
-                '代码':    s.get('symbol', ''),
-                '信号':    s.get('signal', ''),
-                '方向':    s.get('direction', ''),
-                '强度':    f"{s.get('strength', 0):.2f}",
-                'RSI':     f"{s.get('prev_rsi', 0):.0f}" if s.get('prev_rsi') else '—',
-                '涨跌%':   f"{s.get('pct', 0):+.2f}%" if s.get('pct') is not None else '—',
-                '原因':    str(s.get('reason', ''))[:40],
-            })
-        df_sig = pd.DataFrame(rows).sort_values('时间', ascending=False)
-        st.dataframe(df_sig, hide_index=True, use_container_width=True)
-    else:
-        st.info('暂无信号记录')
+        tab_registry, tab_train, tab_importance = st.tabs(
+            ['📦 模型注册表', '🚀 训练新模型', '📊 特征重要性']
+        )
 
-    st.markdown('---')
+        # ── Tab 1: 注册表 ─────────────────────────────────────
+        with tab_registry:
+            st.subheader('已训练模型')
+            models_dir = os.path.join(DATA_DIR, 'ml_models')
+            if os.path.exists(models_dir):
+                model_rows = []
+                for sym_dir in sorted(os.listdir(models_dir)):
+                    sym_path = os.path.join(models_dir, sym_dir)
+                    if not os.path.isdir(sym_path):
+                        continue
+                    for model_type in sorted(os.listdir(sym_path)):
+                        type_path = os.path.join(sym_path, model_type)
+                        if not os.path.isdir(type_path):
+                            continue
+                        meta_path = os.path.join(type_path, 'meta.json')
+                        if os.path.exists(meta_path):
+                            try:
+                                with open(meta_path) as mf:
+                                    meta = json.load(mf)
+                                model_rows.append({
+                                    '标的':        sym_dir,
+                                    '模型类型':    model_type,
+                                    '版本':        meta.get('version', '—'),
+                                    '训练样本数':  meta.get('n_samples', '—'),
+                                    '特征数':      meta.get('n_features', '—'),
+                                    'OOS Sharpe':  f"{meta.get('oos_sharpe', 0):.3f}" if meta.get('oos_sharpe') else '—',
+                                    '训练时间':    str(meta.get('trained_at', ''))[:16],
+                                })
+                            except Exception:
+                                pass
+                if model_rows:
+                    st.dataframe(pd.DataFrame(model_rows), hide_index=True, use_container_width=True)
+                else:
+                    st.info('暂无已训练模型。请在「训练新模型」标签页训练。')
+            else:
+                st.info('模型存储目录不存在，训练后将自动创建。')
 
-    # ── 持仓实时行情 ──────────────────────────────────────────
-    st.subheader('持仓实时行情')
-    active = [p for p in positions if p.get('shares', 0) > 0]
-    if active:
-        live_rows = []
-        for p in active:
-            sym   = p['symbol']
-            snap  = load_realtime(sym)
-            lu    = limit_up_pct(sym)
-            prev  = snap.get('prev_close', 0) if snap else 0
-            upper = prev * (1 + lu) if prev else 0
-            lower = prev * (1 - lu) if prev else 0
-            price = snap.get('price', 0) if snap else 0
-            dist_up   = (upper - price) / price if price and upper else None
-            dist_down = (price - lower) / price if price and lower else None
-            live_rows.append({
-                '代码':    sym,
-                '现价':    f'¥{price:.2f}' if price else '—',
-                '涨跌%':   f'{snap.get("pct", 0):+.2f}%' if snap else '—',
-                '量比':    f'{snap.get("vol_ratio", 0):.2f}x' if snap and snap.get('vol_ratio') else '—',
-                '涨停价':  f'¥{upper:.2f}' if upper else '—',
-                '距涨停':  f'{dist_up:.1%}' if dist_up is not None else '—',
-                '跌停价':  f'¥{lower:.2f}' if lower else '—',
-                '距跌停':  f'{dist_down:.1%}' if dist_down is not None else '—',
-                '成本价':  f'¥{p.get("entry_price", 0):.3f}',
-            })
-        st.dataframe(pd.DataFrame(live_rows), hide_index=True, use_container_width=True)
-    else:
-        st.info('当前无持仓')
+        # ── Tab 2: 训练 ───────────────────────────────────────
+        with tab_train:
+            st.subheader('Walk-Forward 训练配置')
+            st.caption('训练窗口 252 天 / 验证窗口 63 天 / 步长 21 天（防止过拟合）')
 
-    st.markdown('---')
+            cfg = load_trading_config()
+            live_syms = cfg.get('live_symbols', [])
+            sym_options = [s['symbol'] for s in live_syms] if live_syms else ['000001.SZ', '600519.SH']
 
-    # ── 候选标的（自选股）──────────────────────────────────────
-    st.subheader('候选标的')
-    enabled = [w for w in watchlist if w.get('enabled', 0) == 1]
-    if enabled:
-        rows = []
-        for w in enabled[:15]:
-            sym  = w.get('symbol', '')
-            snap = load_realtime(sym)
-            rows.append({
-                '代码':    sym,
-                '名称':    w.get('name', '—'),
-                '理由':    w.get('reason', '')[:30],
-                '现价':    f'¥{snap.get("price", 0):.2f}' if snap else '—',
-                '今日':    f'{snap.get("pct", 0):+.2f}%' if snap else '—',
-                '预警阈值': f'±{w.get("alert_pct", 5):.1f}%',
-            })
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-    else:
-        st.info('自选股为空')
+            c1, c2 = st.columns(2)
+            with c1:
+                train_symbol  = st.selectbox('训练标的', sym_options)
+                forward_days  = st.selectbox('预测周期（天）', [1, 2, 5], index=1)
+            with c2:
+                data_days     = st.slider('历史数据长度（天）', 300, 800, 500, step=50)
+                use_wf        = st.checkbox('使用 Walk-Forward 验证', value=True)
 
+            if st.button('开始训练', type='primary'):
+                with st.spinner(f'拉取 {train_symbol} 数据...'):
+                    df_train = _make_price_df_from_akshare(train_symbol, data_days)
 
-# ============================================================
-# Page 5: 回测验证
-# ============================================================
+                if df_train is None or len(df_train) < 100:
+                    st.error('历史数据不足（< 100 天），无法训练。')
+                else:
+                    with st.spinner('Walk-Forward 训练中（可能需要 1-3 分钟）...'):
+                        try:
+                            factor = MLPredictionFactor(
+                                symbol=train_symbol, forward_days=forward_days
+                            )
+                            wf_result = factor.fit(df_train, use_walk_forward=use_wf)
 
-elif page == '📉 回测验证':
-    st.title('📉 回测验证')
+                            st.success('训练完成！')
+                            col_r1, col_r2, col_r3 = st.columns(3)
+                            if hasattr(wf_result, 'oos_sharpe'):
+                                col_r1.metric('OOS Sharpe', f'{wf_result.oos_sharpe:.3f}')
+                            if hasattr(wf_result, 'n_windows'):
+                                col_r2.metric('验证窗口数', wf_result.n_windows)
+                            if hasattr(wf_result, 'positive_sharpe_ratio'):
+                                col_r3.metric('正 Sharpe 比例',
+                                              f'{wf_result.positive_sharpe_ratio:.1%}')
 
-    tab_wfa, tab_validator = st.tabs(['Walk-Forward 分析', '模拟实盘一致性验证'])
+                            # 各窗口 Sharpe 图
+                            if hasattr(wf_result, 'window_results') and wf_result.window_results:
+                                sharpes = [w.get('oos_sharpe', 0) for w in wf_result.window_results]
+                                fig = px.bar(
+                                    x=list(range(1, len(sharpes) + 1)),
+                                    y=sharpes,
+                                    color=sharpes,
+                                    color_continuous_scale='RdYlGn',
+                                    labels={'x': '验证窗口', 'y': 'OOS Sharpe'},
+                                    title='各窗口 OOS Sharpe',
+                                )
+                                fig.add_hline(y=0, line_dash='dash', line_color='gray')
+                                st.plotly_chart(fig, use_container_width=True)
 
-    # ── Tab 1: WFA ────────────────────────────────────────────
-    with tab_wfa:
-        wf = load_wf_results(20)
-        if wf:
-            st.subheader(f'历史 WFA 结果（{len(wf)} 条）')
-            rows = []
-            for r in wf:
+                        except Exception as e:
+                            st.error(f'训练失败: {e}')
+
+        # ── Tab 3: 特征重要性 ─────────────────────────────────
+        with tab_importance:
+            st.subheader('特征重要性分析')
+
+            cfg2 = load_trading_config()
+            live_syms2 = cfg2.get('live_symbols', [])
+            sym_opts2 = [s['symbol'] for s in live_syms2] if live_syms2 else ['000001.SZ']
+            imp_symbol = st.selectbox('选择标的', sym_opts2, key='imp_sym')
+
+            if st.button('加载特征重要性'):
                 try:
-                    params = json.loads(r.get('best_params', '{}'))
-                except Exception:
-                    params = {}
-                rows.append({
-                    '窗口':     r.get('window', '?'),
-                    '标的':     r.get('symbol', ''),
-                    '策略':     r.get('strategy', ''),
-                    '训练Sharpe': f"{r.get('train_sharpe', 0):.2f}",
-                    '测试Sharpe': f"{r.get('test_sharpe', 0):.2f}",
-                    '测试收益%': f"{r.get('test_return_pct', 0):+.1f}%",
-                    '胜率%':    f"{r.get('test_winrate_pct', 0):.0f}%",
-                    '最大回撤%': f"{r.get('test_maxdd_pct', 0):.1f}%",
-                    '年化收益%': f"{r.get('annualized_return_pct', 0):+.1f}%",
-                    '最优参数': str(params)[:50],
-                    '时间':     str(r.get('created_at', ''))[:10],
-                })
-            df_wf = pd.DataFrame(rows)
-            st.dataframe(df_wf, hide_index=True, use_container_width=True)
+                    factor_imp = MLPredictionFactor(symbol=imp_symbol)
+                    if factor_imp.load(imp_symbol):
+                        importance = factor_imp.feature_importance()
+                        if importance:
+                            df_imp = pd.DataFrame(
+                                list(importance.items()), columns=['特征', '重要性']
+                            ).sort_values('重要性', ascending=False).head(20)
+                            fig = px.bar(
+                                df_imp, x='重要性', y='特征', orientation='h',
+                                title=f'{imp_symbol} Top-20 特征重要性',
+                                color='重要性', color_continuous_scale='Blues',
+                            )
+                            fig.update_layout(height=500, yaxis={'categoryorder': 'total ascending'})
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.warning('模型未返回特征重要性（可能是非树模型）')
+                    else:
+                        st.warning(f'未找到 {imp_symbol} 的已训练模型，请先训练。')
+                except Exception as e:
+                    st.error(f'加载失败: {e}')
 
-            # 测试集 Sharpe 图
-            fig = px.bar(
-                df_wf,
-                x='窗口', y='测试Sharpe',
-                color='测试Sharpe',
-                color_continuous_scale='RdYlGn',
-                title='各窗口测试集 Sharpe',
-                barmode='group',
-                text='测试Sharpe',
-            )
-            fig.update_layout(margin=dict(t=40, b=20))
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info('暂无 WFA 结果。请运行 `python scripts/walkforward_job.py --symbol 510310.SH`')
 
-        # ── 运行 WFA ───────────────────────────────────────────
-        st.markdown('---')
-        st.subheader('运行 Walk-Forward 训练')
+# ============================================================
+# Page 4: 组合优化
+# ============================================================
 
-        cfg = load_trading_config()
-        live_syms = cfg.get('live_symbols', [])
-        sym_options = [s['symbol'] for s in live_syms] if live_syms else ['510310.SH']
+elif page == '⚖️ 组合优化':
+    st.title('⚖️ 组合优化')
+    st.caption('MVO · Black-Litterman · 风险平价 · 最大分散化 · 多策略资金分配')
+
+    tab_opt, tab_bl, tab_alloc = st.tabs(
+        ['📐 均值方差优化', '🔭 Black-Litterman', '🎯 策略资金分配']
+    )
+
+    # ── Tab 1: MVO ───────────────────────────────────────────
+    with tab_opt:
+        st.subheader('均值方差优化（PortfolioOptimizer）')
+
+        symbols_input = st.text_area(
+            '标的列表（每行一个）',
+            '000001.SZ\n600519.SH\n300750.SZ\n600036.SH',
+            height=120,
+        )
+        symbols_list = [s.strip() for s in symbols_input.strip().split('\n') if s.strip()]
 
         c1, c2, c3 = st.columns(3)
         with c1:
-            symbol = st.selectbox('标的', sym_options)
+            opt_method  = st.selectbox('优化方法', [
+                'min_variance', 'max_sharpe', 'risk_parity',
+                'max_diversification', 'equal_weight',
+            ])
         with c2:
-            strategy = st.selectbox('策略', ['RSI', 'MACD', 'Bollinger'])
+            cov_method  = st.selectbox('协方差估计', ['ledoit_wolf', 'sample'])
+            max_weight  = st.slider('单标的上限', 0.10, 0.50, 0.25, step=0.05)
         with c3:
-            train_yrs = st.number_input('训练年数', value=2, min_value=1, max_value=5)
+            data_days_o = st.slider('历史数据（天）', 120, 500, 252, step=20, key='opt_days')
+            max_to      = st.slider('换手率约束', 0.1, 1.0, 0.3, step=0.05)
 
-        test_yrs = st.number_input('验证年数', value=1, min_value=1, max_value=3)
+        if st.button('运行优化', type='primary'):
+            if len(symbols_list) < 2:
+                st.error('至少输入 2 个标的。')
+            else:
+                returns_dict = {}
+                with st.spinner('拉取历史数据...'):
+                    for sym in symbols_list:
+                        df_s = _make_price_df_from_akshare(sym, data_days_o)
+                        if df_s is not None and len(df_s) > 30:
+                            returns_dict[sym] = df_s['close'].pct_change().dropna()
 
-        if st.button('开始 Walk-Forward 训练', disabled=not backend_ok):
-            import subprocess
-            env = {**os.environ, 'PYTHONPATH': os.path.join(BASE_DIR, 'scripts')}
-            if sys.platform == 'win32':
-                env['PYTHONIOENCODING'] = 'utf-8'
-                env['PYTHONUTF8'] = '1'
-            cmd = [
-                sys.executable,
-                os.path.join(BASE_DIR, 'scripts', 'walkforward_job.py'),
-                '--symbol', symbol, '--strategy', strategy,
-                '--train-years', str(int(train_yrs)),
-                '--test-years', str(int(test_yrs)),
-            ]
-            with st.spinner(f'训练 {symbol} ({strategy}) ...'):
+                if len(returns_dict) < 2:
+                    st.error('数据获取失败，请检查网络或标的。')
+                else:
+                    try:
+                        from core.portfolio_optimizer import PortfolioOptimizer
+                        returns_df = pd.DataFrame(returns_dict).dropna()
+                        optimizer = PortfolioOptimizer(
+                            returns=returns_df, cov_method=cov_method,
+                            max_weight=max_weight, min_weight=0.0,
+                        )
+
+                        method_fn = getattr(optimizer, opt_method)
+                        weights = method_fn()
+
+                        st.success('优化完成！')
+
+                        # 权重饼图
+                        w_df = pd.DataFrame({
+                            '标的': list(returns_dict.keys()),
+                            '权重': weights,
+                        })
+                        fig = px.pie(w_df, values='权重', names='标的',
+                                     title=f'{opt_method} 优化权重',
+                                     color_discrete_sequence=px.colors.qualitative.Set2)
+                        fig.update_layout(height=350)
+                        st.plotly_chart(fig, use_container_width=True)
+
+                        # 权重表格 + 换手率约束
+                        current_weights = np.array([1.0 / len(symbols_list)] * len(symbols_list))
+                        w_adj = optimizer.apply_turnover_constraint(
+                            weights, current_weights, max_turnover=max_to
+                        )
+
+                        result_rows = [
+                            {'标的': sym, '优化权重': f'{w:.1%}', '换手调整后': f'{wa:.1%}',
+                             '预期年化收益': f'{float(returns_df[sym].mean() * 252):.1%}',
+                             '年化波动率': f'{float(returns_df[sym].std() * np.sqrt(252)):.1%}'}
+                            for sym, w, wa in zip(returns_dict.keys(), weights, w_adj)
+                        ]
+                        st.dataframe(pd.DataFrame(result_rows), hide_index=True,
+                                     use_container_width=True)
+
+                        # 有效前沿（max_sharpe 模式下额外展示）
+                        if opt_method == 'max_sharpe':
+                            port_ret  = float(np.dot(weights, returns_df.mean() * 252))
+                            port_vol  = float(np.sqrt(np.dot(weights, np.dot(
+                                optimizer._cov * 252, weights
+                            ))))
+                            port_sharpe = (port_ret - 0.02) / port_vol if port_vol > 0 else 0
+                            m1, m2, m3 = st.columns(3)
+                            m1.metric('组合年化收益', f'{port_ret:.2%}')
+                            m2.metric('组合年化波动率', f'{port_vol:.2%}')
+                            m3.metric('组合 Sharpe', f'{port_sharpe:.3f}')
+
+                    except Exception as e:
+                        st.error(f'优化失败: {e}')
+
+    # ── Tab 2: Black-Litterman ────────────────────────────────
+    with tab_bl:
+        st.subheader('Black-Litterman 观点融合')
+        st.caption('将策略因子观点融入均衡收益，生成后验权重')
+
+        bl_syms_input = st.text_area(
+            '标的（每行一个）',
+            '000001.SZ\n600519.SH\n300750.SZ\n600036.SH',
+            height=100, key='bl_syms',
+        )
+        bl_symbols = [s.strip() for s in bl_syms_input.strip().split('\n') if s.strip()]
+
+        st.markdown('**输入观点（年化预期收益）**')
+        views = {}
+        confidences = {}
+        if bl_symbols:
+            cols = st.columns(min(len(bl_symbols), 4))
+            for i, sym in enumerate(bl_symbols):
+                with cols[i % 4]:
+                    v = st.number_input(f'{sym} 预期收益', -0.30, 0.50, 0.08, step=0.01,
+                                        format='%.2f', key=f'bl_v_{sym}')
+                    c = st.slider(f'{sym} 置信度', 0.1, 1.0, 0.6, step=0.05, key=f'bl_c_{sym}')
+                    views[sym] = v
+                    confidences[sym] = c
+
+        bl_days = st.slider('历史数据（天）', 120, 500, 252, key='bl_days')
+
+        if st.button('计算 BL 权重', type='primary'):
+            returns_dict_bl = {}
+            with st.spinner('拉取数据...'):
+                for sym in bl_symbols:
+                    df_s = _make_price_df_from_akshare(sym, bl_days)
+                    if df_s is not None and len(df_s) > 30:
+                        returns_dict_bl[sym] = df_s['close'].pct_change().dropna()
+
+            if len(returns_dict_bl) < 2:
+                st.error('数据获取失败。')
+            else:
                 try:
-                    result = subprocess.run(
-                        cmd, capture_output=True,
-                        encoding='utf-8', errors='replace', timeout=600, env=env,
-                    )
-                    if result.returncode == 0:
-                        st.success('训练完成')
-                        st.cache_data.clear()
-                    else:
-                        st.warning(f'退出码 {result.returncode}')
-                    st.code(result.stdout[-4000:] or '(无输出)', language='text')
-                    if result.stderr and 'warning' not in result.stderr.lower():
-                        with st.expander('错误详情'):
-                            st.code(result.stderr[-1000:], language='text')
-                except subprocess.TimeoutExpired:
-                    st.error('训练超时 (>600s)')
-                except Exception as e:
-                    st.error(f'运行失败: {e}')
+                    from core.portfolio_optimizer import PortfolioOptimizer
+                    returns_df_bl = pd.DataFrame(returns_dict_bl).dropna()
+                    opt_bl = PortfolioOptimizer(returns=returns_df_bl, max_weight=0.40)
+                    w_bl = opt_bl.black_litterman(views, confidences)
+                    w_eq = opt_bl.equal_weight()
+                    w_gmv = opt_bl.min_variance()
 
-    # ── Tab 2: PaperTradeValidator ────────────────────────────
-    with tab_validator:
-        st.subheader('模拟实盘一致性验证')
-        st.caption('对比回测成交价与模拟撮合价偏差，目标：|偏差| ≤ 20 bps，通过率 ≥ 90%')
+                    st.success('BL 权重计算完成！')
+
+                    # 对比三种权重
+                    comp_df = pd.DataFrame({
+                        '标的': list(returns_dict_bl.keys()),
+                        'Black-Litterman': w_bl,
+                        '等权基准':  w_eq,
+                        '全局最小方差': w_gmv,
+                    })
+
+                    fig = px.bar(
+                        comp_df.melt(id_vars='标的', var_name='方法', value_name='权重'),
+                        x='标的', y='权重', color='方法', barmode='group',
+                        title='BL 权重 vs 基准方法',
+                        color_discrete_sequence=px.colors.qualitative.Set1,
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    st.dataframe(comp_df, hide_index=True, use_container_width=True)
+
+                except Exception as e:
+                    st.error(f'BL 计算失败: {e}')
+
+    # ── Tab 3: 策略资金分配 ───────────────────────────────────
+    with tab_alloc:
+        st.subheader('多策略资金分配（PortfolioAllocator）')
 
         try:
-            from core.paper_trade_validator import PaperTradeValidator
-            from core.brokers.simulated import SimConfig, SimulatedBroker
-            validator_available = True
+            from core.portfolio_allocator import AllocConfig, PortfolioAllocator, WeightMode
+            alloc_ok = True
         except ImportError as e:
-            st.error(f'PaperTradeValidator 导入失败: {e}')
-            validator_available = False
+            st.error(f'PortfolioAllocator 导入失败: {e}')
+            alloc_ok = False
 
-        if validator_available:
-            # 查找已有报告
-            reports = sorted(
-                [f for f in os.listdir(OUTPUTS_DIR) if f.startswith('paper_trade_validation')],
-                reverse=True,
-            ) if os.path.exists(OUTPUTS_DIR) else []
+        if alloc_ok:
+            cfg_a = load_trading_config()
+            strategies_cfg = cfg_a.get('strategies', {})
+            portfolio_cfg  = cfg_a.get('portfolio', {})
+            total_capital  = float(portfolio_cfg.get('capital', 100_000))
 
-            if reports:
-                st.success(f'找到 {len(reports)} 份历史验证报告')
-                selected = st.selectbox('查看报告', reports)
+            col_cfg, col_res = st.columns([1, 2])
+
+            with col_cfg:
+                total_capital = st.number_input(
+                    '总资金（元）', value=total_capital,
+                    min_value=10_000.0, step=10_000.0, format='%.0f',
+                )
+                mode_label = st.selectbox(
+                    '权重模式',
+                    ['等权 (EQUAL)', '固定权重 (FIXED)', '风险平价 (RISK_PARITY)'],
+                )
+                mode_map = {
+                    '等权 (EQUAL)': WeightMode.EQUAL,
+                    '固定权重 (FIXED)': WeightMode.FIXED,
+                    '风险平价 (RISK_PARITY)': WeightMode.RISK_PARITY,
+                }
+                weight_mode = mode_map[mode_label]
+                reserve_pct = st.slider('保留现金 (%)', 0, 20, 5, step=1)
+                reserve = reserve_pct / 100
+
+                st.markdown('**策略权重（固定权重模式）**')
+                custom_weights = {}
+                default_names = list(strategies_cfg.keys()) or ['RSI', 'MACD', 'Bollinger']
+                for name in default_names:
+                    w = st.number_input(
+                        f'{name}', value=1.0 / len(default_names),
+                        min_value=0.0, max_value=1.0, step=0.05,
+                        key=f'w_alloc_{name}', format='%.2f',
+                    )
+                    custom_weights[name] = w
+
+            with col_res:
                 try:
-                    with open(os.path.join(OUTPUTS_DIR, selected), encoding='utf-8') as f:
-                        rpt_data = json.load(f)
-                    summary = rpt_data.get('summary', {})
-                    c1, c2, c3, c4 = st.columns(4)
-                    passed = summary.get('passed', False)
-                    c1.metric('验证结论', 'PASS' if passed else 'FAIL',
-                              delta='合格' if passed else '不合格')
-                    c2.metric('交易总数', summary.get('n_trades', 0))
-                    c3.metric('通过率', f"{summary.get('pass_rate', 0):.1%}")
-                    c4.metric('平均偏差', f"{summary.get('avg_deviation_bps', 0):.2f} bps")
+                    config = AllocConfig(
+                        mode=weight_mode, reserve_ratio=reserve,
+                        min_strategy_weight=0.05, max_strategy_weight=0.60,
+                    )
+                    allocator = PortfolioAllocator(
+                        total_capital=total_capital, config=config
+                    )
+                    for name in default_names:
+                        w = custom_weights[name] if weight_mode == WeightMode.FIXED else None
+                        allocator.add_strategy(name, weight=w)
 
-                    if rpt_data.get('large_deviations'):
-                        with st.expander(f'大偏差明细（> 50 bps）— {len(rpt_data["large_deviations"])} 条'):
-                            st.dataframe(pd.DataFrame(rpt_data['large_deviations']),
-                                         hide_index=True, use_container_width=True)
-                    if rpt_data.get('notes'):
-                        for note in rpt_data['notes']:
-                            st.warning(note)
+                    positions = load_positions()
+                    pos_by_sym = {p['symbol']: p for p in positions if p.get('shares', 0) > 0}
+                    for name in default_names:
+                        strat_cfg = strategies_cfg.get(name, {})
+                        sym = strat_cfg.get('symbol', '')
+                        if sym and sym in pos_by_sym:
+                            p = pos_by_sym[sym]
+                            snap = load_realtime(sym)
+                            cur = snap.get('price', p.get('entry_price', 0))
+                            allocator.update_usage(name, cur * p['shares'])
+
+                    summary = allocator.summary()
+                    strat_info = summary['strategies']
+
+                    rows_a = []
+                    for sname, info in strat_info.items():
+                        rows_a.append({
+                            '策略':    sname,
+                            '权重':    f'{info["weight"]:.1%}',
+                            '额度(¥)': f'{info["budget"]:,.0f}',
+                            '已用(¥)': f'{info["used"]:,.0f}',
+                            '可用(¥)': f'{info["available"]:,.0f}',
+                            '利用率':  f'{info["utilization"]:.1%}',
+                        })
+                    st.dataframe(pd.DataFrame(rows_a), hide_index=True, use_container_width=True)
+
+                    s1, s2, s3, s4 = st.columns(4)
+                    s1.metric('总资金', f'¥{summary["total_capital"]:,.0f}')
+                    s2.metric('已分配', f'¥{summary["total_budget"]:,.0f}')
+                    s3.metric('已使用', f'¥{summary["total_used"]:,.0f}')
+                    s4.metric('保留现金', f'¥{summary["reserve"]:,.0f}')
+
+                    # 饼图
+                    if rows_a:
+                        budgets = [float(r['额度(¥)'].replace(',', '')) for r in rows_a]
+                        fig_a = px.pie(
+                            names=[r['策略'] for r in rows_a],
+                            values=budgets,
+                            title='策略资金分配',
+                            color_discrete_sequence=px.colors.qualitative.Set2,
+                        )
+                        fig_a.update_layout(height=300)
+                        st.plotly_chart(fig_a, use_container_width=True)
+
+                    # 再平衡检测
+                    st.markdown('---')
+                    current_mv = {name: strat_info[name]['used'] for name in strat_info}
+                    if allocator.needs_rebalance(current_mv):
+                        st.warning('持仓偏离超阈值，建议再平衡。')
+                        if st.button('执行再平衡'):
+                            new_budgets = allocator.rebalance(trigger='manual')
+                            st.success(f'再平衡完成：{new_budgets}')
+                    else:
+                        st.success('持仓权重正常，无需再平衡。')
+
                 except Exception as e:
-                    st.error(f'读取报告失败: {e}')
-            else:
-                st.info('暂无验证报告。可在下方运行快速验证。')
+                    st.error(f'分配计算失败: {e}')
+
+
+# ============================================================
+# Page 5: 信号 & 执行
+# ============================================================
+
+elif page == '📈 信号 & 执行':
+    st.title('📈 信号 & 执行')
+    st.caption('实时信号 · VWAP/TWAP 算法下单 · 市场冲击估算 · 成交记录')
+
+    tab_sig, tab_algo, tab_trades = st.tabs(
+        ['📡 实时信号', '⚡ 算法下单', '📋 成交记录']
+    )
+
+    # ── Tab 1: 信号 ───────────────────────────────────────────
+    with tab_sig:
+        signals   = load_signals(50)
+        positions = load_positions()
+        watchlist = load_watchlist()
+
+        # 持仓行情
+        active = [p for p in positions if p.get('shares', 0) > 0]
+        if active:
+            st.subheader(f'当前持仓（{len(active)} 只）')
+            pos_rows = []
+            for p in active:
+                sym  = p['symbol']
+                snap = load_realtime(sym)
+                cur  = snap.get('price', 0) if snap else 0
+                entry = float(p.get('entry_price', 0) or 0)
+                pnl_pct = (cur / entry - 1) * 100 if entry > 0 and cur > 0 else 0
+                lu  = limit_up_pct(sym) * 100
+                pos_rows.append({
+                    '标的':   sym,
+                    '持仓':   p.get('shares', 0),
+                    '成本':   f'{entry:.2f}',
+                    '现价':   f'{cur:.2f}' if cur else '—',
+                    '涨跌%':  f'{snap.get("pct", 0):+.2f}%' if snap else '—',
+                    '盈亏%':  f'{pnl_pct:+.2f}%',
+                    '距涨停': f'{lu - snap.get("pct", 0):.1f}%' if snap else '—',
+                    '量比':   f'{snap.get("vol_ratio", 0):.1f}' if snap and snap.get("vol_ratio") else '—',
+                })
+            st.dataframe(pd.DataFrame(pos_rows), hide_index=True, use_container_width=True)
+            st.markdown('---')
+
+        # 信号列表
+        st.subheader('交易信号')
+        if signals:
+            sig_rows = []
+            for s in signals[:30]:
+                d = s.get('direction', '')
+                sig_rows.append({
+                    '时间':   str(s.get('timestamp', s.get('created_at', '')))[:16],
+                    '标的':   s.get('symbol', ''),
+                    '方向':   f"🟢 BUY" if d == 'BUY' else f"🔴 SELL" if d == 'SELL' else d,
+                    '价格':   s.get('price', '—'),
+                    '强度':   f"{float(s.get('strength', 0)):.3f}",
+                    '因子':   s.get('factor', s.get('signal_type', '')),
+                })
+            st.dataframe(pd.DataFrame(sig_rows), hide_index=True, use_container_width=True)
+        else:
+            st.info('暂无信号记录')
+
+        # 自选股
+        if watchlist:
+            st.markdown('---')
+            st.subheader('自选股行情')
+            wl_rows = []
+            for item in watchlist[:10]:
+                sym = item if isinstance(item, str) else item.get('symbol', '')
+                if not sym:
+                    continue
+                snap = load_realtime(sym)
+                wl_rows.append({
+                    '标的':  sym,
+                    '现价':  f'{snap.get("price", 0):.2f}' if snap else '—',
+                    '涨跌%': f'{snap.get("pct", 0):+.2f}%' if snap else '—',
+                    '最高':  f'{snap.get("high", 0):.2f}' if snap else '—',
+                    '最低':  f'{snap.get("low", 0):.2f}' if snap else '—',
+                })
+            if wl_rows:
+                st.dataframe(pd.DataFrame(wl_rows), hide_index=True, use_container_width=True)
+
+    # ── Tab 2: 算法下单 ───────────────────────────────────────
+    with tab_algo:
+        st.subheader('算法订单（VWAP / TWAP）')
+        st.caption('SimulatedBroker 模拟撮合 · A 股整手 · Almgren-Chriss 市场冲击预估')
+
+        try:
+            from core.execution.vwap_executor import VWAPExecutor
+            from core.execution.twap_executor import TWAPExecutor
+            from core.execution.impact_estimator import ImpactEstimator
+            from core.brokers.simulated import SimulatedBroker, SimConfig
+            from core.oms import OMS
+            algo_ok = True
+        except ImportError as e:
+            st.error(f'执行模块加载失败: {e}')
+            algo_ok = False
+
+        if algo_ok:
+            col_form, col_impact = st.columns([1, 1])
+
+            with col_form:
+                algo_sym  = st.text_input('标的', '000001.SZ', key='algo_sym')
+                algo_dir  = st.radio('方向', ['BUY', 'SELL'], horizontal=True)
+                algo_shares = st.number_input('数量（股）', 100, 100000, 1000, step=100)
+                algo_type = st.selectbox('算法类型', ['VWAP', 'TWAP'])
+                algo_dur  = st.slider('执行时长（分钟）', 5, 120, 30, step=5)
+                algo_slices = st.slider('切片数量', 3, 20, 10)
+
+            with col_impact:
+                st.subheader('市场冲击预估')
+                snap_a = load_realtime(algo_sym)
+                ref_price = snap_a.get('price', 0) if snap_a else 0
+
+                if ref_price > 0:
+                    st.metric('参考价格', f'¥{ref_price:.2f}')
+                    est_order_value = algo_shares * ref_price
+                    st.metric('订单金额', f'¥{est_order_value:,.0f}')
+
+                market_vol = st.number_input(
+                    '市场日均成交量（股，估算）', 100_000, 100_000_000, 1_000_000, step=100_000,
+                )
+
+                try:
+                    estimator = ImpactEstimator()
+                    impact_bps = estimator.estimate(algo_shares, market_vol)
+                    perm_bps, temp_bps = estimator.decompose(algo_shares, market_vol)
+                    participation_rate = algo_shares / market_vol
+
+                    st.metric('估算总冲击', f'{impact_bps:.2f} bps',
+                              delta=f'参与率 {participation_rate:.2%}')
+                    i1, i2 = st.columns(2)
+                    i1.metric('永久冲击', f'{perm_bps:.2f} bps')
+                    i2.metric('临时冲击', f'{temp_bps:.2f} bps')
+
+                    if ref_price > 0:
+                        cost_rmb = estimator.estimate_cost(algo_shares, market_vol, ref_price)
+                        st.metric('估算冲击成本', f'¥{cost_rmb:.2f}')
+
+                    max_qty = estimator.max_order_size(market_vol, max_impact_bps=20.0)
+                    st.caption(f'20 bps 冲击限制下最大可下量：{max_qty:,} 股')
+                except Exception as e:
+                    st.warning(f'冲击估算失败: {e}')
 
             st.markdown('---')
-            st.subheader('快速验证（基于信号数据）')
-            st.caption('从最近信号中提取参考价，通过 SimulatedBroker 撮合，计算偏差')
-
-            slippage = st.slider('模拟滑点 (bps)', 0.0, 50.0, 5.0, step=1.0)
-            threshold = st.slider('偏差阈值 (bps)', 5.0, 50.0, 20.0, step=5.0)
-
-            if st.button('运行一致性验证'):
-                signals = load_signals(30)
-                # 从信号中构造验证信号列表
-                valid_sigs = [
-                    {'symbol': s['symbol'], 'direction': s.get('direction', 'BUY'),
-                     'price': float(s.get('price', 0) or 0), 'shares': 100}
-                    for s in signals
-                    if s.get('price') and float(s.get('price', 0)) > 0
-                ]
-                if not valid_sigs:
-                    # 从 watchlist 和 positions 创建测试信号
-                    positions = load_positions()
-                    for p in positions[:5]:
-                        snap = load_realtime(p['symbol'])
-                        if snap and snap.get('price'):
-                            valid_sigs.append({
-                                'symbol': p['symbol'], 'direction': 'BUY',
-                                'price': snap['price'], 'shares': 100,
-                            })
-
-                if valid_sigs:
+            if st.button('模拟执行算法订单', type='primary'):
+                with st.spinner(f'模拟 {algo_type} 执行...'):
                     try:
                         broker = SimulatedBroker(SimConfig(
                             initial_cash=10_000_000,
                             price_source='manual',
-                            slippage_bps=slippage,
+                            slippage_bps=5.0,
                             commission_rate=0.0003,
                             stamp_tax_rate=0.001,
                             enforce_lot=True,
                         ))
                         broker.connect()
-                        validator = PaperTradeValidator(
-                            threshold_bps=threshold, large_dev_bps=50.0,
+                        oms = OMS(broker=broker)
+
+                        result = oms.submit_algo_order(
+                            algo=algo_type,
+                            symbol=algo_sym,
+                            direction=algo_dir,
+                            total_shares=int(algo_shares),
+                            duration_minutes=algo_dur,
+                            reference_price=ref_price if ref_price > 0 else 10.0,
+                            slice_interval=algo_dur / algo_slices,
                         )
-                        report = validator.validate_from_signals(valid_sigs, broker)
 
-                        c1, c2, c3, c4 = st.columns(4)
-                        c1.metric('结论', 'PASS' if report.passed else 'FAIL')
-                        c2.metric('验证笔数', report.n_trades)
-                        c3.metric('通过率', f'{report.pass_rate:.1%}')
-                        c4.metric('平均偏差', f'{report.avg_deviation_bps:.2f} bps')
+                        st.success('算法订单执行完成！')
+                        r1, r2, r3, r4 = st.columns(4)
+                        r1.metric('成交率', f'{result.fill_rate:.1%}')
+                        r2.metric('成交股数', f'{result.filled_shares:,}')
+                        r3.metric('均价', f'¥{result.avg_fill_price:.3f}')
+                        r4.metric('实际滑点', f'{result.slippage_bps:.2f} bps')
 
-                        if report.comparisons:
-                            comp_data = [
-                                {'标的': c.symbol, '方向': c.direction,
-                                 '回测价': c.bt_price, '实盘价': c.live_price,
-                                 '偏差bps': c.deviation_bps, '合格': c.within_threshold,
-                                 '分类': c.cause}
-                                for c in report.comparisons
-                            ]
-                            st.dataframe(pd.DataFrame(comp_data), hide_index=True,
-                                         use_container_width=True)
+                        # 切片明细
+                        if result.slices:
+                            slice_df = pd.DataFrame([{
+                                '切片': s.slice_id,
+                                '目标股数': s.target_shares,
+                                '成交股数': s.filled_shares,
+                                '成交价': f'{s.fill_price:.3f}' if s.fill_price else '—',
+                                '状态': s.status,
+                            } for s in result.slices])
+                            with st.expander('切片明细'):
+                                st.dataframe(slice_df, hide_index=True, use_container_width=True)
 
-                        for note in report.notes:
-                            st.warning(note)
-
-                        if st.button('保存验证报告'):
-                            path = report.save()
-                            st.success(f'已保存至: {path}')
                     except Exception as e:
-                        st.error(f'验证运行失败: {e}')
-                else:
-                    st.warning('无可用信号数据，无法运行验证')
+                        st.error(f'订单执行失败: {e}')
+
+    # ── Tab 3: 成交记录 ───────────────────────────────────────
+    with tab_trades:
+        st.subheader('成交记录（含 TCA）')
+        trades = load_trades(200)
+
+        if trades:
+            try:
+                from core.tca import TCAAnalyzer
+                tca = TCAAnalyzer.from_trade_dicts(trades)
+                rpt = tca.analyze()
+
+                t1, t2, t3, t4 = st.columns(4)
+                t1.metric('样本笔数', rpt.n_trades)
+                t2.metric('平均 IS', f'{rpt.avg_is_bps:.2f} bps')
+                t3.metric('平均总成本', f'{rpt.avg_total_cost_bps:.2f} bps')
+                t4.metric('建议滑点参数', f'{rpt.recommended_slippage_bps:.0f} bps')
+
+                if rpt.monthly and len(rpt.monthly) > 1:
+                    monthly_df = pd.DataFrame([
+                        {'月份': k, 'avg IS (bps)': v['avg_is_bps']}
+                        for k, v in sorted(rpt.monthly.items())
+                    ]).set_index('月份')
+                    st.line_chart(monthly_df)
+
+                st.markdown('---')
+            except Exception:
+                pass
+
+            rows_t = []
+            for t in trades[:100]:
+                rows_t.append({
+                    '时间':   str(t.get('timestamp', t.get('created_at', '')))[:16],
+                    '标的':   t.get('symbol', ''),
+                    '方向':   t.get('direction', ''),
+                    '股数':   t.get('shares', 0),
+                    '成交价': f'{float(t.get("price", 0)):.3f}',
+                    '佣金':   f'{float(t.get("commission", 0)):.2f}',
+                    '印花税': f'{float(t.get("stamp_tax", 0)):.2f}',
+                    '滑点bps': t.get('slippage_bps', '—'),
+                })
+            st.dataframe(pd.DataFrame(rows_t), hide_index=True, use_container_width=True)
+        else:
+            st.info('暂无成交记录')
 
 
 # ============================================================
-# Page 6: 数据质量
+# Page 6: 回测验证
 # ============================================================
 
-elif page == '🔍 数据质量':
-    st.title('🔍 数据质量')
+elif page == '📉 回测验证':
+    st.title('📉 回测验证')
+    st.caption('Walk-Forward 分析 · 参数敏感性热力图 · 模拟实盘一致性验证')
 
-    tab_l2, tab_fetcher = st.tabs(['Level2 盘口完整率', '数据源健康状态'])
+    tab_wfa, tab_sens, tab_val = st.tabs(
+        ['📈 Walk-Forward', '🌡️ 敏感性分析', '✅ 一致性验证']
+    )
 
-    # ── Tab 1: Level2 quality ─────────────────────────────────
-    with tab_l2:
-        st.subheader('Level2 盘口数据完整率')
-        st.caption('目标：连续采集 5 个交易日，23 个字段完整率 > 95%')
+    # ── Tab 1: WFA ────────────────────────────────────────────
+    with tab_wfa:
+        wf = load_wf_results(30)
+        if wf:
+            st.subheader(f'历史 WFA 结果（{len(wf)} 条）')
+            rows_w = []
+            for r in wf:
+                try:
+                    params = json.loads(r.get('best_params', '{}'))
+                except Exception:
+                    params = {}
+                rows_w.append({
+                    '窗口':       r.get('window', '?'),
+                    '标的':       r.get('symbol', ''),
+                    '策略':       r.get('strategy', ''),
+                    '训练Sharpe': f"{r.get('train_sharpe', 0):.2f}",
+                    '测试Sharpe': f"{r.get('test_sharpe', 0):.2f}",
+                    '测试收益%':  f"{r.get('test_return_pct', 0):+.1f}%",
+                    '胜率%':      f"{r.get('test_winrate_pct', 0):.0f}%",
+                    '最大回撤%':  f"{r.get('test_maxdd_pct', 0):.1f}%",
+                })
+            df_wf = pd.DataFrame(rows_w)
+            st.dataframe(df_wf, hide_index=True, use_container_width=True)
+
+            # OOS Sharpe 柱图
+            sharpes = [float(r.get('test_sharpe', 0)) for r in wf]
+            fig_wf = px.bar(
+                x=[r.get('window', i) for i, r in enumerate(wf)],
+                y=sharpes,
+                color=sharpes,
+                color_continuous_scale='RdYlGn',
+                title='Walk-Forward OOS Sharpe 分布',
+                labels={'x': '窗口', 'y': 'OOS Sharpe'},
+            )
+            fig_wf.add_hline(y=0, line_dash='dash', line_color='gray')
+            fig_wf.update_layout(margin=dict(t=40, b=20))
+            st.plotly_chart(fig_wf, use_container_width=True)
+
+            pos_ratio = sum(1 for s in sharpes if s > 0) / len(sharpes) if sharpes else 0
+            st.metric('正 Sharpe 窗口比例', f'{pos_ratio:.1%}',
+                      delta='合格 ≥ 60%' if pos_ratio >= 0.6 else '不足 60%')
+        else:
+            st.info('暂无 WFA 结果。运行脚本：`python scripts/walkforward_job.py --symbol 510310.SH`')
+
+        st.markdown('---')
+        st.subheader('运行新 WFA')
+        cfg_w = load_trading_config()
+        live_syms_w = cfg_w.get('live_symbols', [])
+        sym_opts_w = [s['symbol'] for s in live_syms_w] if live_syms_w else ['510310.SH']
+
+        cw1, cw2, cw3 = st.columns(3)
+        with cw1: wfa_sym = st.selectbox('标的', sym_opts_w)
+        with cw2: wfa_strat = st.selectbox('策略', ['RSI', 'MACD', 'Bollinger'])
+        with cw3: wfa_yrs = st.number_input('训练年数', 1, 5, 2)
+        wfa_test_yrs = st.number_input('验证年数', 1, 3, 1)
+
+        if st.button('开始 WFA', disabled=not backend_ok):
+            import subprocess
+            cmd = [
+                sys.executable,
+                os.path.join(BASE_DIR, 'scripts', 'walkforward_job.py'),
+                '--symbol', wfa_sym, '--strategy', wfa_strat,
+                '--train-years', str(int(wfa_yrs)), '--test-years', str(int(wfa_test_yrs)),
+            ]
+            with st.spinner(f'训练 {wfa_sym} ({wfa_strat}) ...'):
+                try:
+                    result = subprocess.run(
+                        cmd, capture_output=True, encoding='utf-8', errors='replace', timeout=600,
+                    )
+                    if result.returncode == 0:
+                        st.success('WFA 完成')
+                        st.cache_data.clear()
+                    else:
+                        st.warning(f'退出码 {result.returncode}')
+                    st.code(result.stdout[-3000:] or '（无输出）', language='text')
+                except subprocess.TimeoutExpired:
+                    st.error('训练超时（> 600s）')
+                except Exception as e:
+                    st.error(f'运行失败: {e}')
+
+    # ── Tab 2: 敏感性分析 ─────────────────────────────────────
+    with tab_sens:
+        st.subheader('参数敏感性热力图')
+        st.caption('双参数网格扫描 → Sharpe 热力图，peak_sensitivity_ratio 量化稳健度')
 
         try:
-            from core.level2_quality import Level2QualityCollector, Level2QualityReporter
-            l2_available = True
+            from core.walkforward import SensitivityAnalyzer
+            sens_available = True
         except ImportError as e:
-            st.error(f'level2_quality 导入失败: {e}')
-            l2_available = False
+            st.error(f'SensitivityAnalyzer 加载失败: {e}')
+            sens_available = False
 
-        if l2_available:
-            default_db = os.path.join(DATA_DIR, 'level2_snapshots.db')
-            db_path = st.text_input('数据库路径', value=default_db)
-            days = st.slider('分析天数', 1, 30, 5)
-            threshold_pct = st.slider('完整率阈值 (%)', 50, 100, 95, step=1, format='%d%%')
-            threshold = threshold_pct / 100
+        if sens_available:
+            cfg_s = load_trading_config()
+            live_syms_s = cfg_s.get('live_symbols', [])
+            sym_opts_s = [s['symbol'] for s in live_syms_s] if live_syms_s else ['510310.SH']
+            sens_sym = st.selectbox('标的', sym_opts_s, key='sens_sym')
 
-            col_btn, col_status = st.columns([1, 3])
-            with col_btn:
-                run_report = st.button('生成质量报告')
-            with col_status:
-                if os.path.exists(db_path):
-                    try:
-                        collector = Level2QualityCollector([], db_path=db_path)
-                        counts    = collector.n_snapshots
-                        total_snaps = sum(counts.values())
-                        st.info(f'数据库存在 · {len(counts)} 个标的 · 共 {total_snaps} 条快照')
-                    except Exception as e:
-                        st.warning(f'数据库状态读取失败: {e}')
-                else:
-                    st.warning('数据库不存在，请先运行采集器收集数据')
+            col_s1, col_s2 = st.columns(2)
+            with col_s1:
+                p1_name = st.text_input('参数 1 名称', 'rsi_period')
+                p1_vals = st.text_input('参数 1 取值（逗号分隔）', '7,10,14,21,28')
+            with col_s2:
+                p2_name = st.text_input('参数 2 名称', 'atr_mult')
+                p2_vals = st.text_input('参数 2 取值（逗号分隔）', '2,2.5,3,3.5,4')
 
-            if run_report:
+            if st.button('运行敏感性分析', disabled=not backend_ok):
                 try:
-                    reporter = Level2QualityReporter(db_path)
-                    report   = reporter.generate(days=days, threshold=threshold)
-
-                    # 总体指标
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric('总体结论', 'PASS' if report.passed else 'FAIL')
-                    c2.metric('总体完整率', f'{report.overall_completeness:.1%}')
-                    c3.metric('分析天数', report.days_analyzed)
-                    c4.metric('覆盖标的', len(report.symbols))
-
-                    if report.notes:
-                        for note in report.notes:
-                            st.warning(note)
-
-                    # 各标的明细
-                    if report.symbols:
-                        rows = []
-                        for sq in report.symbols:
-                            rows.append({
-                                '标的':    sq.symbol,
-                                '快照数':  sq.n_snapshots,
-                                '交易日数': sq.trading_days,
-                                '平均间隔': f'{sq.avg_interval_sec:.0f}s',
-                                '完整率':  f'{sq.overall_completeness:.1%}',
-                                '状态':    '✓ 合格' if sq.passed else '✗ 不合格',
-                            })
-                        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-
-                        # 字段明细（第一个标的）
-                        if report.symbols[0].field_stats:
-                            with st.expander(f'{report.symbols[0].symbol} 字段明细'):
-                                frows = [
-                                    {'字段': fq.field_name, '总数': fq.total,
-                                     '有效': fq.valid, '完整率': f'{fq.completeness:.1%}',
-                                     '合格': '✓' if fq.passed else '✗'}
-                                    for fq in report.symbols[0].field_stats
-                                ]
-                                st.dataframe(pd.DataFrame(frows), hide_index=True,
-                                             use_container_width=True)
-
-                    if st.button('保存报告到 outputs/'):
-                        path = report.save()
-                        st.success(f'已保存: {path}')
-
+                    p1 = [float(v.strip()) for v in p1_vals.split(',') if v.strip()]
+                    p2 = [float(v.strip()) for v in p2_vals.split(',') if v.strip()]
+                    import subprocess
+                    cmd_s = [
+                        sys.executable,
+                        os.path.join(BASE_DIR, 'scripts', 'sensitivity_job.py'),
+                        '--symbol', sens_sym,
+                        '--param1', p1_name, '--p1-values', ','.join(str(v) for v in p1),
+                        '--param2', p2_name, '--p2-values', ','.join(str(v) for v in p2),
+                    ]
+                    with st.spinner('敏感性扫描中...'):
+                        res_s = subprocess.run(
+                            cmd_s, capture_output=True, encoding='utf-8', timeout=300,
+                        )
+                    if res_s.returncode == 0:
+                        st.success('完成')
+                        heat_path = os.path.join(OUTPUTS_DIR, f'sensitivity_{sens_sym}.png')
+                        if os.path.exists(heat_path):
+                            st.image(heat_path, caption='Sharpe 热力图')
+                    else:
+                        st.warning(res_s.stderr[-1000:] or '脚本未返回输出')
+                except FileNotFoundError:
+                    st.info('scripts/sensitivity_job.py 不存在，请自行运行 SensitivityAnalyzer。')
                 except Exception as e:
-                    st.error(f'生成报告失败: {e}')
+                    st.error(f'运行失败: {e}')
+
+            # 显示已有热力图
+            if os.path.exists(OUTPUTS_DIR):
+                heatmaps = [f for f in os.listdir(OUTPUTS_DIR) if f.startswith('sensitivity_')]
+                if heatmaps:
+                    st.markdown('---')
+                    selected_hm = st.selectbox('已有热力图', heatmaps, key='sel_hm')
+                    st.image(os.path.join(OUTPUTS_DIR, selected_hm))
+
+    # ── Tab 3: 一致性验证 ─────────────────────────────────────
+    with tab_val:
+        st.subheader('模拟实盘一致性验证')
+        st.caption('对比回测成交价 vs 模拟撮合价，目标：|偏差| ≤ 20 bps，通过率 ≥ 90%')
+
+        try:
+            from core.paper_trade_validator import PaperTradeValidator
+            from core.brokers.simulated import SimConfig, SimulatedBroker
+            val_ok = True
+        except ImportError as e:
+            st.error(f'PaperTradeValidator 加载失败: {e}')
+            val_ok = False
+
+        if val_ok:
+            # 历史报告
+            reports = sorted(
+                [f for f in os.listdir(OUTPUTS_DIR) if f.startswith('paper_trade')],
+                reverse=True,
+            ) if os.path.exists(OUTPUTS_DIR) else []
+
+            if reports:
+                st.success(f'找到 {len(reports)} 份历史报告')
+                selected_r = st.selectbox('查看报告', reports)
+                try:
+                    with open(os.path.join(OUTPUTS_DIR, selected_r), encoding='utf-8') as f:
+                        rpt_data = json.load(f)
+                    summary_v = rpt_data.get('summary', {})
+                    passed = summary_v.get('passed', False)
+                    vc1, vc2, vc3, vc4 = st.columns(4)
+                    vc1.metric('结论', 'PASS' if passed else 'FAIL')
+                    vc2.metric('交易总数', summary_v.get('n_trades', 0))
+                    vc3.metric('通过率', f"{summary_v.get('pass_rate', 0):.1%}")
+                    vc4.metric('平均偏差', f"{summary_v.get('avg_deviation_bps', 0):.2f} bps")
+                except Exception as e:
+                    st.error(f'读取报告失败: {e}')
+            else:
+                st.info('暂无历史报告')
 
             st.markdown('---')
-            st.subheader('采集器使用说明')
-            st.code("""\
-from core.level2_quality import Level2QualityCollector
+            st.subheader('快速验证')
+            slippage_v  = st.slider('模拟滑点 (bps)', 0.0, 50.0, 5.0, step=1.0, key='val_slip')
+            threshold_v = st.slider('偏差阈值 (bps)', 5.0, 50.0, 20.0, step=5.0, key='val_th')
 
-# 启动后台采集（每 30 秒一次）
-collector = Level2QualityCollector(
-    symbols=['600519.SH', '000858.SZ', '510310.SH'],
-    db_path='data/level2_snapshots.db',
-)
-collector.start(interval=30)
-
-# 手动触发一次
-# n = collector.collect_once()
-
-# 停止
-# collector.stop()
-""", language='python')
-
-    # ── Tab 2: 数据源健康 ─────────────────────────────────────
-    with tab_fetcher:
-        st.subheader('数据源健康状态')
-        status_data = api_get('/data/status', timeout=5)
-        if status_data.get('status') == 'ok':
-            fetcher_status = status_data.get('status', {})
-            fetchers = status_data.get('fetchers', [])
-            if fetchers:
-                rows = []
-                for fname in fetchers:
-                    fs = fetcher_status.get(fname, {}) if isinstance(fetcher_status, dict) else {}
-                    rows.append({
-                        '数据源':  fname,
-                        '状态':    fs.get('state', '—'),
-                        '失败次数': fs.get('failures', 0),
-                        '可用':    '✓' if fs.get('available', True) else '✗',
-                    })
-                st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-            else:
-                st.info('暂无数据源状态信息')
-        else:
-            st.warning('Backend 未连接，无法获取数据源状态')
-
-        st.markdown('---')
-        st.subheader('实时数据测试')
-        test_sym = st.text_input('测试标的', value='510310.SH')
-        if st.button('获取实时行情'):
-            snap = load_realtime(test_sym)
-            if snap:
-                c1, c2, c3 = st.columns(3)
-                c1.metric('现价', f'¥{snap.get("price", 0):.3f}')
-                c2.metric('涨跌幅', f'{snap.get("pct", 0):+.2f}%')
-                c3.metric('量比', f'{snap.get("vol_ratio", 0):.2f}x' if snap.get('vol_ratio') else '—')
-                st.json(snap)
-            else:
-                st.error(f'获取 {test_sym} 行情失败（网络或格式问题）')
-
-        st.markdown('---')
-        st.subheader('历史数据测试')
-        hist_sym = st.text_input('历史数据标的', value='510310.SH', key='hist_sym')
-        hist_days = st.number_input('天数', value=30, min_value=5, max_value=500)
-        if st.button('获取历史数据'):
-            data = api_get(f'/data/daily/{hist_sym}?days={hist_days}', timeout=15)
-            if data.get('data'):
-                df_hist = pd.DataFrame(data['data'])
-                st.success(f'获取 {len(df_hist)} 条数据')
-                if 'date' in df_hist.columns and 'close' in df_hist.columns:
-                    fig = px.line(df_hist, x='date', y='close',
-                                  title=f'{hist_sym} 收盘价')
-                    st.plotly_chart(fig, use_container_width=True)
-                st.dataframe(df_hist.tail(10), hide_index=True, use_container_width=True)
-            else:
-                st.error(f'获取历史数据失败: {data.get("error", "未知错误")}')
-
-
-# ============================================================
-# Page 7: 策略健康
-# ============================================================
-
-elif page == '🏥 策略健康':
-    st.title('🏥 策略健康')
-    st.caption('Rolling Sharpe · 连续亏损 · TCA · CVaR / Monte Carlo')
-
-    daily_stats = load_daily_stats(250)
-
-    if not daily_stats:
-        st.info('暂无日度统计数据（backend 未连接或 portfolio.db 无记录）')
-        st.stop()
-
-    # ── StrategyHealthMonitor ─────────────────────────────────
-    try:
-        from core.strategy_health import StrategyHealthMonitor
-        monitor = StrategyHealthMonitor()
-        health_report = monitor.check(daily_stats)
-        health_series = monitor.check_series(daily_stats)
-    except Exception as e:
-        st.warning(f'StrategyHealthMonitor 加载失败: {e}')
-        health_report = None
-        health_series = pd.DataFrame()
-
-    if health_report:
-        level = health_report.worst_level()
-        level_icon = {'OK': '🟢', 'WARN': '🟡', 'CRITICAL': '🔴'}.get(level, '⚪')
-
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric('系统状态', f'{level_icon} {level}')
-        c2.metric('Sharpe(20d)', f'{health_report.rolling_sharpe_20d:.3f}',
-                  delta=f'{health_report.sharpe_change_pct:+.1f}%')
-        c3.metric('Sharpe(60d)', f'{health_report.rolling_sharpe_60d:.3f}')
-        c4.metric('今日收益', f'{health_report.latest_daily_return*100:+.2f}%')
-        c5.metric('连续亏损', f'{health_report.consecutive_loss_days} 天')
-
-        if health_report.alerts:
-            st.markdown('---')
-            for alert in health_report.alerts:
-                fn_map = {'CRITICAL': st.error, 'WARN': st.warning, 'OK': st.success}
-                fn = fn_map.get(alert.level, st.info)
-                pause = ' **【建议暂停自动交易】**' if alert.should_pause else ''
-                fn(f'**[{alert.level}] {alert.check_name}**: {alert.message}{pause}')
-        else:
-            st.success('策略运行正常，无健康告警')
-
-    st.markdown('---')
-
-    # ── Rolling Sharpe 图 ─────────────────────────────────────
-    st.subheader('Rolling Sharpe 时序')
-    if not health_series.empty and 'sharpe_20d' in health_series.columns:
-        chart_df = (
-            health_series[['date', 'sharpe_20d', 'sharpe_60d']]
-            .dropna(subset=['sharpe_20d'])
-            .rename(columns={'sharpe_20d': 'Sharpe(20d)', 'sharpe_60d': 'Sharpe(60d)'})
-            .set_index('date')
-        )
-        st.line_chart(chart_df, use_container_width=True)
-    else:
-        st.info('数据不足（需 ≥ 20 条日度记录）')
-
-    if not health_series.empty and 'win_rate' in health_series.columns:
-        wr_df = (
-            health_series[['date', 'win_rate']].dropna()
-            .assign(win_rate=lambda x: x['win_rate'] * 100)
-            .set_index('date')
-        )
-        st.subheader('近 20 日胜率 (%)')
-        st.line_chart(wr_df, use_container_width=True)
-
-    st.markdown('---')
-
-    # ── TCA ───────────────────────────────────────────────────
-    st.subheader('交易成本分析（TCA）')
-    try:
-        from core.tca import TCAAnalyzer
-        trades_raw = load_trades(500)
-        if trades_raw:
-            tca = TCAAnalyzer.from_trade_dicts(trades_raw)
-            rpt = tca.analyze()
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric('样本笔数',  rpt.n_trades)
-            c2.metric('平均 IS',   f'{rpt.avg_is_bps:.2f} bps')
-            c3.metric('平均总成本', f'{rpt.avg_total_cost_bps:.2f} bps')
-            c4.metric('建议滑点参数', f'{rpt.recommended_slippage_bps:.0f} bps')
-
-            if rpt.by_direction:
-                dir_rows = [
-                    {'方向': d, '笔数': s['n_trades'],
-                     'avg IS (bps)': f"{s['avg_is_bps']:.2f}",
-                     'P95 IS (bps)': f"{s['p95_is_bps']:.2f}",
-                     '总佣金': f"¥{s['total_commission']:,.0f}",
-                     '总印花税': f"¥{s['total_stamp_tax']:,.0f}"}
-                    for d, s in rpt.by_direction.items()
+            if st.button('运行一致性验证'):
+                sigs_v = load_signals(30)
+                valid_sigs = [
+                    {'symbol': s['symbol'], 'direction': s.get('direction', 'BUY'),
+                     'price': float(s.get('price', 0) or 0), 'shares': 100}
+                    for s in sigs_v if s.get('price') and float(s.get('price', 0)) > 0
                 ]
-                st.dataframe(pd.DataFrame(dir_rows), hide_index=True, use_container_width=True)
+                if not valid_sigs:
+                    pos_v = load_positions()
+                    for p in pos_v[:5]:
+                        snap_v = load_realtime(p['symbol'])
+                        if snap_v and snap_v.get('price'):
+                            valid_sigs.append({
+                                'symbol': p['symbol'], 'direction': 'BUY',
+                                'price': snap_v['price'], 'shares': 100,
+                            })
+                if valid_sigs:
+                    try:
+                        broker_v = SimulatedBroker(SimConfig(
+                            initial_cash=10_000_000, price_source='manual',
+                            slippage_bps=slippage_v, commission_rate=0.0003,
+                            stamp_tax_rate=0.001, enforce_lot=True,
+                        ))
+                        broker_v.connect()
+                        validator = PaperTradeValidator(
+                            threshold_bps=threshold_v, large_dev_bps=50.0
+                        )
+                        report_v = validator.validate_from_signals(valid_sigs, broker_v)
 
-            if rpt.monthly and len(rpt.monthly) > 1:
-                monthly_df = pd.DataFrame([
-                    {'月份': k, 'avg IS (bps)': v['avg_is_bps']}
-                    for k, v in sorted(rpt.monthly.items())
-                ]).set_index('月份')
-                st.line_chart(monthly_df, use_container_width=True)
+                        r1, r2, r3, r4 = st.columns(4)
+                        r1.metric('结论', 'PASS' if report_v.passed else 'FAIL')
+                        r2.metric('验证笔数', report_v.n_trades)
+                        r3.metric('通过率', f'{report_v.pass_rate:.1%}')
+                        r4.metric('平均偏差', f'{report_v.avg_deviation_bps:.2f} bps')
+
+                        if report_v.comparisons:
+                            comp_data = [{
+                                '标的': c.symbol, '方向': c.direction,
+                                '回测价': c.bt_price, '实盘价': c.live_price,
+                                '偏差bps': c.deviation_bps, '合格': c.within_threshold,
+                            } for c in report_v.comparisons]
+                            st.dataframe(pd.DataFrame(comp_data), hide_index=True,
+                                         use_container_width=True)
+                        if st.button('保存报告'):
+                            path_v = report_v.save()
+                            st.success(f'已保存至: {path_v}')
+                    except Exception as e:
+                        st.error(f'验证失败: {e}')
+                else:
+                    st.warning('无可用信号数据')
+
+
+# ============================================================
+# Page 7: 监控 & 告警
+# ============================================================
+
+elif page == '🏥 监控 & 告警':
+    st.title('🏥 监控 & 告警')
+    st.caption('策略健康 · CVaR / Monte Carlo · 数据质量 · AlertManager')
+
+    tab_health, tab_data, tab_alert = st.tabs(
+        ['💓 策略健康', '🔍 数据质量', '🔔 告警中心']
+    )
+
+    # ── Tab 1: 策略健康 ───────────────────────────────────────
+    with tab_health:
+        daily_stats = load_daily_stats(250)
+
+        if not daily_stats:
+            st.info('暂无日度统计数据（backend 未连接或 portfolio.db 无记录）')
         else:
-            st.info('暂无成交数据，TCA 需要至少 1 笔成交记录')
-    except Exception as e:
-        st.warning(f'TCA 加载失败: {e}')
+            # StrategyHealthMonitor
+            try:
+                from core.strategy_health import StrategyHealthMonitor
+                monitor = StrategyHealthMonitor()
+                health_report = monitor.check(daily_stats)
+                health_series = monitor.check_series(daily_stats)
+            except Exception as e:
+                st.warning(f'健康监控加载失败: {e}')
+                health_report = None
+                health_series = pd.DataFrame()
 
-    st.markdown('---')
+            if health_report:
+                level = health_report.worst_level()
+                icon  = {'OK': '🟢', 'WARN': '🟡', 'CRITICAL': '🔴'}.get(level, '⚪')
+                hc1, hc2, hc3, hc4, hc5 = st.columns(5)
+                hc1.metric('系统状态', f'{icon} {level}')
+                hc2.metric('Sharpe(20d)', f'{health_report.rolling_sharpe_20d:.3f}',
+                           delta=f'{health_report.sharpe_change_pct:+.1f}%')
+                hc3.metric('Sharpe(60d)', f'{health_report.rolling_sharpe_60d:.3f}')
+                hc4.metric('今日收益', f'{health_report.latest_daily_return*100:+.2f}%')
+                hc5.metric('连续亏损天', f'{health_report.consecutive_loss_days} 天')
 
-    # ── CVaR / Monte Carlo ────────────────────────────────────
-    st.subheader('风险分析（CVaR · Monte Carlo）')
-    try:
-        from core.portfolio_risk import MonteCarloStressTest
-        portfolio = load_portfolio_summary()
-        equity_val = float(portfolio.get('total_equity', 100_000) or 100_000)
+                if health_report.alerts:
+                    for alert in health_report.alerts:
+                        fn = {'CRITICAL': st.error, 'WARN': st.warning, 'OK': st.success}.get(
+                            alert.level, st.info
+                        )
+                        pause = ' **【建议暂停自动交易】**' if alert.should_pause else ''
+                        fn(f'**[{alert.level}] {alert.check_name}**: {alert.message}{pause}')
+                else:
+                    st.success('策略运行正常，无健康告警')
 
-        ret_series = pd.Series([
-            float(s.get('daily_return', 0) if isinstance(s, dict)
-                  else getattr(s, 'daily_return', 0))
-            for s in daily_stats
-        ]).dropna()
+            st.markdown('---')
 
-        if len(ret_series) >= 30:
-            n_sim = st.slider('Monte Carlo 模拟次数', 500, 5000, 2000, step=500)
-            mc = MonteCarloStressTest(n_simulations=n_sim, horizon_days=63, seed=42)
-            mc_result = mc.run(ret_series, initial_equity=equity_val)
+            # Rolling Sharpe 图
+            st.subheader('Rolling Sharpe 时序')
+            if not health_series.empty and 'sharpe_20d' in health_series.columns:
+                chart_df = (
+                    health_series[['date', 'sharpe_20d', 'sharpe_60d']]
+                    .dropna(subset=['sharpe_20d'])
+                    .rename(columns={'sharpe_20d': 'Sharpe(20d)', 'sharpe_60d': 'Sharpe(60d)'})
+                    .set_index('date')
+                )
+                st.line_chart(chart_df, use_container_width=True)
+            else:
+                st.info('数据不足（需 ≥ 20 条日度记录）')
 
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric('P5 净值（63日）', f'¥{mc_result.p5_final:,.0f}',
-                      delta=f'{(mc_result.p5_final/equity_val-1)*100:+.1f}%')
-            c2.metric('P50 净值', f'¥{mc_result.p50_final:,.0f}',
-                      delta=f'{(mc_result.p50_final/equity_val-1)*100:+.1f}%')
-            c3.metric('亏损概率', f'{mc_result.prob_loss*100:.1f}%')
-            c4.metric('ES(95%)', f'{mc_result.expected_shortfall*100:.2f}%')
+            st.markdown('---')
 
-            with st.expander('完整 Monte Carlo 报告'):
-                st.text(mc_result.summary())
-        else:
-            st.info(f'日度数据不足 ({len(ret_series)} 条，需 ≥ 30 条)')
-    except Exception as e:
-        st.warning(f'风险分析加载失败: {e}')
+            # CVaR / Monte Carlo
+            st.subheader('风险分析（CVaR · Monte Carlo）')
+            try:
+                from core.portfolio_risk import MonteCarloStressTest
+                portfolio_mc = load_portfolio_summary()
+                equity_mc = float(portfolio_mc.get('total_equity', 100_000) or 100_000)
 
-    st.markdown('---')
+                ret_series = pd.Series([
+                    float(s.get('daily_return', 0) if isinstance(s, dict)
+                          else getattr(s, 'daily_return', 0))
+                    for s in daily_stats
+                ]).dropna()
 
-    # ── 近期日度明细 ─────────────────────────────────────────
-    st.subheader('近期日度绩效明细（最近 30 天）')
-    tail = daily_stats[-30:][::-1]
-    detail_rows = []
-    for s in tail:
-        d = s if isinstance(s, dict) else {
-            'date': getattr(s, 'date', ''),
-            'daily_return': getattr(s, 'daily_return', 0),
-            'n_trades': getattr(s, 'n_trades', 0),
-            'equity': getattr(s, 'equity', 0),
-        }
-        ret = float(d.get('daily_return', 0))
-        detail_rows.append({
-            '日期':    str(d.get('date', ''))[:10],
-            '日收益':  f'{ret*100:+.2f}%',
-            '交易次数': int(d.get('n_trades', 0)),
-            '净值':    f'¥{float(d.get("equity", 0)):,.0f}',
-            '状态':    '🔴 亏损' if ret < 0 else '🟢 盈利',
-        })
-    if detail_rows:
-        st.dataframe(pd.DataFrame(detail_rows), hide_index=True, use_container_width=True)
-    else:
-        st.info('暂无日度数据')
+                if len(ret_series) >= 30:
+                    n_sim = st.slider('模拟次数', 500, 5000, 2000, step=500)
+                    mc = MonteCarloStressTest(n_simulations=n_sim, horizon_days=63, seed=42)
+                    mc_result = mc.run(ret_series, initial_equity=equity_mc)
+
+                    mc1, mc2, mc3, mc4 = st.columns(4)
+                    mc1.metric('P5 净值（63日）', f'¥{mc_result.p5_final:,.0f}',
+                               delta=f'{(mc_result.p5_final/equity_mc-1)*100:+.1f}%')
+                    mc2.metric('P50 净值', f'¥{mc_result.p50_final:,.0f}',
+                               delta=f'{(mc_result.p50_final/equity_mc-1)*100:+.1f}%')
+                    mc3.metric('亏损概率', f'{mc_result.prob_loss*100:.1f}%')
+                    mc4.metric('ES (95%)', f'{mc_result.expected_shortfall*100:.2f}%')
+
+                    with st.expander('完整 Monte Carlo 报告'):
+                        st.text(mc_result.summary())
+                else:
+                    st.info(f'日度数据不足（{len(ret_series)} 条，需 ≥ 30 条）')
+            except Exception as e:
+                st.warning(f'风险分析失败: {e}')
+
+    # ── Tab 2: 数据质量 ───────────────────────────────────────
+    with tab_data:
+        st.subheader('数据质量')
+
+        # DataQualityChecker
+        try:
+            from core.data_quality import DataQualityChecker
+            dq_sym = st.text_input('检查标的', '000001.SZ', key='dq_sym')
+            dq_days = st.slider('检查天数', 30, 120, 60, key='dq_days')
+
+            if st.button('运行数据质量检查'):
+                with st.spinner('拉取数据...'):
+                    df_dq = _make_price_df_from_akshare(dq_sym, dq_days)
+                if df_dq is not None:
+                    checker = DataQualityChecker()
+                    report_dq = checker.check(df_dq)
+                    dq1, dq2, dq3 = st.columns(3)
+                    dq1.metric('数据质量评分', f'{report_dq.score:.0f}/100')
+                    dq2.metric('异常数据点', report_dq.n_anomalies)
+                    dq3.metric('总行数', len(df_dq))
+
+                    if report_dq.issues:
+                        with st.expander('问题明细'):
+                            for issue in report_dq.issues:
+                                st.warning(issue)
+                else:
+                    st.error('数据获取失败')
+        except Exception as e:
+            st.warning(f'DataQualityChecker 加载失败: {e}')
+
+        st.markdown('---')
+
+        # Level2 质量
+        st.subheader('Level2 数据完整率')
+        try:
+            from core.level2_quality import Level2QualityReporter
+            if st.button('生成 Level2 质量报告'):
+                with st.spinner('分析 Level2 数据...'):
+                    reporter = Level2QualityReporter()
+                    report_l2 = reporter.generate(days=7, threshold=0.95)
+                    l2c1, l2c2, l2c3 = st.columns(3)
+                    l2c1.metric('完整率', f'{report_l2.overall_completeness:.1%}')
+                    l2c2.metric('快照总数', report_l2.total_snapshots)
+                    l2c3.metric('合格率', '✅ 合格' if report_l2.passed else '❌ 不合格')
+                    if report_l2.field_completeness:
+                        fc_df = pd.DataFrame(
+                            list(report_l2.field_completeness.items()),
+                            columns=['字段', '完整率']
+                        ).sort_values('完整率')
+                        st.dataframe(fc_df, hide_index=True, use_container_width=True)
+        except Exception as e:
+            st.info(f'Level2 质量模块: {e}')
+
+        st.markdown('---')
+
+        # 数据源健康
+        st.subheader('实时行情连通性测试')
+        test_sym = st.text_input('测试标的', '000001.SZ', key='ds_sym')
+        if st.button('测试连通性'):
+            snap_test = load_realtime(test_sym)
+            if snap_test and snap_test.get('price', 0) > 0:
+                st.success(f'行情获取成功：现价 ¥{snap_test["price"]:.2f}，'
+                           f'涨跌 {snap_test.get("pct", 0):+.2f}%')
+            else:
+                st.error('行情获取失败（可能是交易日外或网络问题）')
+
+    # ── Tab 3: 告警中心 ───────────────────────────────────────
+    with tab_alert:
+        st.subheader('AlertManager 告警中心')
+
+        try:
+            from core.alerting import AlertManager, get_alert_manager
+            alert_ok = True
+        except ImportError as e:
+            st.error(f'AlertManager 加载失败: {e}')
+            alert_ok = False
+
+        if alert_ok:
+            # Webhook 配置状态
+            wechat_url  = os.environ.get('WECHAT_WEBHOOK', '')
+            dingtalk_url = os.environ.get('DINGTALK_WEBHOOK', '')
+
+            a1, a2, a3 = st.columns(3)
+            a1.metric('企业微信', '✅ 已配置' if wechat_url else '❌ 未配置')
+            a2.metric('钉钉', '✅ 已配置' if dingtalk_url else '❌ 未配置')
+            a3.metric('SMTP 邮件', '✅ 已配置' if os.environ.get('SMTP_HOST') else '❌ 未配置')
+
+            if not wechat_url and not dingtalk_url:
+                st.info('当前为 log_only 模式。在 `.env` 中配置 WECHAT_WEBHOOK 或 '
+                        'DINGTALK_WEBHOOK 后重启即可启用推送。')
+
+            # 告警历史
+            st.markdown('---')
+            st.subheader('告警历史')
+            am = get_alert_manager()
+            history = am.get_history(last_n=50)
+
+            if history:
+                h_rows = [
+                    {'时间': rec.timestamp[:16], '级别': rec.level,
+                     '内容': rec.message[:80], '渠道': rec.channel, '成功': rec.sent}
+                    for rec in reversed(history)
+                ]
+                h_df = pd.DataFrame(h_rows)
+
+                # 级别分布
+                level_counts = h_df['级别'].value_counts()
+                fig_h = px.bar(
+                    x=level_counts.index, y=level_counts.values,
+                    color=level_counts.index,
+                    color_discrete_map={'CRITICAL': '#f85149', 'WARNING': '#e3b341', 'INFO': '#4c78a8'},
+                    labels={'x': '级别', 'y': '条数'},
+                    title='告警级别分布',
+                )
+                fig_h.update_layout(showlegend=False, height=220, margin=dict(t=40, b=10))
+                st.plotly_chart(fig_h, use_container_width=True)
+
+                st.dataframe(h_df, hide_index=True, use_container_width=True)
+
+                if st.button('清空告警历史'):
+                    am.clear_history()
+                    st.success('已清空')
+                    st.rerun()
+            else:
+                st.info('暂无告警记录')
+
+            # 测试推送
+            st.markdown('---')
+            st.subheader('测试推送')
+            test_level = st.selectbox('告警级别', ['INFO', 'WARNING', 'CRITICAL'], key='test_lvl')
+            test_msg   = st.text_input('测试消息', '这是一条测试告警', key='test_msg')
+
+            if st.button('发送测试告警'):
+                try:
+                    am_test = AlertManager(
+                        wechat_webhook=wechat_url,
+                        dingtalk_webhook=dingtalk_url,
+                        min_level='INFO',
+                        rate_limit_sec=0,
+                    )
+                    fn_map = {'INFO': am_test.send_info, 'WARNING': am_test.send_warning,
+                              'CRITICAL': am_test.send_critical}
+                    result_t = fn_map[test_level](test_msg)
+                    if result_t:
+                        st.success('发送成功')
+                    else:
+                        st.warning('发送失败（检查 Webhook URL 是否正确）')
+                except Exception as e:
+                    st.error(f'发送失败: {e}')
