@@ -120,12 +120,27 @@ def _auto_register() -> None:
     from core.factors.price_momentum import (
         RSIFactor, BollingerFactor, MACDFactor, ATRFactor, OrderImbalanceFactor,
     )
+    from core.factors.technical import (
+        IntraVWAPFactor, OpenGapFactor, VolAccelerationFactor,
+        BidAskSpreadFactor, BuyingPressureFactor,
+        SectorMomentumFactor, IndexRelativeStrengthFactor,
+    )
 
+    # 原有价格动量因子
     registry.register(RSIFactor, default_params={'period': 14})
     registry.register(BollingerFactor, default_params={'period': 20, 'nb_std': 2.0})
     registry.register(MACDFactor, default_params={'fast': 12, 'slow': 26, 'signal': 9})
     registry.register(ATRFactor, default_params={'period': 14, 'lookback': 20})
     registry.register(OrderImbalanceFactor, default_params={'window': 10})
+
+    # 扩展技术因子（A-2）
+    registry.register(IntraVWAPFactor, default_params={'window': 20})
+    registry.register(OpenGapFactor, default_params={'window': 20})
+    registry.register(VolAccelerationFactor, default_params={'short_window': 5, 'long_window': 20})
+    registry.register(BidAskSpreadFactor, default_params={'window': 20})
+    registry.register(BuyingPressureFactor, default_params={'window': 10})
+    registry.register(SectorMomentumFactor, default_params={'momentum_window': 20})
+    registry.register(IndexRelativeStrengthFactor, default_params={'window': 20})
 
 
 _auto_register()
