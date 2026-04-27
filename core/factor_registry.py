@@ -165,5 +165,9 @@ def _auto_register() -> None:
     from core.ml.price_predictor import MLPredictionFactor
     registry.register(MLPredictionFactor, default_params={'forward_days': 2})
 
+    # 新闻情感因子（C-2）
+    from core.factors.nlp import NewsSentimentFactor
+    registry.register(NewsSentimentFactor, default_params={'window': 5, 'use_api': False})
+
 
 _auto_register()
