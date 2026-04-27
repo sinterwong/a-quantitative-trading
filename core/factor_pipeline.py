@@ -429,8 +429,9 @@ class DynamicWeightPipeline(FactorPipeline):
         if len(window) < 20:
             return
 
-        # 次日收益（预测目标）
-        fwd_returns = window['close'].pct_change().shift(-1).dropna()
+        # 两日后收益（避免日内前视偏差：因子在收盘后计算，实际交易在次日开盘，
+        # 用 shift(-2) 对应因子→交易→持有到后日收盘的真实盈亏路径）
+        fwd_returns = window['close'].pct_change().shift(-2).dropna()
         if len(fwd_returns) < 10:
             return
 
@@ -442,7 +443,8 @@ class DynamicWeightPipeline(FactorPipeline):
                 aligned = vals.reindex(fwd_returns.index).dropna()
                 rets_aligned = fwd_returns.reindex(aligned.index).dropna()
                 aligned = aligned.reindex(rets_aligned.index)
-                if len(aligned) < 5:
+                if len(aligned) < 10:
+                    # 对齐后样本过少，相关系数噪声过大，IC 视为 0
                     ic_map[name] = 0.0
                     continue
                 rx = pd.Series(aligned.values).rank().values

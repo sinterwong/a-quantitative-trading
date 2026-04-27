@@ -406,22 +406,61 @@ class RiskEngine:
                 print(f"[RiskEngine] cycle error for {sym}: {e}")
 
     def _fetch_risk_data(self, symbol: str) -> tuple:
-        """获取当前价格 + ATR + RSI"""
+        """获取当前价格 + ATR(14) + RSI(14)"""
+        price = 0.0
+        atr = 0.0
+        rsi = 50.0
+
+        # 1. 获取实时价格
         try:
             import urllib.request
-            sym = symbol.replace('.SH', '').replace('.SZ', '')
-            url = f'https://qt.gtimg.cn/q={sym}'
+            sym_raw = symbol.replace('.SH', '').replace('.SZ', '')
+            url = f'https://qt.gtimg.cn/q={sym_raw}'
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req, timeout=8) as r:
                 raw = r.read().decode('gbk')
             fields = raw.split('~')
-            price = float(fields[3]) if len(fields) > 3 else 0
-            # ATR/RSI 需历史数据估算（简化：使用 price 波动率）
-            atr = price * 0.015  # 估算 1.5% ATR
-            rsi = 50.0  # 简化，未接入
-            return price, atr, rsi
+            price = float(fields[3]) if len(fields) > 3 else 0.0
         except Exception:
-            return 0, 0, 50
+            pass
+
+        # 2. 从历史日K线计算真实 ATR(14) 和 RSI(14)
+        try:
+            from core.data_layer import DataLayer
+            dl = DataLayer()
+            df = dl.get_bars(symbol, limit=30)
+            if df is not None and len(df) >= 15:
+                high = df['high']
+                low = df['low']
+                close = df['close']
+                prev_close = close.shift(1)
+
+                # True Range = max(H-L, |H-C_prev|, |L-C_prev|)
+                tr = pd.concat([
+                    high - low,
+                    (high - prev_close).abs(),
+                    (low - prev_close).abs(),
+                ], axis=1).max(axis=1)
+                atr = float(tr.ewm(span=14, adjust=False).mean().iloc[-1])
+
+                # RSI(14) — Wilder 平滑
+                delta = close.diff()
+                gain = delta.clip(lower=0)
+                loss = (-delta).clip(lower=0)
+                avg_gain = gain.ewm(alpha=1 / 14, adjust=False).mean()
+                avg_loss = loss.ewm(alpha=1 / 14, adjust=False).mean()
+                rs = avg_gain / (avg_loss + 1e-10)
+                rsi = float((100 - 100 / (1 + rs)).iloc[-1])
+
+                if price == 0.0:
+                    price = float(close.iloc[-1])
+        except Exception:
+            # 降级：ATR 按价格 1.5% 估算，RSI 用中性值
+            if price > 0:
+                atr = price * 0.015
+            rsi = 50.0
+
+        return price, atr, rsi
 
     def _emit_risk_event(self, result: RiskResult, symbol: str):
         if self.bus:

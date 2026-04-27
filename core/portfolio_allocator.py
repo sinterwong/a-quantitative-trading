@@ -147,6 +147,7 @@ class PortfolioAllocator:
         self.config = config or AllocConfig()
         self._accounts: Dict[str, StrategyAccount] = {}
         self._rebalance_history: List[RebalanceRecord] = []
+        self._last_rebalance_dt: Optional[datetime] = None
 
     # ------------------------------------------------------------------
     # 策略注册
@@ -238,19 +239,36 @@ class PortfolioAllocator:
     def needs_rebalance(
         self,
         current_mv: Optional[Dict[str, float]] = None,
+        periodic_days: int = 21,
     ) -> bool:
         """
         判断是否需要再平衡。
 
+        触发条件（满足任一即触发）：
+        1. 某策略实际权重偏离目标超过 rebalance_threshold（默认 5%）
+        2. 距上次再平衡超过 periodic_days 个交易日（默认 21 ≈ 1 个月）
+
         Parameters
         ----------
-        current_mv : {策略名: 当前持仓市值}，None = 使用内部 used 字段
+        current_mv    : {策略名: 当前持仓市值}，None = 使用内部 used 字段
+        periodic_days : 定期再平衡间隔（交易日数）
         """
         if current_mv:
             for name, mv in current_mv.items():
                 if name in self._accounts:
                     self._accounts[name].used = mv
 
+        # 条件 2：定期强制再平衡
+        if self._last_rebalance_dt is not None:
+            elapsed = (datetime.now() - self._last_rebalance_dt).days
+            if elapsed >= periodic_days:
+                logger.info(
+                    '[PortfolioAllocator] periodic rebalance triggered: %d days since last',
+                    elapsed,
+                )
+                return True
+
+        # 条件 1：权重偏离触发
         total_used = sum(a.used for a in self._accounts.values())
         if total_used <= 0:
             return False
@@ -316,6 +334,7 @@ class PortfolioAllocator:
             max_drift=round(max_drift, 4),
         )
         self._rebalance_history.append(record)
+        self._last_rebalance_dt = datetime.now()
         logger.info('[PortfolioAllocator] Rebalanced (%s) max_drift=%.1f%%',
                     trigger, max_drift * 100)
 
