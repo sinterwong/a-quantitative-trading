@@ -1,265 +1,273 @@
-# TODO — 专业实盘级量化系统开发计划
+# TODO — A 股量化交易系统开发路线图
 
-> 评估日期：2026-04-23（最新）  
-> 目标：从"可用的个人模拟系统（62分）"升级为"专业实盘级系统（90分）"  
-> 策略：三阶段推进，每阶段可独立交付，优先解决数据+回测严谨性，再扩展策略，最后接实盘
-
----
-
-## Phase 1 — 夯实地基：回测严谨性 + 数据质量（1~2个月）
-
-> **目标分值**：62 → 75 分  
-> **核心原则**：先把现有 1 个策略的回测做到 "无懈可击"，再谈扩张
-
-### P1-A：修复回测引擎中的关键 Bug（最高优先）
-
-- [x] **[P0] 修复收盘价执行偏差（Look-ahead bias）** ✅ 2026-04-22
-  - 文件：`core/backtest_engine.py`，`_on_bar()` / `_generate_signals()` / `_process_signal()`
-  - 修复：信号用 `df.iloc[:idx]` 历史生成（排除当前 bar），成交价改为下一根 bar 的 open
-
-- [x] **[P0] 修复 holding_secs 计数逻辑** ✅ 2026-04-22
-  - 文件：`core/backtest_engine.py`
-  - 修复：BacktestConfig.bar_freq + _bar_secs()，daily=86400 / hourly=3600 / minute=60
-
-- [x] **[P0] 补齐 A 股卖出印花税** ✅ 2026-04-22
-  - 文件：`core/backtest_engine.py`，`_execute_sell()`
-  - 修复：BacktestConfig.stamp_tax_rate=0.001，卖出时扣 0.1% 印花税
-
-- [x] **[P1] 修复 Kelly 仓位硬编码** ✅ 2026-04-22
-  - 文件：`core/backtest_engine.py`，`_calc_kelly_params()` / `_calc_shares_price()`
-  - 修复：历史 ≥10 笔时动态计算 win_rate/avg_win/avg_loss，不足时退回保守默认值
-
-- [x] **[P1] 添加复权与停牌处理** ✅ 2026-04-22
-  - 文件：`core/backtest_engine.py`
-  - 修复：load_data adj_type 校验（qfq/hfq/none）；volume=0 自动标 is_suspended；停牌日跳过开仓
-
-### P1-B：Walk-Forward 多窗口统计验证
-
-- [x] **[P1] 增加 WFA 窗口数量至 ≥ 5 个** ✅ 2026-04-22
-  - 文件：`core/walkforward.py`（新建，替代 scripts 版）
-  - 修复：train=18m/test=6m/step=6m，13年数据产生 22 个滚动窗口
-  - 输出：WFASummary（OOS Sharpe 分布、正 Sharpe 比例）
-
-- [x] **[P1] 添加参数稳健性检验（Sensitivity Analysis）** ✅ 2026-04-22
-  - 文件：`core/walkforward.py`，`SensitivityAnalyzer` 类
-  - 双参数网格扫描 → Sharpe 热力图（PNG/CSV），peak_sensitivity_ratio() 量化稳健度
-
-- [x] **[P2] 扩展回测标的：沪深 300 成分股中选 10 支** ✅ 2026-04-23
-  - 文件：`core/multi_symbol_backtest.py`（新建）
-  - `MultiSymbolBacktest.run(symbols, years)` 对 10 支成分股批量运行 WFA
-  - `DEFAULT_CSI300_TOP10`：茅台/宁德/招行/平安/东财/五粮液/比亚迪/迈瑞/立讯/恒瑞
-  - `MultiSymbolResult.print_report()` 汇总通过率；合格标准 ≥ 7/10 OOS Sharpe > 0
-
-### P1-C：数据层加固
-
-- [x] **[P1] 增加分钟 K 线回测支持** ✅ 2026-04-22
-  - 文件：`core/data_layer.py`，`DataLayer.get_minute_bars()`
-  - 通过 AKShare 获取 1/5/15/30/60 分钟 K 线；BacktestEngine bar_freq='minute' 支持
-
-- [x] **[P2] 日线历史数据本地缓存（Parquet）** ✅ 2026-04-22
-  - 文件：`core/data_layer.py`，`ParquetCache` 类
-  - data/bars/{symbol}.parquet，upsert 增量更新，缓存新鲜时跳过网络请求
-
-- [x] **[P2] 数据质量检验模块** ✅ 2026-04-22
-  - 文件：`core/data_quality.py`（新建）
-  - DataQualityChecker：跳空/异常涨跌/零成交量检测，质量评分，drop_anomalies()
-
-### P1-D：工程质量
-
-- [x] **[P1] 添加 CI/CD（GitHub Actions）** ✅ 2026-04-22
-  - 配置：`.github/workflows/ci.yml`，推送 master 自动运行 500 个测试
-  - flake8 lint（core 重点模块）+ mypy 类型检查 + pytest Phase 1 新测试
-  - Linux(3.10/3.11/3.12) + Windows(3.11) 四矩阵并行
-
-- [x] **[P2] 清理 scripts/ 目录** ✅ 2026-04-22
-  - `scripts/test_core_arch/phase2~5.py` → `tests/test_legacy_*.py`；`test_backtest_engine.py`（旧版）删除
-  - 调试脚本 `test_em_l2_depth.py` / `test_level2.py` 保留在 scripts/（非 unittest）
-  - 新建 `scripts/README.md` 说明所有脚本用途
+> 评估日期：2026-04-27  
+> 当前状态：**~95 分**，系统完成三阶段专业化升级，829 个测试全部通过  
+> 下一目标：实盘验证闭环 + 策略持续迭代 + 运营稳定性提升
 
 ---
 
-## Phase 2 — 扩展 Alpha：多策略 + 多因子验证（2~4 个月）
+## 已完成总览
 
-> **目标分值**：75 → 85 分  
-> **核心原则**：用同样严格的回测标准验证第 2、3 个策略
-
-### P2-A：趋势跟踪策略（MACD）
-
-- [x] **[P1] 实现 MACD 趋势跟踪策略** ✅ 2026-04-22
-  - 文件：`core/strategies/macd_trend.py`（已新建）
-  - 实现：`MACDTrendFactor(Factor)` — 金叉买入 + 死叉卖出，ATR ratio > threshold 时抑制 BUY
-  - 接口：`make_macd_trend_pipeline()` 工厂函数，可直接接入 WFA
-  - WFA 验证待运行（需真实历史数据，目标 OOS Sharpe > 0.3）
-
-- [x] **[P2] 策略相关性分析** ✅ 2026-04-22
-  - 文件：`core/research.py`，`StrategyCorrelationAnalyzer` 类
-  - 接受 `{策略名: BacktestResult}` 字典，计算日收益相关矩阵
-  - `plot_heatmap()` 输出 `outputs/strategy_correlation.png`
-  - 待跑：真实历史数据验证 RSI vs MACD 相关系数 < 0.4
-
-### P2-B：订单流因子实战化
-
-- [x] **[P1] 将 OI 因子接入实时信号引擎** ✅ 2026-04-22
-  - 文件：`core/factors/price_momentum.py`，新增 `OrderImbalanceFactor`
-  - 实现：OHLCV 代理版 OI（阳线成交量占比，window=10），z-score 归一化
-  - 注册至 `core/factor_registry.py`（名称 "OrderImbalance"）
-  - 已在 `config/trading.yaml` RSI 策略中加入 weight=0.2（RSI:0.4/ATR:0.2/MACD:0.2/OI:0.2）
-  - 待跟进：L2 盘口版（真实 5 档 OI）接入；IC 统计验证 > 0.03
-
-- [x] **[P2] 实时 Level 2 数据完整性验证** ✅ 2026-04-23
-  - 文件：`core/level2_quality.py`（新建）
-  - `Level2QualityCollector`：后台线程采集 5 档盘口快照到 SQLite，collect_once() 手动触发
-  - `Level2QualityReporter.generate(days, threshold)` → `Level2QualityReport`
-  - 检验 23 个必填字段完整率，输出 Markdown + JSON 报告到 `outputs/`
-  - 21 项单元测试（`tests/test_level2_quality.py`）全部通过
-
-### P2-C：外盘领先信号验证
-
-- [x] **[P2] 验证 SP500 期货对 A 股次日开盘的领先效应** ✅ 2026-04-23
-  - 文件：`core/external_signal.py`，`SP500GrangerAnalyzer` 类
-  - 纯 numpy 实现 Granger F 检验（不依赖 statsmodels）+ Spearman IC
-  - `analyze(days=500, max_lag=3)` → `SP500GrangerResult`（p_value/IC/passed）
-  - `run_full_analysis()` 一键输出 JSON 报告到 `outputs/`
-
-- [x] **[P2] 北向资金信号统计验证** ✅ 2026-04-23
-  - 文件：`core/external_signal.py`，`NorthboundStatsAnalyzer` 类
-  - 方法：北向净流入 > 50 亿时次日上涨概率 vs 基准，计算 lift
-  - `analyze(days=500)` → `NorthboundStatsResult`（条件概率/lift/passed）
-  - 合格：n_above ≥ 100 且条件上涨概率 > 55%
-
-### P2-D：多因子组合优化
-
-- [x] **[P2] 实现动态因子权重（基于滚动 IC 加权）** ✅ 2026-04-22
-  - 文件：`core/factor_pipeline.py`，`DynamicWeightPipeline` 类（继承 `FactorPipeline`）
-  - 每 `update_freq_days`（默认 21）更新权重 = max(IC, 0) / Σmax(IC,0)
-  - 全 IC ≤ 0 时自动退回等权；`weight_history_df()` / `current_weights()` 方便诊断
-  - 不依赖 scipy，用 numpy rank + corrcoef 实现 Spearman IC
-
-- [x] **[P2] 因子 IC 时序分析** ✅ 2026-04-22
-  - 文件：`core/research.py`，`FactorICAnalyzer` 类
-  - `analyze()` 输出月度 IC 序列、IC均值/IR/IC>0占比、按 Regime 分层 IC
-  - `plot_heatmap()` 输出 `outputs/factor_ic_heatmap.png`（月份 × 因子）
-  - `summary_table()` 返回多因子汇总 DataFrame
-
-### P2-E：市场状态自适应
-
-- [x] **[P1] 将市场 Regime 接入策略执行逻辑** ✅ 2026-04-22
-  - 新建：`core/regime.py`（独立无副作用，进程内日缓存，含 `RegimeInfo` 数据类）
-  - 修改：`core/strategy_runner.py`，`RunnerConfig.regime_aware=True`
-  - 效果：BEAR → 禁止新多仓 + 信号阈值 ×1.4；VOLATILE → 阈值 ×1.2；每轮 run_once() 检测一次
-  - 暴露 `runner.current_regime` 属性，方便外部监控当前 Regime
-
-- [x] **[P2] Regime 分状态回测分析** ✅ 2026-04-22
-  - 文件：`core/research.py`，`RegimeBacktestAnalyzer` 类
-  - `build_regime_series(data)` 从 OHLCV 计算历史 Regime 标签序列
-  - `analyze(result, regime_series)` 按 BULL/BEAR/VOLATILE/CALM 分层统计
-  - 输出：`RegimeAnalysisResult.to_dataframe()` / `print_report()`
+| 阶段 | 核心内容 | 完成时间 | 得分贡献 |
+|------|---------|---------|---------|
+| Phase 1 | 回测引擎 Bug 修复、WFA、数据层加固、CI/CD | 2026-04-22 | 62 → 75 |
+| Phase 2 | 多策略、多因子验证、动态权重、市场 Regime | 2026-04-23 | 75 → 85 |
+| Phase 3 | BrokerBase、纸交易验证、TCA、异步执行 | 2026-04-23 | 85 → 90 |
+| Phase A | Bug 修复精修 + 22 个多类别因子 | 2026-04-24 | 90 → 91 |
+| Phase B | ML 价格预测、VWAP/TWAP 执行、Futu 纸交易 | 2026-04-25 | 91 → 93 |
+| Phase C | MVO+BL 组合优化、NLP 情感因子、AlertManager | 2026-04-26 | 93 → 95 |
 
 ---
 
-## Phase 3 — 接入实盘：真实执行闭环（4~6 个月）
+## Phase 4 — 实盘验证闭环（第 1-3 个月）
 
-> **目标分值**：85 → 90 分  
-> **核心原则**：先港股纸交易闭环，再 A 股实盘
+> **目标**：将系统从"功能完备的模拟系统"推进到"有实盘验证记录的量化平台"  
+> **核心原则**：用真实市场数据验证每一个模块的假设，消灭"回测好看、实盘翻车"
 
-### P3-A：完成 Futu 券商适配器
+### P4-A：Futu 纸交易运营
 
-- [x] **[P0] 统一券商接口（BrokerBase）** ✅ 2026-04-23
-  - 文件：`core/brokers/base.py`（新建）；`core/brokers/simulated.py`（新建）
-  - `BrokerBase` ABC：MarketType / AccountInfo / QuoteData + 12 个抽象方法
-  - 继承 `BrokerAdapter` 保持向后兼容；send/cancel/quote 委托方法
-  - `SimulatedBroker`：A 股整手 / 印花税 / 滑点 / 涨跌停全规则；40 项测试通过
-  - Futu / Tiger / IBKR stub 均重写继承 BrokerBase，含详细 SDK 接入 TODO 注释
+- [ ] **[P0] 部署 OpenD + 运行两周纸交易**
+  - 前提：本机安装 Futu OpenD（`port 11111`，TrdEnv.SIMULATE）
+  - 步骤：运行 `core/brokers/futu.py` connect() 验证连通；配置 `FutuPaperValidator`
+  - 目标：信号一致率 ≥ 95%（`paper_trade_validator.py signal_match_target`）
+  - 输出：每日 JSON 报告到 `outputs/paper_trade/`
 
-- [x] **[P0] 实现 FutuBroker（港股纸交易）** ✅ 2026-04-27
-  - 文件：`core/brokers/futu.py`（当前仅 stub，接口已预留）
-  - 依赖：安装 futu-api（`pip install futu-api`），部署 OpenD 客户端
-  - 实现方法：`connect()`, `get_positions()`, `get_cash()`, `submit_order()`, `cancel_order()`
-  - 测试：在港股纸交易账户完整执行一笔买卖，验证仓位、现金、订单状态同步正确
-  - 安全：确保 `dry_run=True` 时绝对不向 Futu API 发送真实订单请求
+- [ ] **[P0] 用真实数据训练 ML 模型**
+  - 工具：`core/ml/price_predictor.py WalkForwardTrainer`
+  - 数据：至少 500 交易日历史（AKShare 或 Futu 拉取）
+  - 目标：OOS Sharpe > 0.15（walk-forward 252/63/21 窗口验证）
+  - 保存：`ModelRegistry.save(model, '000001.SZ')`
 
-- [x] **[P0] 纸交易 vs 回测一致性验证框架** ✅ 2026-04-23
-  - 文件：`core/paper_trade_validator.py`（新建）
-  - `PaperTradeValidator.validate_from_backtest/validate_from_signals` 两种入口
-  - 计算 Implementation Shortfall（deviation_bps），五级偏差归因
-  - `ValidationReport.save()` 输出 JSON 到 `outputs/`
-  - 19 项单元测试（`tests/test_paper_trade_validator.py`）全部通过
-  - 注：框架已就绪；实际纸交易 2 周数据对比待 Futu 券商接入后执行
+- [ ] **[P1] 配置真实 AlertManager Webhook**
+  - 企业微信 Webhook：`config/trading.yaml` → `alerting.wechat_webhook`
+  - 钉钉 Webhook：`alerting.dingtalk_webhook`
+  - 验证：`AlertManager().send_critical('测试')` 实际推送
+  - 接入：`core/strategy_health.py` 触发点 → `alerting.send_critical()`
+  - 接入：`core/risk_engine.py` 日亏损熔断 → `alerting.send_warning()`
 
-- [x] **[P1] 实现 TCA（交易成本分析）模块** ✅ 2026-04-22
-  - 文件：`core/tca.py`（新建）
-  - `TCARecord`：单笔 IS / 总成本 bps 计算；`TCAAnalyzer`：按标的/方向/Regime/时段/月份统计
-  - `from_backtest_result()` / `from_trade_dicts()` 两种数据源接入
-  - `recommended_slippage_bps` 自动推荐参数；`save_monthly_report()` 输出 JSON
+- [ ] **[P1] 集成 AlertManager 到策略执行链**
+  - `core/strategy_health.py HealthReport` → CRITICAL/WARNING 自动推送
+  - `core/risk_engine.py PostTradeChecker` → 触发日亏损限制时立即告警
+  - `core/daily_diff_reporter.py` → 每日收盘后发送 `send_daily_report()`
+  - 验证：mock Webhook 下运行 1 个完整交易日无遗漏
 
-### P3-B：异步事件循环升级
+### P4-B：数据管道稳定性
 
-- [x] **[P2] 将 StrategyRunner 升级为 asyncio 驱动** ✅ 2026-04-23
-  - 文件：`core/async_runner.py`（新建，不破坏原 StrategyRunner）
-  - `AsyncStrategyRunner`：`asyncio.gather()` 并发处理所有标的，N 标的延迟从 N×200ms → 200ms
-  - `AsyncEventBus`：`asyncio.Queue` 替代线程 Queue，零锁竞争
-  - `run_once_sync()` / `run_sync(duration)` 供非 async 代码无缝调用
-  - `benchmark_concurrency()` 可量化加速效果
+- [ ] **[P1] 基本面数据自动更新调度**
+  - 文件：`core/fundamental_data.py`
+  - 当前：手动调用 `fetch_*()`，无自动刷新
+  - 升级：在 `backend/main.py Scheduler` 中注册季报更新任务（每季度末 + 财报发布日）
+  - 缓存：Parquet 持久化，TTL 检测防止重复拉取
 
-- [ ] **[P2] 行情数据推送订阅（Websocket）**
-  - 文件：`core/data_layer.py`
-  - 当前：每次轮询 HTTP 拉取，延迟高
-  - 升级：接入 Futu/Tiger WebSocket 推送，行情到达时立即触发事件
-  - 条件：仅在 Futu 券商接入后启用
+- [ ] **[P1] NLP 因子新闻质量验证**
+  - 工具：`core/factors/nlp.py NewsSentimentFactor`
+  - 统计：跑 1 个月历史数据，计算 `NewsSentiment` 因子 IC
+  - 目标：IC 均值 > 0（相比市场噪声有正向预测力）
+  - 输出：IC 时序图到 `outputs/factor_ic_nlp.png`
 
-### P3-C：数据库升级
+- [ ] **[P2] 行情数据 Websocket 推送订阅**
+  - 文件：`core/data_layer.py`（新增 WebSocket 接入）
+  - 依赖：Futu OpenD 行情推送 API（`quote_ctx.subscribe()`）
+  - 升级：`AsyncStrategyRunner` 改为事件驱动（行情到达 → 立即触发 `run_once()`）
+  - 当前轮询延迟：~300ms；目标：< 50ms
+  - 条件：Futu OpenD 部署完成后实施
+
+### P4-C：数据库与持久化
 
 - [ ] **[P2] 迁移核心交易数据到 PostgreSQL**
   - 当前：`backend/services/portfolio.db`（SQLite）
-  - 迁移：positions / trades / signals / daily_meta 表迁至 PostgreSQL
-  - 保留 SQLite 作为本地离线模式回退
-  - 触发时机：纸交易数据量超过 10 万条 trade 记录时
+  - 触发时机：trade 记录 > 10 万条 或 `portfolio.db` > 100MB
+  - 迁移范围：positions / trades / signals / daily_meta 四张表
+  - 工具：新建 `scripts/migrate_to_postgres.py`
+  - 保留 SQLite 作为离线回退
 
 - [ ] **[P3] 分钟级数据接入 TimescaleDB**
-  - 条件：日交易数据量升级后再做
-  - 用途：存储分钟 K 线历史，支持 tick 级因子计算
-  - 压缩比：原始 CSV 约 500MB/天 → TimescaleDB 压缩后 ~50MB
-
-### P3-D：监控与告警完善
-
-- [x] **[P1] 添加策略健康度实时监控** ✅ 2026-04-22
-  - 文件：`core/strategy_health.py`（新建，独立无 broker 依赖）
-  - `StrategyHealthMonitor.check()`：Rolling Sharpe(20d/60d) 下降 >30%、单日亏损 >2%、连续亏损 >5 天、换手率异常
-  - `check_series()` 返回逐日时序 DataFrame（供 Streamlit 折线图）
-  - `HealthReport.to_feishu_text()` 一键生成飞书告警文本
-
-- [x] **[P1] 实现每日回测 vs 实盘对比报告** ✅ 2026-04-23
-  - 文件：`core/daily_diff_reporter.py`（新建）
-  - `DailyDiffReporter.compare(live_results, bt_trades, date)` → `DailyDiffReport`
-  - 检测：方向不一致 / 回测独有 / 实盘独有；一致率 ≥ 80% 且无方向不一致 → healthy
-  - `save()` 输出 `reports/daily_bt_live_diff_{date}.json`；`format_text()` 生成人读摘要
-  - `list_reports()` 列出历史报告；`load(date)` 回读历史
-
-- [x] **[P2] 添加 Dashboard 实盘监控页面** ✅ 2026-04-22
-  - 文件：`streamlit_app.py`（新增第 8 页「🏥 策略健康」）
-  - 内容：健康状态卡 / Rolling Sharpe 折线图 / 胜率时序 / TCA 成本分析 / CVaR + 蒙特卡洛
-  - 数据源：backend API 降级到 SQLite portfolio.db
+  - 条件：PostgreSQL 迁移完成后
+  - 用途：存储 AKShare 1/5/15 分钟 K 线历史（当前仅内存缓存）
+  - 压缩比：原始 Parquet 约 200MB/年/标的 → TimescaleDB 压缩后 ~30MB
+  - 收益：支持分钟级因子批量回测，无需每次重新拉取
 
 ---
 
-## 持续优化项（Backlog，无固定时间表）
+## Phase 5 — 策略深化与 Alpha 拓展（第 3-9 个月）
 
-- [ ] **完成 Tiger / IBKR 券商适配器**（适合美股/港股多市场）
-- [ ] **期权策略框架**（隐波动率曲面、Put/Call 对冲）
-- [ ] **新闻情感因子完整验证**（LLM 打分 IC 统计）
-- [x] **多账户支持** ✅ 2026-04-23（`core/portfolio_allocator.py`，`PortfolioAllocator` 类；
-  WeightMode: EQUAL/FIXED/RISK_PARITY；needs_rebalance/rebalance/save_history；
-  27 项单元测试全部通过）
-- [x] **CVaR / Expected Shortfall** ✅ 2026-04-22（`core/portfolio_risk.py`，`check_cvar()` 方法）
-- [x] **蒙特卡洛压力测试** ✅ 2026-04-22（`core/portfolio_risk.py`，`MonteCarloStressTest` 类，bootstrap/参数法，5000次模拟，P5/P50/P95/ES/最大回撤分布）
+> **目标**：在已有 22 个因子基础上，持续验证和筛选高 IC 因子，引入新策略类型  
+> **核心原则**：IC > 0.03 + IR > 0.5 才纳入实盘权重
+
+### P5-A：因子 IC 系统验证
+
+- [ ] **[P1] 对所有 22 个因子运行历史 IC 检验**
+  - 工具：`core/research.py FactorICAnalyzer`
+  - 数据：沪深 300 前 50 成分股，2020-2026 日线
+  - 输出：`outputs/factor_ic_report_2026.json` + 月度 IC 热力图
+  - 目标：筛出 IC > 0.02 且 IR > 0.3 的"有效因子"子集
+  - 决策：有效因子纳入 `DynamicWeightPipeline`，无效因子降权至 0.05 以下
+
+- [ ] **[P2] 因子衰减检测与自动权重调整**
+  - 当前：`DynamicWeightPipeline` 每 21 天更新权重
+  - 升级：检测单因子 IC 连续 60 天 < 0 时自动将权重降至 0（因子失效保护）
+  - 恢复：IC 转正后逐步恢复（不超过 1/N 等权权重）
+  - 输出：因子状态日志到 `outputs/factor_status.json`
+
+- [ ] **[P2] 因子相关性去重**
+  - 工具：`core/research.py StrategyCorrelationAnalyzer`（扩展为因子相关性版本）
+  - 问题：`RSI` / `BollingerBands` / `MACD` 三者高度相关（同属价格动量）
+  - 方案：相关系数 > 0.7 的因子对仅保留 IC 较高的一个
+  - 输出：因子聚类树状图 `outputs/factor_cluster.png`
+
+### P5-B：新策略类型
+
+- [ ] **[P2] 行业轮动策略**
+  - 思路：基于 `SectorMomentumFactor` 跨行业 ETF 排名，持有动量最强的前 3 个行业
+  - 数据：AKShare 行业 ETF 日线（已在 `SectorMomentumFactor` 中接入）
+  - 标的：沪深 300 行业 ETF（28 个申万一级行业 ETF）
+  - 验证：WFA 回测（train=18m/test=6m），目标 OOS Sharpe > 0.4
+  - 文件：`core/strategies/sector_rotation.py`（新建）
+
+- [ ] **[P2] 均值回归配对交易**
+  - 思路：同行业两只高相关股票，价差偏离均值 2σ 时反向做多/做空价差
+  - 数据：`StrategyCorrelationAnalyzer` 筛选 corr > 0.85 的股票对
+  - A 股限制：无日内做空，用 ETF + 个股组合代替（如 510050 + 个股）
+  - 验证：历史 500 天回测，目标胜率 > 60%
+  - 文件：`core/strategies/pairs_trading.py`（新建）
+
+- [ ] **[P3] 基于 ML 的因子动态选择**
+  - 思路：用 LightGBM 预测"未来 21 天哪些因子 IC 较高"，自适应调整权重
+  - 特征：市场 Regime / 波动率水平 / 行业资金流向 / 宏观指标
+  - 依赖：`core/ml/feature_store.py`（已有）+ 新增 Regime 特征
+  - 文件：`core/ml/factor_selector.py`（新建）
+
+### P5-C：另类数据接入
+
+- [ ] **[P2] 融资融券完整数据流**
+  - 当前：`MarginTradingFactor` 依赖 AKShare 单日接口，无连续时序
+  - 升级：接入 `stock_margin_detail()` 构建日更新时序，存 Parquet
+  - 目标：融资余额变化率 IC 验证 > 0.02
+
+- [ ] **[P2] 股东变动（大股东增减持）因子**
+  - 数据：AKShare `stock_hold_num_cninfo()` 季度股东人数变动
+  - 因子：股东人数减少（筹码集中）→ 正向信号
+  - 文件：`core/factors/fundamental.py` 新增 `ShareholderConcentrationFactor`
+
+- [ ] **[P3] 宏观经济因子**
+  - 指标：PMI / CPI / M2 同比增速 / 社融规模
+  - 数据：AKShare `macro_china_pmi_monthly()` 等
+  - 因子化：宏观因子作为 Regime 判断辅助，非直接选股信号
+  - 文件：`core/factors/macro.py`（新建）
+
+---
+
+## Phase 6 — 多市场扩展（第 9-18 个月）
+
+> **目标**：从 A 股扩展到港股、美股，实现跨市场对冲  
+> **前提**：A 股实盘验证通过，系统运营稳定 ≥ 6 个月
+
+### P6-A：港股接入
+
+- [ ] **[P0] 完善 FutuBroker 港股功能**
+  - 当前：`core/brokers/futu.py` 已实现基础接口，待真实 OpenD 验证
+  - 扩展：支持 HK 市场（`TrdMarket.HK`），港元计价持仓
+  - 特殊规则：港股无涨跌停、最小手数（lot_size 各股不同）
+  - 验证：港股纸交易 2 周，信号一致率 ≥ 95%
+
+- [ ] **[P1] 港股因子适配**
+  - `HKDataSource`（已有 `core/hk_data_source.py`）→ 接入港股日线
+  - 调整：无涨跌停过滤、加入港股成交量稀疏处理
+  - 新增：恒生行业分类（`core/factors/technical.py SectorMomentumFactor` 港股版）
+
+### P6-B：美股接入
+
+- [ ] **[P2] 完善 IBKRBroker 适配器**
+  - 文件：`core/brokers/ibkr.py`（当前为 stub）
+  - 依赖：`ib_insync` 库（`pip install ib_insync`）
+  - 实现：`connect()` / `get_account()` / `submit_order()` / `cancel_order()`
+  - 验证：IBKR Paper Trading 账户两周运行
+
+- [ ] **[P2] 完善 TigerBroker 适配器**
+  - 文件：`core/brokers/tiger.py`（当前为 stub）
+  - 依赖：`tigeropen` 库
+  - 适用：美股 + 港股双市场通道
+
+### P6-C：跨市场策略
+
+- [ ] **[P3] A 股 + 港股 AH 价差套利**
+  - 思路：同一公司 A/H 股价差过大时，买入折价端
+  - 工具：`PortfolioOptimizer.black_litterman()` 融入 AH 溢价观点
+  - 风险：汇率风险、流动性差异
+
+- [ ] **[P3] A 股 + 美股领先滞后策略**
+  - 工具：`core/external_signal.py SP500GrangerAnalyzer`（已有）
+  - 实盘：美股收盘后判断次日 A 股开盘偏向，提前布局
+
+---
+
+## Backlog（无固定时间表）
+
+### 工程基础设施
+
+- [ ] **Prometheus + Grafana 监控看板**
+  - 指标：当日净值 / 持仓数量 / 信号延迟 / API 响应时间
+  - 文件：`core/metrics.py`（新建，暴露 `/metrics` 端点）
+
+- [ ] **合规审计日志**
+  - 每笔交易记录：时间戳、信号来源、因子值、风控检查结果
+  - 格式：结构化 JSON，不可篡改（append-only）
+  - 用途：事后复盘、监管合规
+
+- [ ] **回测报告 PDF 导出**
+  - 工具：`reportlab` 或 `weasyprint`
+  - 内容：净值曲线、Sharpe/MaxDD/Calmar、WFA 热力图、因子 IC 汇总
+
+### 策略研究
+
+- [ ] **强化学习策略框架**
+  - 环境：`gymnasium` 标准化 RL 环境（状态=因子值，动作=仓位比例）
+  - 算法：PPO（近端策略优化），适合连续动作空间
+  - 风险：RL 样本效率低，需大量历史数据
+
+- [ ] **期权对冲组合**
+  - 条件：需要期权交易权限（50ETF 期权）
+  - 思路：持多头 + 买入认沽期权作为尾部风险对冲
+  - 依赖：期权定价模型（Black-Scholes / local vol）
+
+- [ ] **高频因子（1分钟级）**
+  - 当前：所有因子基于日线
+  - 目标：接入分钟级订单流数据，计算实时 VWAP 偏离因子
+  - 前提：TimescaleDB 分钟数据存储完成
+
+### 运营
+
+- [ ] **自动化每日运营报告**
+  - 内容：因子 IC 日报 / 策略健康度 / AlertManager 发送摘要
+  - 触发：`backend/main.py Scheduler` 每日 16:00
+  - 输出：企业微信 / 钉钉 Markdown 格式
+
+- [ ] **参数自动优化（贝叶斯调参）**
+  - 工具：`optuna`（贝叶斯超参数优化）
+  - 目标参数：RSI 周期、MACD 快/慢/信号线、ATR 倍数
+  - 约束：在 Walk-Forward 框架内优化，防止过拟合
 
 ---
 
 ## 评分追踪
 
-| 评估时间 | 综合得分 | 架构 | 数据 | 策略 | 回测严谨性 | 风控 | 生产就绪 |
-|---------|---------|------|------|------|-----------|------|---------|
-| 2026-04-22（当前）| **62/100** | 23/30 | 8/20 | 9/20 | 7/15 | 8/10 | 7/15 |
-| Phase 1 完成后（预计）| **75/100** | 25/30 | 13/20 | 10/20 | 12/15 | 9/10 | 6/15 |
-| Phase 2 完成后（预计）| **85/100** | 27/30 | 15/20 | 16/20 | 13/15 | 9/10 | 5/15 |
-| Phase 3 完成后（预计）| **90/100** | 28/30 | 16/20 | 16/20 | 13/15 | 9/10 | 12/15 |
+| 评估时间 | 综合得分 | Alpha 因子 | 执行层 | 组合优化 | 风险管理 | ML 集成 | 生产就绪 |
+|---------|---------|-----------|-------|---------|---------|---------|---------|
+| 2026-04-22（初始）| **62** | 18 | 48 | 32 | 65 | 5 | 12 |
+| 2026-04-23（Phase 1-3）| **90** | 45 | 70 | 55 | 78 | 15 | 65 |
+| 2026-04-27（Phase A-C）| **~95** | 72 | 82 | 85 | 82 | 60 | 68 |
+| Phase 4 完成后（预计）| **~97** | 72 | 88 | 85 | 85 | 75 | 85 |
+| Phase 5 完成后（预计）| **~98** | 88 | 88 | 90 | 88 | 85 | 85 |
+| Phase 6 完成后（预计）| **~99** | 92 | 92 | 92 | 90 | 88 | 92 |
+
+---
+
+## 不在范围内的能力（明确排除）
+
+| 能力 | 排除原因 |
+|------|---------|
+| 毫秒级高频交易 | 需要 co-location 专用硬件，日线策略不需要 |
+| 50+ 付费另类数据源 | 年费 100 万+，规模不到不经济 |
+| T+0 做空 A 股 | 监管制度限制 |
+| 期货套利（CTA） | 需要期货账户与保证金管理，超出当前范围 |
+| 机构级合规系统 | 需要牌照，个人/小型私募暂不适用 |
