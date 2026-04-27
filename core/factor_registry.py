@@ -161,5 +161,9 @@ def _auto_register() -> None:
     registry.register(NorthboundFlowFactor, default_params={'window': 5})
     registry.register(ShortInterestFactor, default_params={'window': 10})
 
+    # ML 预测因子（B-1）
+    from core.ml.price_predictor import MLPredictionFactor
+    registry.register(MLPredictionFactor, default_params={'forward_days': 2})
+
 
 _auto_register()

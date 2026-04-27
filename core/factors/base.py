@@ -29,6 +29,7 @@ class FactorCategory(Enum):
     FUNDAMENTAL = 'fundamental'
     SENTIMENT = 'sentiment'
     EXTERNAL = 'external'
+    ML = 'ml'
 
 
 @dataclass
