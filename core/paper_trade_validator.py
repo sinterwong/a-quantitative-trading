@@ -383,3 +383,154 @@ class PaperTradeValidator:
             pass_rate=0.0, avg_deviation_bps=0.0, max_deviation_bps=0.0,
             passed=False, notes=[reason],
         )
+
+
+# ---------------------------------------------------------------------------
+# FutuPaperValidator — 富途纸交易专用验证器
+# ---------------------------------------------------------------------------
+
+class FutuPaperValidator(PaperTradeValidator):
+    """
+    富途纸交易 vs 系统回测一致性验证。
+
+    在 FutuBroker（SIMULATE 环境）下执行信号，与系统回测结果对比，
+    目标偏差 < 5%（即信号一致率 ≥ 95%）。
+
+    使用场景：
+      - 在接入实盘前，先用纸交易账户运行 2 周验证系统信号稳定性
+      - 每日收盘后自动生成日报（调用 generate_daily_report()）
+
+    Parameters
+    ----------
+    futu_host : str
+        OpenD 地址（默认 127.0.0.1）
+    futu_port : int
+        OpenD 端口（默认 11111）
+    threshold_bps : float
+        信号价格偏差合格阈值（默认 20 bps）
+    signal_match_target : float
+        信号方向一致率目标（默认 0.95 = 95%）
+    """
+
+    def __init__(
+        self,
+        futu_host: str = '127.0.0.1',
+        futu_port: int = 11111,
+        threshold_bps: float = 20.0,
+        signal_match_target: float = 0.95,
+    ) -> None:
+        super().__init__(threshold_bps=threshold_bps)
+        self.futu_host = futu_host
+        self.futu_port = futu_port
+        self.signal_match_target = signal_match_target
+        self._futu_broker = None
+        self._daily_log: List[Dict] = []
+
+    def connect(self) -> bool:
+        """连接 FutuBroker（SIMULATE 模式）。"""
+        from core.brokers.futu import FutuBroker
+        self._futu_broker = FutuBroker(
+            host=self.futu_host,
+            port=self.futu_port,
+            trade_env='SIMULATE',
+        )
+        ok = self._futu_broker.connect()
+        if not ok:
+            logger.warning(
+                '[FutuPaperValidator] FutuBroker 未连接（OpenD 未运行）— '
+                '将使用 SimulatedBroker 作为替代'
+            )
+        return ok
+
+    def validate_signals(
+        self,
+        signals: List[Dict],
+        use_futu: bool = True,
+    ) -> ValidationReport:
+        """
+        验证信号列表：在 FutuBroker（或 SimulatedBroker 降级）上执行，对比偏差。
+
+        Parameters
+        ----------
+        signals : List[Dict]
+            信号列表，每个包含 symbol / direction / price / shares
+        use_futu : bool
+            True = 优先使用 FutuBroker（需先调用 connect()）
+            False = 强制使用 SimulatedBroker（离线验证）
+        """
+        if use_futu and self._futu_broker is not None and self._futu_broker.is_connected():
+            broker = self._futu_broker
+        else:
+            from core.brokers.simulated import SimulatedBroker, SimConfig
+            broker = SimulatedBroker(SimConfig(price_source='manual'))
+            broker.connect()
+
+        report = self.validate_from_signals(signals, broker=broker)
+
+        # 记录日志（供日报使用）
+        self._daily_log.append({
+            'timestamp': datetime.now().isoformat(timespec='seconds'),
+            'n_signals': len(signals),
+            'pass_rate': report.pass_rate,
+            'avg_deviation_bps': report.avg_deviation_bps,
+            'passed': report.passed,
+        })
+
+        return report
+
+    def generate_daily_report(self, save_path: Optional[str] = None) -> Dict:
+        """
+        生成当日纸交易汇总报告。
+
+        Returns
+        -------
+        dict — 报告摘要（也写入 JSON 文件）
+        """
+        if not self._daily_log:
+            return {'status': 'no_data', 'date': date.today().isoformat()}
+
+        total_signals = sum(e['n_signals'] for e in self._daily_log)
+        avg_pass_rate = sum(e['pass_rate'] for e in self._daily_log) / len(self._daily_log)
+        avg_deviation = sum(e['avg_deviation_bps'] for e in self._daily_log) / len(self._daily_log)
+        all_passed = all(e['passed'] for e in self._daily_log)
+
+        # 信号一致率：pass_rate ≥ signal_match_target
+        signal_match_ok = avg_pass_rate >= self.signal_match_target
+
+        report = {
+            'date': date.today().isoformat(),
+            'generated_at': datetime.now().isoformat(timespec='seconds'),
+            'futu_connected': self._futu_broker is not None and self._futu_broker.is_connected(),
+            'total_signals_validated': total_signals,
+            'n_batches': len(self._daily_log),
+            'avg_pass_rate': round(avg_pass_rate, 4),
+            'avg_deviation_bps': round(avg_deviation, 2),
+            'signal_match_target': self.signal_match_target,
+            'signal_match_ok': signal_match_ok,
+            'all_batches_passed': all_passed,
+            'status': 'PASS' if (all_passed and signal_match_ok) else 'FAIL',
+            'batches': self._daily_log,
+        }
+
+        if save_path is None:
+            save_path = os.path.join(
+                _OUTPUTS_DIR,
+                f'futu_paper_daily_{date.today().isoformat()}.json',
+            )
+
+        with open(save_path, 'w', encoding='utf-8') as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+
+        logger.info(
+            '[FutuPaperValidator] 日报已保存: %s | 信号一致率=%.1f%% | 状态=%s',
+            save_path, avg_pass_rate * 100, report['status'],
+        )
+
+        # 清空当日日志（下一天重新累计）
+        self._daily_log = []
+        return report
+
+    def disconnect(self) -> None:
+        """断开 FutuBroker 连接。"""
+        if self._futu_broker is not None:
+            self._futu_broker.disconnect()

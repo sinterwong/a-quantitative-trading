@@ -289,12 +289,15 @@ class TestStubBrokers(unittest.TestCase):
         b = FutuBroker()
         self.assertFalse(b.connect())
 
-    def test_futu_submit_order_raises(self):
+    def test_futu_submit_order_offline_returns_zero_fill(self):
+        """FutuBroker 未连接时 submit_order 应优雅降级（返回零股成交，不抛异常）。"""
         from core.brokers.futu import FutuBroker
+        from core.oms import Fill
         b = FutuBroker()
-        with self.assertRaises(NotImplementedError):
-            b.submit_order(Order(symbol='00700.HK', direction='BUY',
-                                 order_type='MARKET', shares=100))
+        fill = b.submit_order(Order(symbol='00700.HK', direction='BUY',
+                                    order_type='MARKET', shares=100))
+        self.assertIsInstance(fill, Fill)
+        self.assertEqual(fill.shares, 0)
 
     def test_tiger_is_broker_base(self):
         from core.brokers.tiger import TigerBroker

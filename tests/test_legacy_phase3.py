@@ -30,15 +30,16 @@ class TestBrokerFactory(unittest.TestCase):
         self.assertEqual(broker.name, 'PaperBroker')
         print(f'\nPaperBroker name: {broker.name} OK')
 
-    def test_futu_stub_rejects_submit_order(self):
-        """FutuBroker stub 可实例化，但 submit_order 应抛 NotImplementedError。"""
+    def test_futu_submit_order_offline_graceful(self):
+        """FutuBroker 已完整实现：未连接时 submit_order 优雅降级（返回零股 Fill）。"""
         from core.brokers.futu import FutuBroker
-        from core.oms import Order
+        from core.oms import Order, Fill
         b = FutuBroker()
-        with self.assertRaises(NotImplementedError):
-            b.submit_order(Order(symbol='00700.HK', direction='BUY',
-                                 order_type='MARKET', shares=100))
-        print('\nFutuBroker submit_order raises NotImplementedError OK')
+        fill = b.submit_order(Order(symbol='00700.HK', direction='BUY',
+                                    order_type='MARKET', shares=100))
+        self.assertIsInstance(fill, Fill)
+        self.assertEqual(fill.shares, 0)
+        print('\nFutuBroker submit_order offline → zero fill OK')
 
     def test_tiger_stub_rejects_submit_order(self):
         from core.brokers.tiger import TigerBroker
