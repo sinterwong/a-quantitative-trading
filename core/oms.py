@@ -472,6 +472,114 @@ class OMS:
 
         return self.PreTradeResult(passed=True)
 
+    def submit_algo_order(
+        self,
+        algo: str,
+        symbol: str,
+        direction: str,
+        total_shares: int,
+        duration_minutes: int = 60,
+        reference_price: float = 0.0,
+        slice_interval: int = 5,
+        volume_profile: Optional[List[float]] = None,
+    ) -> 'AlgoOrderResult':
+        """
+        提交算法订单（VWAP / TWAP），返回模拟执行结果。
+
+        此方法用于模拟仿真（SimulatedBroker）：
+          - 生成子单列表
+          - 用当前持仓价格模拟成交（均价成交，无滑点估算时使用 reference_price）
+          - 统计市场冲击
+
+        Parameters
+        ----------
+        algo : str
+            算法类型：'VWAP' 或 'TWAP'
+        symbol : str
+            标的代码
+        direction : str
+            'BUY' 或 'SELL'
+        total_shares : int
+            目标总股数
+        duration_minutes : int
+            执行时长（分钟）
+        reference_price : float
+            参考价格（用于计算滑点）
+        slice_interval : int
+            子单间隔（分钟）
+        volume_profile : List[float] or None
+            成交量分布（VWAP 用，None 时自动使用默认 U 型分布）
+
+        Returns
+        -------
+        AlgoOrderResult
+        """
+        from core.execution.vwap_executor import VWAPExecutor
+        from core.execution.twap_executor import TWAPExecutor
+        from core.execution.impact_estimator import ImpactEstimator
+
+        algo_upper = algo.upper()
+        if algo_upper == 'VWAP':
+            executor = VWAPExecutor(
+                symbol=symbol,
+                direction=direction,
+                total_shares=total_shares,
+                duration_minutes=duration_minutes,
+                reference_price=reference_price,
+                slice_interval=slice_interval,
+            )
+        elif algo_upper == 'TWAP':
+            executor = TWAPExecutor(
+                symbol=symbol,
+                direction=direction,
+                total_shares=total_shares,
+                duration_minutes=duration_minutes,
+                reference_price=reference_price,
+                slice_interval=slice_interval,
+            )
+        else:
+            raise ValueError(f"Unknown algo: {algo}. Supported: VWAP, TWAP")
+
+        slices = executor.generate_slices(volume_profile)
+
+        # 简单模拟：所有子单均以 reference_price 成交
+        import random
+        total_filled = 0
+        total_value = 0.0
+        for sl in slices:
+            price = reference_price * (1 + random.gauss(0, 0.0005))
+            sl.filled_shares = sl.target_shares
+            sl.fill_price = round(max(price, 0.01), 3)
+            sl.status = 'FILLED'
+            total_filled += sl.filled_shares
+            total_value += sl.filled_shares * sl.fill_price
+
+        avg_price = total_value / total_filled if total_filled > 0 else reference_price
+        slippage_bps = (
+            abs(avg_price - reference_price) / reference_price * 10_000
+            if reference_price > 0 else 0.0
+        )
+
+        # 市场冲击估算（假设日均成交量 = total_shares / 0.05，即参与率约 5%）
+        assumed_daily_vol = total_shares / 0.05
+        impact_bps = ImpactEstimator.estimate(total_shares, assumed_daily_vol)
+
+        from core.execution.algo_base import AlgoOrderResult
+        result = AlgoOrderResult(
+            order_id=executor.order_id,
+            symbol=symbol,
+            direction=direction,
+            target_shares=total_shares,
+            filled_shares=total_filled,
+            avg_fill_price=round(avg_price, 3),
+            slippage_bps=round(slippage_bps, 2),
+            market_impact_bps=round(impact_bps, 2),
+            n_slices=len(slices),
+            duration_minutes=duration_minutes,
+            slices=slices,
+        )
+        return result
+
     def cancel(self, order_id: str) -> bool:
         return self.broker.cancel(order_id)
 
