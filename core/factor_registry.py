@@ -125,6 +125,10 @@ def _auto_register() -> None:
         BidAskSpreadFactor, BuyingPressureFactor,
         SectorMomentumFactor, IndexRelativeStrengthFactor,
     )
+    from core.factors.fundamental import (
+        PEPercentileFactor, ROEMomentumFactor, EarningsSurpriseFactor,
+        RevenueGrowthFactor, CashFlowQualityFactor,
+    )
 
     # 原有价格动量因子
     registry.register(RSIFactor, default_params={'period': 14})
@@ -141,6 +145,13 @@ def _auto_register() -> None:
     registry.register(BuyingPressureFactor, default_params={'window': 10})
     registry.register(SectorMomentumFactor, default_params={'momentum_window': 20})
     registry.register(IndexRelativeStrengthFactor, default_params={'window': 20})
+
+    # 基本面因子（A-3）
+    registry.register(PEPercentileFactor, default_params={'lookback_years': 3})
+    registry.register(ROEMomentumFactor, default_params={'diff_days': 252})
+    registry.register(EarningsSurpriseFactor, default_params={'diff_days': 252})
+    registry.register(RevenueGrowthFactor, default_params={'accel_window': 60})
+    registry.register(CashFlowQualityFactor, default_params={'rolling_window': 60})
 
 
 _auto_register()

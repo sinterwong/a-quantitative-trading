@@ -187,9 +187,13 @@ class FactorPipeline:
             factor = self._reg.create(name_or_cls, **kw)
         elif isinstance(name_or_cls, type) and issubclass(name_or_cls, Factor):
             factor = name_or_cls(**kw)
+        elif isinstance(name_or_cls, Factor):
+            # 直接传入因子实例（适合需要外部数据的因子，如基本面因子）
+            factor = name_or_cls
         else:
             raise TypeError(
-                f"name_or_cls must be a str or Factor subclass, got {type(name_or_cls)}"
+                f"name_or_cls must be a str, Factor subclass, or Factor instance, "
+                f"got {type(name_or_cls)}"
             )
 
         self._entries.append(_FactorEntry(factor=factor, weight=weight))
