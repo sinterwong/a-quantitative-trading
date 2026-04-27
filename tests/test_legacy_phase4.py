@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import unittest
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from core.level2 import (
     Level2DataSource, OrderBook, TickBarAggregator, TickBar,
@@ -85,7 +85,7 @@ class TestOrderFlowFactors(unittest.TestCase):
                 amount=26520000,
             )
             obs.append(ob)
-            ts = ts.replace(second=ts.second + 1)
+            ts = ts + timedelta(seconds=1)
 
         factor = OrderImbalanceFactor(lookback=20)
         result = factor.evaluate(obs)
@@ -111,7 +111,7 @@ class TestOrderFlowFactors(unittest.TestCase):
                 amount=26200000,
             )
             obs.append(ob)
-            ts = ts.replace(second=ts.second + 1)
+            ts = ts + timedelta(seconds=1)
 
         factor = OrderImbalanceFactor(lookback=20)
         result = factor.evaluate(obs)

@@ -171,7 +171,7 @@
   - `SimulatedBroker`：A 股整手 / 印花税 / 滑点 / 涨跌停全规则；40 项测试通过
   - Futu / Tiger / IBKR stub 均重写继承 BrokerBase，含详细 SDK 接入 TODO 注释
 
-- [ ] **[P0] 实现 FutuBroker（港股纸交易）**
+- [x] **[P0] 实现 FutuBroker（港股纸交易）** ✅ 2026-04-27
   - 文件：`core/brokers/futu.py`（当前仅 stub，接口已预留）
   - 依赖：安装 futu-api（`pip install futu-api`），部署 OpenD 客户端
   - 实现方法：`connect()`, `get_positions()`, `get_cash()`, `submit_order()`, `cancel_order()`
