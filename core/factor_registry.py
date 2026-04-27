@@ -153,5 +153,13 @@ def _auto_register() -> None:
     registry.register(RevenueGrowthFactor, default_params={'accel_window': 60})
     registry.register(CashFlowQualityFactor, default_params={'rolling_window': 60})
 
+    # 情绪因子（A-4）
+    from core.factors.sentiment import (
+        MarginTradingFactor, NorthboundFlowFactor, ShortInterestFactor,
+    )
+    registry.register(MarginTradingFactor, default_params={'short_window': 5, 'long_window': 20})
+    registry.register(NorthboundFlowFactor, default_params={'window': 5})
+    registry.register(ShortInterestFactor, default_params={'window': 10})
+
 
 _auto_register()
