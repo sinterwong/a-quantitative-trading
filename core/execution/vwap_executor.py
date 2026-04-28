@@ -130,28 +130,39 @@ class VWAPExecutor(AlgoOrder):
         # 获取成交量分布
         profile = self._resolve_profile(volume_profile, n_slices)
 
-        # 按分布分配股数（最后一片吸收舍入误差）
+        # 按分布分配股数
         raw_shares = [self.total_shares * w for w in profile]
         slice_shares = [max(100, (int(s) // 100) * 100) for s in raw_shares]
 
-        # 修正总量：因取整导致总量可能偏离
+        # 修正总量：取整可能导致超额或不足
         allocated = sum(slice_shares)
         remainder = self.total_shares - allocated
         if remainder != 0 and slice_shares:
-            # 将差额加到最后一片（确保总量正确）
-            adj = (slice_shares[-1] + remainder // 100 * 100)
-            slice_shares[-1] = max(100, adj)
+            if remainder > 0:
+                # 不足：差额（向下取整至百股）加到最后一片
+                adj = slice_shares[-1] + (remainder // 100) * 100
+                slice_shares[-1] = max(100, adj)
+            else:
+                # 超额：从最后一片扣减，不足 100 股则删除该片
+                excess = -remainder
+                adj = slice_shares[-1] - (excess // 100) * 100
+                if adj >= 100:
+                    slice_shares[-1] = adj
+                else:
+                    slice_shares.pop()
+                    profile = profile[:len(slice_shares)]
 
         # 生成 OrderSlice
         slices: List[OrderSlice] = []
         for i, shares in enumerate(slice_shares):
             t = self.start_time + timedelta(minutes=i * self.slice_interval)
+            w = profile[i] if i < len(profile) else 0.0
             sl = self._make_slice(
                 target_shares=shares,
                 scheduled_time=t,
                 algo='VWAP',
                 slice_index=i,
-                slice_weight=profile[i],
+                slice_weight=w,
             )
             slices.append(sl)
 
