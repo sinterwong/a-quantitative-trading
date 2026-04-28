@@ -130,7 +130,7 @@ def init_db():
         if cur.fetchone() is None:
             cur.execute(
                 'INSERT INTO cash (id, amount, updated_at) VALUES (1, ?, ?)',
-                (20000.0, datetime.now().isoformat())
+                (100000.0, datetime.now().isoformat())
             )
 
         # Add latest_price column if not exists (migration from older schema)
