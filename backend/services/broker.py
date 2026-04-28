@@ -47,7 +47,7 @@ PROJ_DIR = os.path.dirname(BACKEND_DIR)
 sys.path.insert(0, PROJ_DIR)
 
 sys.path.insert(0, os.path.join(PROJ_DIR, 'scripts'))
-from services.portfolio import PortfolioService
+from .portfolio import PortfolioService
 
 logger = logging.getLogger('broker')
 

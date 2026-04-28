@@ -45,7 +45,7 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = THIS_DIR
 sys.path.insert(0, BACKEND_DIR)
 
-from services.portfolio import PortfolioService, get_cursor
+from .portfolio import PortfolioService, get_cursor
 
 INITIAL_CAPITAL = 20000.0  # 初始资金
 BENCHMARK_CODE = 'sh000300'  # 沪深300 作为基准

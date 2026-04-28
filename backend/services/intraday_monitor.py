@@ -28,7 +28,7 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = THIS_DIR
 sys.path.insert(0, BACKEND_DIR)
 
-from services.signals import (
+from .signals import (
     check_portfolio_signals,
     evaluate_signal,
     format_feishu_message,

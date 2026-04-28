@@ -204,9 +204,9 @@ def _run_test_module(module_name, label):
     global passed, failed
     result = subprocess.run(
         [_sys.executable, os.path.join(THIS_DIR, module_name)],
-        capture_output=True, text=True, encoding='utf-8'
+        capture_output=True, text=True, encoding='utf-8', errors='replace'
     )
-    output = result.stdout + result.stderr
+    output = (result.stdout or '') + (result.stderr or '')
     # 解析最后一行摘要
     for line in reversed(output.splitlines()):
         line = line.strip()
@@ -258,10 +258,10 @@ def _run_pytest_module(module_name, label):
     result = subprocess.run(
         [_sys.executable, '-m', 'pytest', os.path.join(THIS_DIR, module_name),
          '-q', '--tb=short'],
-        capture_output=True, text=True, encoding='utf-8',
+        capture_output=True, text=True, encoding='utf-8', errors='replace',
         cwd=os.path.dirname(THIS_DIR),
     )
-    output = result.stdout + result.stderr
+    output = (result.stdout or '') + (result.stderr or '')
     for line in reversed(output.splitlines()):
         line = line.strip()
         # pytest summary: "53 passed" or "52 passed, 1 failed"
