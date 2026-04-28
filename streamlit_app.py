@@ -736,11 +736,12 @@ elif page == '🤖 ML 模型':
                     if factor_imp.load():
                         # feature_importance() is on the underlying predictor
                         predictor = getattr(factor_imp, '_predictor', None)
-                        importance = predictor.feature_importance() if predictor is not None else None
-                        if importance:
-                            df_imp = pd.DataFrame(
-                                list(importance.items()), columns=['特征', '重要性']
-                            ).sort_values('重要性', ascending=False).head(20)
+                        importance = predictor.feature_importance() if predictor is not None else pd.Series(dtype=float)
+                        if importance is not None and not importance.empty:
+                            df_imp = pd.DataFrame({
+                                '特征': importance.index,
+                                '重要性': importance.values,
+                            }).head(20)
                             fig = px.bar(
                                 df_imp, x='重要性', y='特征', orientation='h',
                                 title=f'{imp_symbol} Top-20 特征重要性',
