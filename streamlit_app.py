@@ -1407,49 +1407,97 @@ elif page == '📉 回测验证':
             else:
                 sens_sym = sens_sym_sel
 
+            # 因子选择 + 参数提示
+            _FACTOR_PARAMS = {
+                'RSI':          ('period', '7,10,14,21,28',     'buy_threshold', '20,25,30,35,40'),
+                'ATR':          ('period', '7,10,14,21,28',     'lookback',      '10,15,20,30,40'),
+                'MACD':         ('fast',   '5,8,12,16,20',      'slow',          '20,26,34,40,50'),
+                'BollingerBands':('period','10,15,20,30,40',    'nb_std',        '1.5,2.0,2.5,3.0,3.5'),
+            }
+            sens_factor = st.selectbox('因子', list(_FACTOR_PARAMS.keys()), key='sens_factor')
+            _dp1n, _dp1v, _dp2n, _dp2v = _FACTOR_PARAMS[sens_factor]
+
             col_s1, col_s2 = st.columns(2)
             with col_s1:
-                p1_name = st.text_input('参数 1 名称', 'rsi_period')
-                p1_vals = st.text_input('参数 1 取值（逗号分隔）', '7,10,14,21,28')
+                p1_name = st.text_input('参数 1 名称', _dp1n, key='p1_name')
+                p1_vals = st.text_input('参数 1 取值（逗号分隔）', _dp1v, key='p1_vals')
             with col_s2:
-                p2_name = st.text_input('参数 2 名称', 'atr_mult')
-                p2_vals = st.text_input('参数 2 取值（逗号分隔）', '2,2.5,3,3.5,4')
+                p2_name = st.text_input('参数 2 名称', _dp2n, key='p2_name')
+                p2_vals = st.text_input('参数 2 取值（逗号分隔）', _dp2v, key='p2_vals')
 
-            if st.button('运行敏感性分析', disabled=not backend_ok):
+            if st.button('运行敏感性分析'):
                 try:
                     p1 = [float(v.strip()) for v in p1_vals.split(',') if v.strip()]
                     p2 = [float(v.strip()) for v in p2_vals.split(',') if v.strip()]
-                    import subprocess
-                    cmd_s = [
-                        sys.executable,
-                        os.path.join(BASE_DIR, 'scripts', 'sensitivity_job.py'),
-                        '--symbol', sens_sym,
-                        '--param1', p1_name, '--p1-values', ','.join(str(v) for v in p1),
-                        '--param2', p2_name, '--p2-values', ','.join(str(v) for v in p2),
-                    ]
-                    with st.spinner('敏感性扫描中...'):
-                        res_s = subprocess.run(
-                            cmd_s, capture_output=True, encoding='utf-8', timeout=300,
-                        )
-                    if res_s.returncode == 0:
-                        st.success('完成')
-                        heat_path = os.path.join(OUTPUTS_DIR, f'sensitivity_{sens_sym}.png')
-                        if os.path.exists(heat_path):
-                            st.image(heat_path, caption='Sharpe 热力图')
+                    if not p1 or not p2:
+                        st.error('参数取值列表不能为空')
                     else:
-                        st.warning(res_s.stderr[-1000:] or '脚本未返回输出')
-                except FileNotFoundError:
-                    st.info('scripts/sensitivity_job.py 不存在，请自行运行 SensitivityAnalyzer。')
+                        import subprocess
+                        cmd_s = [
+                            sys.executable,
+                            os.path.join(BASE_DIR, 'scripts', 'sensitivity_job.py'),
+                            '--symbol', sens_sym,
+                            '--factor', sens_factor,
+                            '--param1', p1_name, '--p1-values', ','.join(str(v) for v in p1),
+                            '--param2', p2_name, '--p2-values', ','.join(str(v) for v in p2),
+                        ]
+                        with st.spinner('敏感性扫描中（可能需要 1-3 分钟）...'):
+                            res_s = subprocess.run(
+                                cmd_s, capture_output=True, encoding='utf-8',
+                                errors='replace', timeout=300,
+                            )
+                        if res_s.returncode == 0:
+                            st.success('完成')
+                            # 优先展示 PNG，降级展示 CSV（matplotlib 未安装时）
+                            png_path = os.path.join(OUTPUTS_DIR, f'sensitivity_{sens_sym}.png')
+                            csv_path = os.path.join(OUTPUTS_DIR, f'sensitivity_{sens_sym}.csv')
+                            if os.path.exists(png_path):
+                                st.image(png_path, caption='Sharpe 热力图')
+                            elif os.path.exists(csv_path):
+                                heat_df = pd.read_csv(csv_path, index_col=0)
+                                fig_heat = px.imshow(
+                                    heat_df.astype(float),
+                                    color_continuous_scale='RdYlGn',
+                                    color_continuous_midpoint=0,
+                                    text_auto='.2f',
+                                    labels={'x': p2_name, 'y': p1_name, 'color': 'Sharpe'},
+                                    title=f'{sens_factor} Sensitivity — {sens_sym}',
+                                )
+                                fig_heat.update_layout(height=400)
+                                st.plotly_chart(fig_heat, use_container_width=True)
+                            st.code(res_s.stdout[-2000:] or '（无输出）', language='text')
+                        else:
+                            st.error(f'脚本返回错误 (exit {res_s.returncode})')
+                            st.code(res_s.stderr[-2000:] or res_s.stdout[-1000:], language='text')
+                except subprocess.TimeoutExpired:
+                    st.error('扫描超时（> 300s），请缩减参数网格')
                 except Exception as e:
                     st.error(f'运行失败: {e}')
 
             # 显示已有热力图
             if os.path.exists(OUTPUTS_DIR):
-                heatmaps = [f for f in os.listdir(OUTPUTS_DIR) if f.startswith('sensitivity_')]
+                heatmaps = [f for f in os.listdir(OUTPUTS_DIR)
+                            if f.startswith('sensitivity_') and f.endswith(('.png', '.csv'))]
                 if heatmaps:
                     st.markdown('---')
                     selected_hm = st.selectbox('已有热力图', heatmaps, key='sel_hm')
-                    st.image(os.path.join(OUTPUTS_DIR, selected_hm))
+                    hm_full = os.path.join(OUTPUTS_DIR, selected_hm)
+                    if selected_hm.endswith('.png'):
+                        st.image(hm_full)
+                    else:
+                        try:
+                            hm_df = pd.read_csv(hm_full, index_col=0)
+                            fig_hm = px.imshow(
+                                hm_df.astype(float),
+                                color_continuous_scale='RdYlGn',
+                                color_continuous_midpoint=0,
+                                text_auto='.2f',
+                                title=selected_hm.replace('.csv', ''),
+                            )
+                            fig_hm.update_layout(height=400)
+                            st.plotly_chart(fig_hm, use_container_width=True)
+                        except Exception as e:
+                            st.error(f'读取热力图失败: {e}')
 
     # ── Tab 3: 一致性验证 ─────────────────────────────────────
     with tab_val:
