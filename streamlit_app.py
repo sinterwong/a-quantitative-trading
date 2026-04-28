@@ -1351,7 +1351,12 @@ elif page == '📉 回测验证':
         sym_opts_w = [s['symbol'] for s in live_syms_w] if live_syms_w else ['510310.SH']
 
         cw1, cw2, cw3 = st.columns(3)
-        with cw1: wfa_sym = st.selectbox('标的', sym_opts_w)
+        with cw1:
+            wfa_sym_sel = st.selectbox('标的', sym_opts_w + ['自定义'], key='wfa_sym_sel')
+            if wfa_sym_sel == '自定义':
+                wfa_sym = st.text_input('输入标的代码', '000001.SZ', key='wfa_sym_custom')
+            else:
+                wfa_sym = wfa_sym_sel
         with cw2: wfa_strat = st.selectbox('策略', ['RSI', 'MACD', 'Bollinger'])
         with cw3: wfa_yrs = st.number_input('训练年数', 1, 5, 2)
         wfa_test_yrs = st.number_input('验证年数', 1, 3, 1)
@@ -1396,7 +1401,11 @@ elif page == '📉 回测验证':
             cfg_s = load_trading_config()
             live_syms_s = cfg_s.get('live_symbols', [])
             sym_opts_s = [s['symbol'] for s in live_syms_s] if live_syms_s else ['510310.SH']
-            sens_sym = st.selectbox('标的', sym_opts_s, key='sens_sym')
+            sens_sym_sel = st.selectbox('标的', sym_opts_s + ['自定义'], key='sens_sym')
+            if sens_sym_sel == '自定义':
+                sens_sym = st.text_input('输入标的代码', '000001.SZ', key='sens_sym_custom')
+            else:
+                sens_sym = sens_sym_sel
 
             col_s1, col_s2 = st.columns(2)
             with col_s1:
