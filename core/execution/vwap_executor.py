@@ -52,6 +52,7 @@ def _default_volume_profile(n_slices: int) -> List[float]:
     A 股典型 U 型成交量分布（开盘/收盘量大，盘中量小）。
     n_slices 个时间片的归一化分布。
     """
+    n_slices = int(n_slices)
     if n_slices <= 0:
         return []
     # 用半正弦 + 两端增强近似 U 型分布
@@ -104,7 +105,7 @@ class VWAPExecutor(AlgoOrder):
             duration_minutes=duration_minutes,
             reference_price=reference_price,
         )
-        self.slice_interval = max(1, slice_interval)
+        self.slice_interval = max(1, int(slice_interval))
         self.start_time = start_time or datetime.now()
 
     def generate_slices(
@@ -124,7 +125,7 @@ class VWAPExecutor(AlgoOrder):
         -------
         List[OrderSlice]，按 scheduled_time 升序
         """
-        n_slices = max(1, self.duration_minutes // self.slice_interval)
+        n_slices = max(1, int(self.duration_minutes) // int(self.slice_interval))
 
         # 获取成交量分布
         profile = self._resolve_profile(volume_profile, n_slices)

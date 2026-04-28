@@ -79,7 +79,7 @@ class TWAPExecutor(AlgoOrder):
             duration_minutes=duration_minutes,
             reference_price=reference_price,
         )
-        self.slice_interval = max(1, slice_interval)
+        self.slice_interval = max(1, int(slice_interval))
         self.start_time = start_time or datetime.now()
         self.jitter_pct = max(0.0, min(jitter_pct, 0.5))
 
@@ -94,7 +94,7 @@ class TWAPExecutor(AlgoOrder):
         -------
         List[OrderSlice]，按 scheduled_time 升序
         """
-        n_slices = max(1, self.duration_minutes // self.slice_interval)
+        n_slices = max(1, int(self.duration_minutes) // int(self.slice_interval))
 
         # 均匀分配股数
         base_shares = (self.total_shares // n_slices // 100) * 100
@@ -134,7 +134,7 @@ class TWAPExecutor(AlgoOrder):
     @property
     def slice_count(self) -> int:
         """子单数量。"""
-        return max(1, self.duration_minutes // self.slice_interval)
+        return max(1, int(self.duration_minutes) // int(self.slice_interval))
 
     @property
     def shares_per_slice(self) -> int:

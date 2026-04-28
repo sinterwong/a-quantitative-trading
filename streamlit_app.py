@@ -218,11 +218,26 @@ def limit_up_pct(symbol: str) -> float:
 
 
 def _make_price_df_from_akshare(symbol: str, days: int = 300) -> Optional[pd.DataFrame]:
-    """从 AKShare 拉取日线数据用于因子计算。"""
+    """拉取日线数据用于因子计算。优先使用 DataLayer，AKShare 作为备选。"""
+    # ── 主路径：DataLayer（本地缓存 + tushare/baostock） ──
+    try:
+        from core.data_layer import DataLayer
+        dl = DataLayer()
+        df = dl.get_bars(symbol, days=days)
+        if df is not None and not df.empty:
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'])
+                df = df.set_index('date')
+            df = df.sort_index()
+            cols = [c for c in ['open', 'high', 'low', 'close', 'volume'] if c in df.columns]
+            return df[cols].tail(days)
+    except Exception:
+        pass
+
+    # ── 备选路径：AKShare ────────────────────────────────
     try:
         import akshare as ak
         code = symbol.split('.')[0]
-        mkt = 'sh' if symbol.upper().endswith('.SH') else 'sz'
         df = ak.stock_zh_a_hist(
             symbol=code, period='daily',
             start_date=(datetime.now() - timedelta(days=days * 2)).strftime('%Y%m%d'),
@@ -356,14 +371,9 @@ if page == '📊 仪表盘':
     with col_right:
         st.subheader('市场状态')
         try:
-            from core.regime import get_market_regime
-            daily_stats = load_daily_stats(60)
-            if daily_stats:
-                df_reg = pd.DataFrame(daily_stats)
-                regime_info = get_market_regime(df_reg)
-                regime = regime_info.regime if hasattr(regime_info, 'regime') else str(regime_info)
-            else:
-                regime = 'UNKNOWN'
+            from core.regime import get_regime
+            regime_info = get_regime()
+            regime = regime_info.regime if hasattr(regime_info, 'regime') else str(regime_info)
         except Exception:
             regime = 'UNKNOWN'
 
@@ -541,11 +551,13 @@ elif page == '🎯 因子工作台':
 
                     # 当前动态权重
                     try:
-                        w_df = pipeline.current_weights()
-                        if w_df is not None and not w_df.empty:
+                        w_dict = pipeline.current_weights()
+                        if w_dict:
                             st.caption('当前动态权重（基于滚动 IC）')
-                            st.dataframe(w_df.reset_index(), hide_index=True,
-                                         use_container_width=True)
+                            w_df = pd.DataFrame(
+                                list(w_dict.items()), columns=['因子', '权重']
+                            )
+                            st.dataframe(w_df, hide_index=True, use_container_width=True)
                     except Exception:
                         pass
 
@@ -640,7 +652,7 @@ elif page == '🤖 ML 模型':
                                     '版本':        meta.get('version', '—'),
                                     '训练样本数':  meta.get('n_samples', '—'),
                                     '特征数':      meta.get('n_features', '—'),
-                                    'OOS Sharpe':  f"{meta.get('oos_sharpe', 0):.3f}" if meta.get('oos_sharpe') else '—',
+                                    'OOS AUC':     f"{meta.get('oos_auc', 0):.3f}" if meta.get('oos_auc') else '—',
                                     '训练时间':    str(meta.get('trained_at', ''))[:16],
                                 })
                             except Exception:
@@ -685,26 +697,25 @@ elif page == '🤖 ML 模型':
 
                             st.success('训练完成！')
                             col_r1, col_r2, col_r3 = st.columns(3)
-                            if hasattr(wf_result, 'oos_sharpe'):
-                                col_r1.metric('OOS Sharpe', f'{wf_result.oos_sharpe:.3f}')
-                            if hasattr(wf_result, 'n_windows'):
-                                col_r2.metric('验证窗口数', wf_result.n_windows)
-                            if hasattr(wf_result, 'positive_sharpe_ratio'):
-                                col_r3.metric('正 Sharpe 比例',
-                                              f'{wf_result.positive_sharpe_ratio:.1%}')
+                            if hasattr(wf_result, 'oos_accuracy') and wf_result.oos_accuracy is not None:
+                                col_r1.metric('OOS 准确率', f'{wf_result.oos_accuracy:.3f}')
+                            if hasattr(wf_result, 'oos_auc') and wf_result.oos_auc is not None:
+                                col_r2.metric('OOS AUC', f'{wf_result.oos_auc:.3f}')
+                            if hasattr(wf_result, 'n_folds'):
+                                col_r3.metric('验证折数', wf_result.n_folds)
 
-                            # 各窗口 Sharpe 图
-                            if hasattr(wf_result, 'window_results') and wf_result.window_results:
-                                sharpes = [w.get('oos_sharpe', 0) for w in wf_result.window_results]
+                            # 各折 AUC 图
+                            if hasattr(wf_result, 'fold_metrics') and wf_result.fold_metrics:
+                                aucs = [w.get('auc', 0) for w in wf_result.fold_metrics]
                                 fig = px.bar(
-                                    x=list(range(1, len(sharpes) + 1)),
-                                    y=sharpes,
-                                    color=sharpes,
+                                    x=list(range(1, len(aucs) + 1)),
+                                    y=aucs,
+                                    color=aucs,
                                     color_continuous_scale='RdYlGn',
-                                    labels={'x': '验证窗口', 'y': 'OOS Sharpe'},
-                                    title='各窗口 OOS Sharpe',
+                                    labels={'x': '验证折', 'y': 'OOS AUC'},
+                                    title='各折 OOS AUC',
                                 )
-                                fig.add_hline(y=0, line_dash='dash', line_color='gray')
+                                fig.add_hline(y=0.5, line_dash='dash', line_color='gray')
                                 st.plotly_chart(fig, use_container_width=True)
 
                         except Exception as e:
@@ -722,8 +733,10 @@ elif page == '🤖 ML 模型':
             if st.button('加载特征重要性'):
                 try:
                     factor_imp = MLPredictionFactor(symbol=imp_symbol)
-                    if factor_imp.load(imp_symbol):
-                        importance = factor_imp.feature_importance()
+                    if factor_imp.load():
+                        # feature_importance() is on the underlying predictor
+                        predictor = getattr(factor_imp, '_predictor', None)
+                        importance = predictor.feature_importance() if predictor is not None else None
                         if importance:
                             df_imp = pd.DataFrame(
                                 list(importance.items()), columns=['特征', '重要性']
@@ -818,7 +831,10 @@ elif page == '⚖️ 组合优化':
                         st.plotly_chart(fig, use_container_width=True)
 
                         # 权重表格 + 换手率约束
-                        current_weights = np.array([1.0 / len(symbols_list)] * len(symbols_list))
+                        sym_keys = list(returns_dict.keys())
+                        current_weights = pd.Series(
+                            np.ones(len(sym_keys)) / len(sym_keys), index=sym_keys
+                        )
                         w_adj = optimizer.apply_turnover_constraint(
                             weights, current_weights, max_turnover=max_to
                         )
@@ -1201,7 +1217,7 @@ elif page == '📈 信号 & 执行':
                             total_shares=int(algo_shares),
                             duration_minutes=algo_dur,
                             reference_price=ref_price if ref_price > 0 else 10.0,
-                            slice_interval=algo_dur / algo_slices,
+                            slice_interval=max(1, algo_dur // algo_slices),
                         )
 
                         st.success('算法订单执行完成！')
@@ -1635,17 +1651,21 @@ elif page == '🏥 监控 & 告警':
                 with st.spinner('拉取数据...'):
                     df_dq = _make_price_df_from_akshare(dq_sym, dq_days)
                 if df_dq is not None:
-                    checker = DataQualityChecker()
-                    report_dq = checker.check(df_dq)
+                    checker = DataQualityChecker(symbol=dq_sym)
+                    checker.check_and_mark(df_dq)
+                    report_dq = checker.report
                     dq1, dq2, dq3 = st.columns(3)
-                    dq1.metric('数据质量评分', f'{report_dq.score:.0f}/100')
-                    dq2.metric('异常数据点', report_dq.n_anomalies)
-                    dq3.metric('总行数', len(df_dq))
+                    dq1.metric('数据质量评分', f'{report_dq.quality_score:.0f}/100')
+                    n_anomalies = (report_dq.n_zero_volume
+                                   + report_dq.n_abnormal_moves
+                                   + report_dq.n_gaps)
+                    dq2.metric('异常数据点', n_anomalies)
+                    dq3.metric('总行数', report_dq.total_bars)
 
-                    if report_dq.issues:
+                    if report_dq.anomalies:
                         with st.expander('问题明细'):
-                            for issue in report_dq.issues:
-                                st.warning(issue)
+                            for anm in report_dq.anomalies:
+                                st.warning(f'[{anm.anomaly_type}] {anm.date} — {anm.detail}')
                 else:
                     st.error('数据获取失败')
         except Exception as e:
