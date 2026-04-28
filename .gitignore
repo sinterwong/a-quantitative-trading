@@ -39,6 +39,8 @@ scripts/cache/
 scripts/quant/cache/
 scripts/quant/journal/
 
+data/
+
 # Skills (OpenClaw-specific)
 skills/
 
