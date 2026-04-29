@@ -475,32 +475,49 @@ def build_and_push_morning_report(candidates: list, buy_results: list,
     """生成结构化早报文本并推送飞书。"""
     try:
         import morning_report
-        report = morning_report.build_report()
+        # 将 morning_runner 已计算好的数据直接传入，避免重复抓取
+        # candidates 字段名可能是 symbol/code，统一兼容
+        normalized_candidates = []
+        for c in candidates:
+            normalized_candidates.append({
+                'code':       c.get('code', c.get('symbol', '')),
+                'symbol':     c.get('symbol', c.get('code', '')),
+                'name':       c.get('name', ''),
+                'change_pct': c.get('pct', c.get('change_pct', 0)),
+                'sector_name': c.get('sector', c.get('sector_name', '')),
+                'total_score': c.get('score', c.get('total_score', c.get('total', 0))),
+            })
+        report = morning_report.build_report(
+            prefetched_stocks=normalized_candidates,
+            prefetched_regime=regime_info,
+            prefetched_orders=buy_results,
+        )
     except Exception as e:
         _log.error('morning_report.build_report failed: %s', e)
         report = None
 
-    # 如果 morning_report 不可用，手动构建简洁版
+    # 降级兜底：如果 morning_report 模块完全不可用
     if not report:
         executed = [r for r in buy_results if r.get('filled_shares', 0) > 0]
         lines = [
-            f"【早报】{date.today().isoformat()}",
+            f"【早报降级版】{date.today().isoformat()}",
             f"",
             f"市场环境: [{regime_info['regime']}] {regime_info.get('regime_reason', '')}",
             f"ATR ratio: {regime_info['atr_ratio']:.3f}",
             f"RSI参数: ({regime_info['rsi_buy']}/{regime_info['rsi_sell']})",
-            f"",
             f"开盘权益: {equity:.0f}  现金: {cash:.0f}",
             f"",
             f"候选标的 ({len(candidates)}只):",
         ]
         for c in candidates[:5]:
-            lines.append(f"  {c['symbol']} {c['name']} score={c['score']:.0f}")
+            lines.append(f"  {c.get('symbol', c.get('code', '?'))} {c.get('name', '')} "
+                         f"score={c.get('score', 0):.0f}")
         lines.append("")
         if executed:
             lines.append(f"已执行订单 ({len(executed)}笔):")
             for r in executed:
-                lines.append(f"  买入 {r['symbol']} {r['filled_shares']}股 @{r.get('avg_price', 0):.2f}")
+                lines.append(f"  买入 {r.get('symbol','?')} {r.get('filled_shares',0)}股 "
+                             f"@{r.get('avg_price', 0):.2f}")
         else:
             lines.append("已执行订单: 无")
         report = '\n'.join(lines)
