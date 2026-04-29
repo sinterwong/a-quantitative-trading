@@ -1,8 +1,8 @@
 # A 股量化交易系统
 
-基于 A 股的专业化量化研究与交易平台，支持多因子选股、机器学习价格预测、算法订单执行、组合优化与实时监控告警。
+基于 A 股的专业化量化研究与全自动模拟交易平台，支持多因子选股、机器学习价格预测、算法订单执行、组合优化、实时盘中监控与告警。
 
-> **系统状态**：~95 分 | 829 个测试全部通过 | 22 个因子 | SimulatedBroker + FutuBroker 双模式
+> **系统状态**：829 个测试全部通过 | 22 个因子 | SimulatedBroker + FutuBroker 双模式 | 全自动无人值守模拟交易就绪
 
 ---
 
@@ -11,9 +11,11 @@
 - [系统架构](#系统架构)
 - [核心能力概览](#核心能力概览)
 - [快速启动](#快速启动)
+- [自动化交易闭环](#自动化交易闭环)
 - [项目结构](#项目结构)
 - [核心模块详解](#核心模块详解)
   - [多因子系统](#多因子系统)
+  - [动态选股引擎](#动态选股引擎)
   - [机器学习框架](#机器学习框架)
   - [算法订单执行](#算法订单执行)
   - [组合优化器](#组合优化器)
@@ -31,48 +33,60 @@
 ## 系统架构
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        Web UI (Streamlit :8501)                         │
-│  组合概览 · 实时信号 · 动态选股 · 回测分析 · 持仓详情 · 历史交易 · 策略健康 │
-└────────────────────────────┬────────────────────────────────────────────┘
-                             │ HTTP
-┌────────────────────────────▼────────────────────────────────────────────┐
-│                    Backend Service (Flask :5555)                        │
-│  17 个 HTTP API 端点 · Scheduler（每日收盘分析）· IntradayMonitor（5分钟）│
-└──────────┬────────────────────────────────────────┬─────────────────────┘
-           │                                        │
-┌──────────▼──────────────────┐   ┌────────────────▼────────────────────┐
-│    数据层 (DataLayer)        │   │    策略执行层 (StrategyRunner)       │
-│  ├─ AKShare 日线/分钟 K 线   │   │  ├─ AsyncStrategyRunner (asyncio)   │
-│  ├─ Parquet 本地缓存         │   │  ├─ FactorPipeline + 动态权重        │
-│  ├─ Level2 盘口（5档）       │   │  ├─ Regime 自适应（4种市场状态）      │
-│  ├─ 基本面数据（财报季度）     │   │  └─ EventBus 信号分发              │
-│  └─ DataQualityChecker       │   └────────────────┬────────────────────┘
-└─────────────────────────────┘                    │
-                                    ┌──────────────▼───────────────────┐
-                                    │    因子层 (22 个因子)              │
-                                    │  价格动量(5) · 技术(7) · 基本面(5) │
-                                    │  情绪(3) · ML预测(1) · NLP情感(1) │
-                                    └──────────────┬───────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                        Web UI (Streamlit :8501)                          │
+│  组合概览 · 实时信号 · 动态选股 · 回测分析 · 持仓详情 · 历史交易 · 策略健康  │
+└──────────────────────────────┬───────────────────────────────────────────┘
+                               │ HTTP
+┌──────────────────────────────▼───────────────────────────────────────────┐
+│                    Backend Service (Flask :5555)                          │
+│  31 个 HTTP API 端点 · SQLite 持久化 · RotatingFileHandler 日志轮转        │
+│                                                                           │
+│  ┌──────────────────────┐  ┌──────────────────────────────────────────┐  │
+│  │  Scheduler           │  │  IntradayMonitor                         │  │
+│  │  每日 15:10 CST       │  │  盘中 5 分钟轮询 (09:30-15:00)            │  │
+│  │  A 股节假日感知        │  │  止盈/止损/新仓检测 · 飞书推送            │  │
+│  └──────────────────────┘  └──────────────────────────────────────────┘  │
+└──────────────┬──────────────────────────────┬────────────────────────────┘
+               │                              │
+┌──────────────▼──────────────┐  ┌────────────▼───────────────────────────┐
+│    数据层 (DataLayer)         │  │    策略执行层 (StrategyRunner)           │
+│  ├─ AKShare 日线/分钟 K 线    │  │  ├─ AsyncStrategyRunner (asyncio)      │
+│  ├─ Parquet 本地缓存          │  │  ├─ FactorPipeline + 动态 IC 加权       │
+│  ├─ Level2 盘口（5 档）       │  │  ├─ Regime 自适应（4 种市场状态）        │
+│  ├─ 基本面数据（财报季度）      │  │  └─ EventBus 信号分发                  │
+│  ├─ 北向/融资融券实时数据       │  └────────────────┬───────────────────────┘
+│  ├─ CircuitBreaker 熔断保护   │                   │
+│  └─ DataQualityChecker       │  ┌────────────────▼───────────────────────┐
+└─────────────────────────────┘  │    因子层 (22 个因子)                    │
+                                  │  价格动量(5) · 技术(7) · 基本面(5)       │
+                                  │  情绪(3) · ML 预测(1) · NLP 情感(1)     │
+                                  └────────────────┬───────────────────────┘
                                                    │
-           ┌───────────────────────────────────────▼───────────────────┐
-           │                  执行与优化层                               │
-           │  VWAPExecutor · TWAPExecutor · ImpactEstimator            │
-           │  PortfolioOptimizer (MVO/BL/风险平价/最大分散化)           │
-           │  PortfolioAllocator (多策略资金分配)                       │
-           └───────────────────────────────────────┬───────────────────┘
+           ┌───────────────────────────────────────▼───────────────────────┐
+           │               执行与优化层                                       │
+           │  OMS（启动时加载持仓）· VWAP/TWAP 执行 · ImpactEstimator        │
+           │  PortfolioOptimizer (MVO/BL/风险平价/最大分散化)                 │
+           │  PortfolioAllocator（多策略资金分配 + 再平衡）                   │
+           └───────────────────────────────────────┬───────────────────────┘
                                                    │
-     ┌─────────────────────────────────────────────▼─────────────────┐
-     │                        券商适配层                               │
-     │  SimulatedBroker (A股规则) · FutuBroker (OpenD纸交易)          │
-     │  TigerBroker stub · IBKRBroker stub                           │
-     └─────────────────────────────────────────────┬─────────────────┘
+     ┌─────────────────────────────────────────────▼─────────────────────┐
+     │                   风控体系（三层 + 组合层）                           │
+     │  RiskEngine (PreTrade/InTrade/PostTrade) · PositionBook 定期刷新   │
+     │  PortfolioRiskChecker · CVaR · MonteCarloStressTest (5000 次)      │
+     └─────────────────────────────────────────────┬─────────────────────┘
                                                    │
-           ┌────────────────────────────────────────▼──────────────┐
-           │              告警与监控                                  │
-           │  AlertManager (企业微信/钉钉/SMTP) · StrategyHealth     │
-           │  DailyDiffReporter · TCA 交易成本分析                   │
-           └───────────────────────────────────────────────────────┘
+     ┌─────────────────────────────────────────────▼─────────────────────┐
+     │                        券商适配层                                    │
+     │  SimulatedBroker (A 股规则) · FutuBroker (OpenD 纸交易)             │
+     │  TigerBroker stub · IBKRBroker stub                                │
+     └─────────────────────────────────────────────┬─────────────────────┘
+                                                   │
+           ┌────────────────────────────────────────▼──────────────────┐
+           │             告警与监控                                       │
+           │  AlertManager (企业微信/钉钉/SMTP) · StrategyHealth         │
+           │  DailyDiffReporter · TCA 交易成本分析                       │
+           └───────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -82,11 +96,14 @@
 | 模块 | 关键特性 |
 |------|---------|
 | **多因子系统** | 22 个因子（价格/技术/基本面/情绪/ML/NLP），动态 IC 加权 |
+| **动态选股** | 五维评分（新闻热度35%+板块行情35%+资金流向25%+技术趋势15%+成分股一致性10%） |
 | **ML 框架** | XGBoost Walk-Forward 训练（252/63/21 窗口），无模型时自动降级 |
 | **算法执行** | VWAP/TWAP 拆单，Almgren-Chriss 市场冲击估算，A 股整手处理 |
 | **组合优化** | 6 种方法：GMV/MaxSharpe/风险平价/BL/最大分散化/等权，Ledoit-Wolf 收缩 |
-| **三层风控** | PreTrade/InTrade/PostTrade + CVaR + 蒙特卡洛压力测试 |
+| **三层风控** | PreTrade/InTrade/PostTrade + CVaR + 蒙特卡洛压力测试，PositionBook 5 分钟定期刷新 |
+| **自动化调度** | Scheduler（每日15:10，A股节假日感知）+ IntradayMonitor（盘中5分钟轮询） |
 | **券商接入** | SimulatedBroker（完整 A 股规则）+ FutuBroker（OpenD SIMULATE 模式） |
+| **熔断保护** | CircuitBreaker（3 次失败触发，300s 冷却，CLOSED→OPEN→HALF_OPEN 状态机） |
 | **告警系统** | 企业微信/钉钉/SMTP 三渠道，频率限制，每日 P&L 报告 |
 | **回测引擎** | 无前视偏差，A 股印花税/涨跌停/停牌，Walk-Forward 验证 |
 | **异步执行** | `asyncio.gather()` 并发处理多标的，N 标的延迟从 N×200ms → 200ms |
@@ -161,6 +178,94 @@ streamlit run streamlit_app.py --server.port 8501
 
 ---
 
+## 自动化交易闭环
+
+系统实现了无人值守的全自动模拟交易闭环，由三层调度协同驱动：
+
+### 调度架构
+
+```
+每日 15:10 CST（Scheduler）
+    ↓
+is_trading_day()  ← AKShare 交易日历（A 股节假日感知）
+    ↓ 是交易日
+POST /analysis/run → StrategyRunner.run_once()
+    ├─ 固定标的扫描（config.live_symbols）
+    └─ 结果写入 SQLite + 飞书通知
+
+盘中每 5 分钟（IntradayMonitor，09:30-15:00）
+    ↓
+_check_and_push(now)
+    ├─ _check_stop_losses()    止损检测
+    ├─ _check_take_profits()   止盈检测
+    ├─ _check_new_positions()  动态选股建仓（DynamicStockSelectorV2）
+    ├─ _check_watchlist()      自选股异动
+    └─ _check_market_index()   大盘异动
+    ↓
+CooldownTracker（同标的 15 分钟内最多触发一次）
+    ↓
+飞书/企业微信告警推送 + 模拟下单（trading_mode=live 时自动执行）
+```
+
+### 单轮信号生成流程
+
+```
+StrategyRunner.run_once()
+    │
+    ├─ get_regime() → BULL / BEAR / VOLATILE / CALM
+    │   BEAR 状态：禁止新建多仓，阈值 ×1.4
+    │   VOLATILE：阈值 ×1.2
+    │
+    ├─ FOR EACH symbol:
+    │   ├─ DataLayer.get_bars(days=120) + get_realtime()
+    │   ├─ FactorPipeline.run() → combined_score（z-score 加权）
+    │   │   └─ dominant_signal: 'BUY' / 'SELL' / 'HOLD'
+    │   ├─ RiskEngine.check()
+    │   │   ├─ PositionBook（每 5 分钟自动刷新）
+    │   │   ├─ 单标的仓位 ≤ 25%
+    │   │   ├─ 日亏损熔断 ≤ 2%
+    │   │   └─ 总净暴露 ≤ 90%
+    │   └─ OMS.submit_from_signal()
+    │       ├─ 启动时已从 Backend API 加载持仓快照
+    │       ├─ Kelly 仓位计算（半 Kelly）
+    │       └─ broker.send(order) → FillEvent
+    │
+    └─ 告警推送（AlertManager）
+```
+
+### 动态选股（DynamicStockSelectorV2）
+
+五维度评分模型，每轮自动筛选最优标的：
+
+| 维度 | 权重 | 数据来源 |
+|------|------|---------|
+| 板块行情 | 35% | 东方财富实时涨跌幅相对排名 |
+| 新闻热度 | 35% | 政策/业绩/产品/资金/传闻加权 |
+| 资金流向 | 25% | 北向资金 + 主力净流入排名 |
+| 技术趋势 | 15% | 成分股涨跌幅信号 |
+| 成分股一致性 | 10% | 板块内部联动强度 |
+
+```python
+# 可选：LLM 新闻情绪过滤（bearish confidence > 0.60 → 阻止建仓）
+from scripts.dynamic_selector import DynamicStockSelectorV2
+
+selector = DynamicStockSelectorV2()
+ranked = selector.calc_all_scores()   # {symbol: score}
+top5 = sorted(ranked, key=ranked.get, reverse=True)[:5]
+```
+
+### 异常容错设计
+
+| 层级 | 异常场景 | 处理策略 |
+|------|---------|---------|
+| 单标的失败 | 数据缺失/因子报错 | 跳过该标的，继续其余 |
+| 风控异常 | RiskEngine 崩溃 | 拒绝下单（不放行）+ ERROR 日志 |
+| 网络抖动 | API 超时/限频 | CircuitBreaker 熔断（3次触发，300s冷却） |
+| 告警失败 | Webhook 不可达 | 静默记录，5 分钟后重试下一条 |
+| 主循环异常 | 未捕获异常 | 日志记录，等待下轮（不中断服务） |
+
+---
+
 ## 项目结构
 
 ```
@@ -182,7 +287,7 @@ a-quantitative-trading/
 │   │
 │   ├── execution/
 │   │   ├── algo_base.py           # AlgoOrder 抽象基类 + OrderSlice + AlgoOrderResult
-│   │   ├── vwap_executor.py       # VWAP 拆单（U型分布 / 历史分布）
+│   │   ├── vwap_executor.py       # VWAP 拆单（U 型分布 / 历史分布）
 │   │   ├── twap_executor.py       # TWAP 均匀拆单（支持时间抖动）
 │   │   └── impact_estimator.py    # Almgren-Chriss 市场冲击估算
 │   │
@@ -198,8 +303,8 @@ a-quantitative-trading/
 │   ├── portfolio_optimizer.py     # MVO + BL + 风险平价 + 最大分散化（6 种方法）
 │   ├── portfolio_allocator.py     # 多策略资金分配 + 再平衡（时间/阈值触发）
 │   ├── portfolio_risk.py          # CVaR / VaR / 行业集中度 / 蒙特卡洛压力测试
-│   ├── risk_engine.py             # 单标的三层风控（PreTrade/InTrade/PostTrade）
-│   ├── oms.py                     # OMS + submit_algo_order（VWAP/TWAP）
+│   ├── risk_engine.py             # 三层风控 + PositionBook（5 分钟定期刷新）
+│   ├── oms.py                     # OMS（启动加载持仓 + VWAP/TWAP 算法单）
 │   ├── backtest_engine.py         # 事件驱动回测（无前视偏差，A 股完整规则）
 │   ├── walkforward.py             # WFA + SensitivityAnalyzer（参数稳健性热力图）
 │   ├── multi_symbol_backtest.py   # 沪深 300 成分股批量 WFA
@@ -212,9 +317,10 @@ a-quantitative-trading/
 │   ├── daily_diff_reporter.py     # 每日回测 vs 实盘对比报告
 │   ├── research.py                # FactorICAnalyzer / RegimeBacktestAnalyzer
 │   ├── regime.py                  # 市场 Regime 识别（BULL/BEAR/VOLATILE/CALM）
-│   ├── data_layer.py              # 统一数据接口（DataLayer + Parquet 缓存）
+│   ├── data_layer.py              # 统一数据接口（DataLayer + 三层缓存）
 │   ├── data_quality.py            # 数据质量检验（跳空/异常涨跌/零成交量）
 │   ├── fundamental_data.py        # 基本面数据管道（AKShare 财报，TTL 缓存）
+│   ├── hk_data_source.py          # 港股数据源适配
 │   ├── level2.py                  # Level2 盘口数据结构 + 实时因子
 │   ├── level2_quality.py          # Level2 数据完整性采集与报告
 │   ├── external_signal.py         # SP500 Granger 检验 / 北向资金统计验证
@@ -223,10 +329,41 @@ a-quantitative-trading/
 │
 ├── backend/
 │   ├── main.py                    # 入口（Flask API + Scheduler + IntradayMonitor）
-│   ├── api.py                     # 17 个 HTTP API 端点
-│   └── services/                  # portfolio / broker / signals / northbound / llm
+│   │                              #   · RotatingFileHandler 日志（100MB/5备份）
+│   │                              #   · is_trading_day() AKShare 节假日日历
+│   ├── api.py                     # 31 个 HTTP API 端点
+│   └── services/
+│       ├── intraday_monitor.py    # 盘中监控（5 分钟轮询，止损/止盈/新仓）
+│       ├── portfolio.py           # PortfolioService（SQLite 持久化）
+│       ├── broker.py              # Broker 服务层
+│       ├── signals.py             # 信号存储与查询
+│       ├── circuit_breaker.py     # CircuitBreaker（熔断器状态机）
+│       ├── data_cache.py          # 多级数据缓存 + 降级链
+│       ├── northbound.py          # 北向资金实时数据
+│       ├── fund_flow.py           # 资金流向聚合
+│       ├── fundamentals.py        # 基本面服务层
+│       ├── performance.py         # 绩效统计
+│       ├── alert_history.py       # 告警历史 JSON 持久化
+│       ├── report_sender.py       # 飞书/邮件报告发送
+│       ├── watchlist.py           # 自选股管理
+│       ├── strategy_loader.py     # 策略配置热加载
+│       ├── walkforward_persistence.py  # WFA 结果持久化
+│       ├── fetchers/              # 分数据源抓取器
+│       ├── channels/              # 告警渠道适配
+│       └── llm/                   # LLM 情绪分析服务
 │
-├── tests/                         # 829 个单元测试（34 个测试文件）
+├── scripts/                       # 运营脚本（可独立运行）
+│   ├── morning_runner.py          # 早盘全自动纸交易闭环
+│   ├── morning_report.py          # 每日早报生成（飞书推送）
+│   ├── afternoon_report.py        # 收盘复盘报告
+│   ├── dynamic_selector.py        # DynamicStockSelectorV2（五维评分选股）
+│   ├── regime_wfa.py              # 市场环境 + Walk-Forward 参数优化
+│   ├── walkforward_job.py         # WFA 批量作业
+│   ├── sensitivity_job.py         # 策略参数敏感性分析
+│   └── stock_data_only.py         # 数据拉取（调试用）
+│
+├── tests/                         # 829 个单元测试（37 个测试文件）
+│   ├── test_strategy_runner.py    # 策略主循环 + Regime 联动
 │   ├── test_alerting.py           # AlertManager（36 个测试）
 │   ├── test_algo_execution.py     # VWAP/TWAP/ImpactEstimator（40 个测试）
 │   ├── test_broker_base.py        # BrokerBase/SimulatedBroker（40 个测试）
@@ -237,12 +374,13 @@ a-quantitative-trading/
 │   ├── test_technical_factors.py  # 技术因子（35 个测试）
 │   ├── test_fundamental_factors.py # 基本面因子（35 个测试）
 │   ├── test_sentiment_factors.py  # 情绪因子（30 个测试）
+│   ├── test_dynamic_selector.py   # 动态选股引擎
+│   ├── test_async_runner.py       # 异步策略执行
 │   └── ...（其余 24 个测试文件）
 │
 ├── config/
-│   └── trading.yaml               # 统一策略配置
+│   └── trading.yaml               # 统一策略配置（多策略/风控/数据源/环境切换）
 │
-├── scripts/                       # 运营与调试脚本
 ├── streamlit_app.py               # Web UI（7 个页面）
 ├── requirements.txt
 └── .env.example
@@ -270,21 +408,46 @@ from core.factor_pipeline import FactorPipeline, DynamicWeightPipeline
 
 # 静态权重流水线
 pipeline = FactorPipeline()
-pipeline.add('RSI',           weight=0.3)
-pipeline.add('MACD',          weight=0.2)
-pipeline.add('SectorMomentum',weight=0.2)
-pipeline.add('NewsSentiment', weight=0.15)
-pipeline.add('MLPrediction',  weight=0.15)
+pipeline.add('RSI',            weight=0.3)
+pipeline.add('MACD',           weight=0.2)
+pipeline.add('SectorMomentum', weight=0.2)
+pipeline.add('NewsSentiment',  weight=0.15)
+pipeline.add('MLPrediction',   weight=0.15)
 
 result = pipeline.run(symbol='000001.SZ', data=df, price=15.0)
 print(result.combined_score)   # float，正=偏多，负=偏空
 print(result.dominant_signal)  # 'BUY' / 'SELL' / 'HOLD'
 
 # 动态 IC 加权（推荐生产使用）
+# 权重每 21 天根据滚动 IC 自动调整，全 IC ≤ 0 时退回等权
 dyn = DynamicWeightPipeline(update_freq_days=21)
 dyn.add('RSI', weight=0.2)
 dyn.add('MACD', weight=0.2)
-# ... 权重每 21 天根据滚动 IC 自动调整，全 IC ≤ 0 时退回等权
+```
+
+### 动态选股引擎
+
+`DynamicStockSelectorV2` 实现基于五维评分的自动标的筛选，完全内置于 IntradayMonitor 闭环中：
+
+```python
+from scripts.dynamic_selector import DynamicStockSelectorV2
+
+selector = DynamicStockSelectorV2()
+scores = selector.calc_all_scores()
+# → {'510310.SH': 0.82, '600900.SH': 0.74, '300750.SZ': 0.61, ...}
+
+# 可选：LLM 新闻情绪过滤（bearish confidence > 0.60 → 阻止建仓）
+# 无 API Key 时自动跳过 LLM 步骤
+```
+
+五维评分权重：
+
+```
+板块行情分  35%  ← 东方财富实时涨跌幅相对排名
+新闻热度分  35%  ← 政策/业绩/产品/资金/传闻加权
+资金流向分  25%  ← 北向净买入 + 主力净流入排名
+技术趋势分  15%  ← 成分股涨跌幅信号
+成分股一致性 10%  ← 板块内部联动强度
 ```
 
 ### 机器学习框架
@@ -314,6 +477,7 @@ X, y = fs.build(data, symbol='000001.SZ')
 ```python
 from core.oms import OMS
 
+# OMS 初始化时自动从 Backend API 加载现有持仓快照
 oms = OMS(broker=simulated_broker)
 
 # VWAP 拆单（基于 U 型历史成交量分布，A 股整手处理）
@@ -330,7 +494,6 @@ print(f"成交率: {result.fill_rate:.1%}, 滑点: {result.slippage_bps:.1f} bps
 # 市场冲击估算（Almgren-Chriss 简化版）
 from core.execution.impact_estimator import ImpactEstimator
 est = ImpactEstimator()
-impact = est.estimate(order_qty=5000, market_daily_vol=200_000)
 perm, temp = est.decompose(5000, 200_000)
 # 永久冲击 = 5 × sqrt(参与率)，临时冲击 = 5 × 参与率（单位 bps）
 ```
@@ -342,20 +505,20 @@ from core.portfolio_optimizer import PortfolioOptimizer
 
 optimizer = PortfolioOptimizer(
     returns=daily_returns_df,   # shape: (n_days, n_assets)
-    cov_method='ledoit_wolf',   # Ledoit-Wolf 收缩协方差（比样本协方差更稳定）
+    cov_method='ledoit_wolf',   # Ledoit-Wolf 收缩协方差
     max_weight=0.25,
     min_weight=0.0,
 )
 
 w_gmv = optimizer.min_variance()        # 全局最小方差
 w_msr = optimizer.max_sharpe()          # 最大 Sharpe 比率
-w_rp  = optimizer.risk_parity()         # 等风险贡献
+w_rp  = optimizer.risk_parity()         # 等风险贡献（ERC）
 w_md  = optimizer.max_diversification() # 最大分散化比率
 w_ew  = optimizer.equal_weight()        # 等权基准
 
 # Black-Litterman（融入策略因子观点）
-views = {'000001.SZ': 0.08, '600519.SH': 0.12}   # 预期年化收益
-confs = {'000001.SZ': 0.7,  '600519.SH': 0.8}    # 观点置信度
+views = {'000001.SZ': 0.08, '600519.SH': 0.12}
+confs = {'000001.SZ': 0.7,  '600519.SH': 0.8}
 w_bl  = optimizer.black_litterman(views, confs)
 
 # 换手率约束（月度换手率 ≤ 30%）
@@ -364,7 +527,7 @@ w_adj = optimizer.apply_turnover_constraint(w_bl, w_current, max_turnover=0.30)
 
 ### 风控体系
 
-三层风控（单标的）+ 组合层风控：
+三层单标的风控 + 组合层风控：
 
 ```python
 from core.risk_engine import RiskEngine, RiskConfig
@@ -375,9 +538,12 @@ cfg = RiskConfig(
     chandelier_atr_mult=3.0,  # Chandelier Exit：3×ATR 止损
 )
 engine = RiskEngine(cfg, data_layer=dl)
+# PositionBook 在后台每 5 分钟自动同步最新持仓快照
 
 # PreTrade：开仓前（仓位/行业集中度/VaR 检查）
-allowed, reason = engine.pre_trade_check(symbol, shares, price, portfolio)
+result = engine.check(signal)
+if not result.passed:
+    print(result.reason)  # 异常时返回 False，不放行
 
 # InTrade：持仓中（Chandelier Exit / 浮亏止损）
 actions = engine.in_trade_check(positions, current_prices)
@@ -414,6 +580,7 @@ fill = broker.submit_order('000001.SZ', 'BUY', shares=100, price=15.0)
 from core.brokers.futu import FutuBroker
 futu = FutuBroker(host='127.0.0.1', port=11111, trd_env='SIMULATE')
 if futu.connect():
+    positions = futu.get_positions()   # 实时持仓（含浮动盈亏）
     account = futu.get_account()
     fill = futu.submit_order('HK.00700', 'BUY', 100, 350.0)
 else:
@@ -429,7 +596,7 @@ from core.paper_trade_validator import FutuPaperValidator
 validator = FutuPaperValidator(signal_match_target=0.95)
 validator.connect()  # 自动 fallback 到 SimulatedBroker
 validator.validate_signals(signals)
-report = validator.generate_daily_report('outputs/paper_trade/2026-04-27.json')
+report = validator.generate_daily_report('outputs/paper_trade/2026-04-28.json')
 ```
 
 ### 告警系统
@@ -440,7 +607,7 @@ from core.alerting import AlertManager, get_alert_manager
 am = AlertManager(
     wechat_webhook='https://qyapi.weixin.qq.com/...',
     dingtalk_webhook='https://oapi.dingtalk.com/...',
-    min_level='WARNING',       # INFO/WARNING/CRITICAL
+    min_level='WARNING',       # INFO / WARNING / CRITICAL
     rate_limit_sec=300,        # 同内容 5 分钟内不重复推送
 )
 
@@ -449,7 +616,7 @@ am.send_warning('RSI 策略信号与回测偏差 > 5%')
 
 # 每日收盘报告（自动穿透频率限制）
 am.send_daily_report({
-    'date': '2026-04-27',
+    'date': '2026-04-28',
     'total_pnl': 3200.0,
     'pnl_pct': 0.032,
     'n_trades': 8,
@@ -477,6 +644,7 @@ cfg = BacktestConfig(
     slippage_pct=0.001,         # 滑点 0.1%
     adj_type='qfq',             # 前复权
 )
+# 成交价：下一根 bar 的 open（修复前视偏差）
 
 engine = BacktestEngine(cfg)
 result = engine.run(symbol='000001.SZ', data=df, pipeline=pipeline)
@@ -529,14 +697,12 @@ Streamlit 界面，共 7 个页面：
 | 历史交易 | 成交记录与 TCA 绩效归因 |
 | 策略健康 | Rolling Sharpe 折线图 / CVaR / AlertManager 历史 |
 
-系统固定使用 `SimulatedBroker` 模式（A 股规则），Futu 纸交易通过 `FutuPaperValidator` 单独运行。
-
 ---
 
 ## 运行测试
 
 ```bash
-# 全量测试（829 个，约 70 秒）
+# 全量测试（829 个，约 50 秒）
 conda run -n quantitative-trading python -m pytest tests/ -q
 
 # 按模块运行
@@ -549,6 +715,8 @@ pytest tests/test_broker_base.py           # SimulatedBroker（40）
 pytest tests/test_nlp_factor.py            # NLP 情感因子（27）
 pytest tests/test_technical_factors.py     # 技术因子（35）
 pytest tests/test_fundamental_factors.py   # 基本面因子（35）
+pytest tests/test_dynamic_selector.py      # 动态选股引擎
+pytest tests/test_strategy_runner.py       # 策略主循环
 ```
 
 测试设计原则：
@@ -566,15 +734,16 @@ pytest tests/test_fundamental_factors.py   # 基本面因子（35）
 |------|------|---------|
 | Futu 纸交易待验证 | FutuBroker 代码完整，需真实 OpenD 环境运行 | Phase 4-A |
 | ML 模型未用真实数据训练 | XGBoost 框架完备，待接入真实历史数据 | Phase 4-A |
-| AlertManager Webhook 未配置 | 代码完整，待填入真实 Webhook URL | Phase 4-A |
+| AlertManager Webhook 未配置 | 代码完整，待填入真实 Webhook URL | 立即可配置 |
 | NLP 因子 IC 未统计 | 待运行 1 个月历史回测验证 IC > 0 | Phase 4-B |
 | PostgreSQL 未迁移 | SQLite 满足需求，触发条件：10 万条交易记录 | Phase 4-C |
-| WebSocket 行情 | 当前 HTTP 轮询，待 Futu OpenD 部署后升级 | Phase 4-B |
+| 无指数退避重试 | HTTP 调用失败依赖熔断器，无 exponential backoff | Phase 4-A |
+| 无进程守护配置 | 无 systemd/supervisord，进程崩溃需手动重启 | Phase 4-A |
 
 ### 未来路线图
 
 详见 [TODO.md](TODO.md)：
-- **Phase 4**（1-3 月）：Futu 纸交易运营、ML 训练、AlertManager 实盘接入
+- **Phase 4**（1-3 月）：Futu 纸交易运营、ML 训练、AlertManager 实盘接入、重试机制、进程守护
 - **Phase 5**（3-9 月）：因子 IC 全量验证、行业轮动策略、均值回归配对
 - **Phase 6**（9-18 月）：港股/美股多市场扩展
 
