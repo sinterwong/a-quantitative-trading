@@ -160,6 +160,50 @@ class Scheduler:
         except Exception as e:
             self.logger.error('Sector rotation trigger failed: %s', e)
 
+    def _refresh_fundamentals(self):
+        """季报季度末 / 财报季强制刷新持仓标的基本面数据缓存。
+
+        触发时机（由 _run_loop 判断）：
+          • 每季度末月（3/6/9/12）25 日起 — 季报发布前预热
+          • 每财报季首周（1/4/7/10 月 1-7 日） — 新季报落地后强制更新
+        """
+        import sys as _sys, urllib.request as _req, json as _j
+        try:
+            # 1. 获取当前持仓标的
+            url = f'http://127.0.0.1:{self.api_port}/positions'
+            with _req.urlopen(url, timeout=5) as r:
+                d = _j.loads(r.read())
+            symbols = [p['symbol'] for p in d.get('positions', []) if p.get('shares', 0) > 0]
+        except Exception:
+            symbols = []
+
+        if not symbols:
+            self.logger.info('Fundamental refresh: no held positions, skipping')
+            return
+
+        # 2. 使用 FundamentalDataManager 强制失效并重新拉取
+        _sys.path.insert(0, PROJ_DIR)
+        try:
+            from core.fundamental_data import FundamentalDataManager
+            mgr = FundamentalDataManager()
+            ok, fail = 0, 0
+            for sym in symbols:
+                try:
+                    mgr.invalidate(sym)
+                    df = mgr.get_fundamentals(sym)
+                    if not df.empty:
+                        ok += 1
+                        self.logger.debug('Fundamental refreshed: %s (%d rows)', sym, len(df))
+                    else:
+                        fail += 1
+                        self.logger.warning('Fundamental refresh empty: %s', sym)
+                except Exception as e:
+                    fail += 1
+                    self.logger.warning('Fundamental refresh error %s: %s', sym, e)
+            self.logger.info('Fundamental refresh done — ok=%d fail=%d symbols=%s', ok, fail, symbols)
+        except ImportError as e:
+            self.logger.error('Fundamental refresh import failed: %s', e)
+
     def _run_loop(self):
         self.logger.info('Scheduler started')
         while not self._stop.is_set():
@@ -177,11 +221,19 @@ class Scheduler:
             if is_trading_day():
                 self.logger.info('Trading day — triggering analysis')
                 self._trigger_analysis()
-                # 每周一额外触发行业轮动（weekday() == 0）
                 from datetime import datetime as _dt
-                if _dt.now().weekday() == 0:
+                today = _dt.now()
+                # 每周一额外触发行业轮动（weekday() == 0）
+                if today.weekday() == 0:
                     self.logger.info('Monday — triggering sector rotation')
                     self._trigger_sector_rotation()
+                # 季报刷新：季度末月（3/6/9/12）25 日起，或财报季首周（1/4/7/10 月 1-7 日）
+                is_quarter_end = today.month in (3, 6, 9, 12) and today.day >= 25
+                is_earnings_season = today.month in (1, 4, 7, 10) and 1 <= today.day <= 7
+                if is_quarter_end or is_earnings_season:
+                    label = 'quarter-end' if is_quarter_end else 'earnings-season'
+                    self.logger.info('%s — refreshing fundamental data cache', label)
+                    self._refresh_fundamentals()
             else:
                 self.logger.info('Non-trading day — skipping')
 
