@@ -112,8 +112,9 @@ class DailyDiffReporter:
         报告输出目录，默认 <project_root>/reports/
     """
 
-    def __init__(self, reports_dir: str = _REPORTS_DIR) -> None:
+    def __init__(self, reports_dir: str = _REPORTS_DIR, notify: bool = True) -> None:
         self.reports_dir = reports_dir
+        self.notify = notify  # True → 一致率低/方向不一致时自动推送 AlertManager
         os.makedirs(reports_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
@@ -214,7 +215,7 @@ class DailyDiffReporter:
             syms = [m.symbol for m in direction_mismatches]
             notes.append(f'方向不一致标的: {syms}，需重点排查因子参数或时间对齐')
 
-        return DailyDiffReport(
+        report = DailyDiffReport(
             report_date=report_date.isoformat(),
             generated_at=datetime.now().isoformat(timespec='seconds'),
             n_live_signals=len(live_acted),
@@ -227,6 +228,42 @@ class DailyDiffReporter:
             mismatches=mismatches,
             notes=notes,
         )
+
+        if self.notify:
+            self._fire_alert(report)
+
+        return report
+
+    def _fire_alert(self, report: DailyDiffReport) -> None:
+        """一致率低或方向不一致时推送 AlertManager（延迟导入）。"""
+        direction_mismatches = [m for m in report.mismatches if m.mismatch_type == 'direction_mismatch']
+        if report.consistency_pct >= 0.8 and not direction_mismatches:
+            return
+        try:
+            from core.alerting import get_alert_manager
+            am = get_alert_manager()
+            lines = [
+                f'【信号一致性告警】{report.report_date}',
+                f'  一致率：{report.consistency_pct:.1%}（阈值 80%）',
+                f'  实盘信号：{report.n_live_signals}，回测信号：{report.n_bt_signals}，'
+                f'匹配：{report.n_matches}，不一致：{report.n_mismatches}',
+            ]
+            if direction_mismatches:
+                syms = [m.symbol for m in direction_mismatches]
+                lines.append(f'  方向不一致标的：{syms}')
+            if report.notes:
+                for note in report.notes:
+                    lines.append(f'  提示：{note}')
+            msg = '\n'.join(lines)
+            if direction_mismatches or report.consistency_pct < 0.5:
+                am.send_critical(msg)
+            else:
+                am.send_warning(msg)
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger('core.daily_diff_reporter').error(
+                '[DiffReporter] AlertManager 推送失败: %s', exc
+            )
 
     def save(self, report: DailyDiffReport) -> str:
         """

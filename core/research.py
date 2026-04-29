@@ -838,3 +838,251 @@ class RegimeBacktestAnalyzer:
             avg_daily_return=avg_ret,
             daily_return_std=std_ret,
         )
+
+
+# ---------------------------------------------------------------------------
+# FactorCorrelationAnalyzer — 因子相关性去重
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass as _dc, field as _field
+from typing import Tuple as _Tuple
+
+
+@_dc
+class FactorCorrelationResult:
+    """因子相关性分析结果。"""
+    factor_names: list                   # 参与分析的因子名列表
+    corr_matrix: 'pd.DataFrame'          # 因子值 Spearman 相关矩阵
+    redundant_pairs: list                # [(factor_a, factor_b, corr)] corr > threshold
+    keep_recommendation: dict            # factor_name → 'keep' | 'drop' | 'review'
+    cluster_labels: dict                 # factor_name → 聚类簇 ID
+
+    def summary(self) -> str:
+        lines = [f'因子相关性分析（{len(self.factor_names)} 个因子）']
+        if self.redundant_pairs:
+            lines.append(f'  高相关因子对（阈值 {self._threshold:.2f}）：')
+            for a, b, c in self.redundant_pairs:
+                rec_a = self.keep_recommendation.get(a, '?')
+                rec_b = self.keep_recommendation.get(b, '?')
+                lines.append(f'    {a} vs {b}: corr={c:.3f}  [{rec_a}] vs [{rec_b}]')
+        else:
+            lines.append('  无高相关因子对，因子集合多样性良好')
+        drop_factors = [k for k, v in self.keep_recommendation.items() if v == 'drop']
+        if drop_factors:
+            lines.append(f'  建议移除（冗余）: {drop_factors}')
+        return '\n'.join(lines)
+
+    # 内部记录阈值（在 analyze() 中设置）
+    _threshold: float = _field(default=0.7, repr=False)
+
+
+class FactorCorrelationAnalyzer:
+    """
+    分析多个因子值的相关性，识别冗余因子，推荐保留哪个。
+
+    对于 corr(A, B) > threshold 的因子对，保留信息量更高（方差更大）的那个。
+
+    用法::
+
+        from core.research import FactorCorrelationAnalyzer
+        from core.factor_registry import FactorRegistry
+
+        reg = FactorRegistry()
+        factors = [reg.create('RSI'), reg.create('MACD'), reg.create('BollingerBands')]
+        analyzer = FactorCorrelationAnalyzer(threshold=0.7)
+        result = analyzer.analyze(factors, data)
+        print(result.summary())
+        analyzer.plot_heatmap(result, 'outputs/factor_cluster.png')
+    """
+
+    def __init__(self, threshold: float = 0.7) -> None:
+        """
+        Parameters
+        ----------
+        threshold : float
+            Spearman 相关系数阈值，超过此值认为因子冗余（默认 0.7）
+        """
+        self.threshold = threshold
+
+    def analyze(
+        self,
+        factors: list,           # List[Factor]
+        data: 'pd.DataFrame',    # OHLCV DataFrame
+        min_obs: int = 20,
+    ) -> FactorCorrelationResult:
+        """
+        计算因子值 Spearman 相关矩阵，识别冗余因子对。
+
+        Parameters
+        ----------
+        factors : List[Factor]
+            Factor 实例列表（需实现 evaluate(df) → pd.Series）
+        data : pd.DataFrame
+            日线 OHLCV 数据，index 为日期
+        min_obs : int
+            最少有效观测数，不足时该因子跳过
+
+        Returns
+        -------
+        FactorCorrelationResult
+        """
+        import numpy as np
+        import pandas as pd
+        from scipy.stats import spearmanr
+
+        # 1. 计算各因子值
+        factor_series = {}
+        for factor in factors:
+            try:
+                vals = factor.evaluate(data)
+                if isinstance(vals, pd.Series) and vals.notna().sum() >= min_obs:
+                    factor_series[factor.name] = vals
+            except Exception:
+                pass  # 因子计算失败，跳过
+
+        if len(factor_series) < 2:
+            names = list(factor_series.keys())
+            return FactorCorrelationResult(
+                factor_names=names,
+                corr_matrix=pd.DataFrame(),
+                redundant_pairs=[],
+                keep_recommendation={n: 'keep' for n in names},
+                cluster_labels={n: 0 for n in names},
+                _threshold=self.threshold,
+            )
+
+        # 2. 对齐并构建矩阵
+        df = pd.DataFrame(factor_series).dropna(how='all')
+        names = list(df.columns)
+        n = len(names)
+
+        # Spearman 相关矩阵（rankdata 方式）
+        ranked = df.rank()
+        corr_matrix = ranked.corr(method='spearman').fillna(0.0)
+
+        # 3. 找出高相关对
+        redundant_pairs = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                c = corr_matrix.iloc[i, j]
+                if abs(c) > self.threshold:
+                    redundant_pairs.append((names[i], names[j], round(float(c), 4)))
+
+        # 4. 推荐保留策略：同簇内保留方差最大的因子
+        keep_recommendation = {name: 'keep' for name in names}
+        variances = df.var()
+
+        # Union-Find 聚类（连通分量）
+        parent = {name: name for name in names}
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(x, y):
+            parent[find(x)] = find(y)
+
+        for a, b, _ in redundant_pairs:
+            union(a, b)
+
+        # 聚类簇
+        clusters: dict = {}
+        for name in names:
+            root = find(name)
+            clusters.setdefault(root, []).append(name)
+
+        cluster_labels = {}
+        for cid, (root, members) in enumerate(clusters.items()):
+            for m in members:
+                cluster_labels[m] = cid
+            if len(members) > 1:
+                # 保留方差最大的因子，其余标注 drop
+                best = max(members, key=lambda m: variances.get(m, 0.0))
+                for m in members:
+                    if m != best:
+                        keep_recommendation[m] = 'drop'
+                    else:
+                        keep_recommendation[m] = 'keep'
+
+        # 部分相关（跨簇边界的单一连接）标注为 review
+        for a, b, c in redundant_pairs:
+            if keep_recommendation.get(a) == 'keep' and keep_recommendation.get(b) == 'keep':
+                keep_recommendation[b] = 'review'
+
+        result = FactorCorrelationResult(
+            factor_names=names,
+            corr_matrix=corr_matrix,
+            redundant_pairs=redundant_pairs,
+            keep_recommendation=keep_recommendation,
+            cluster_labels=cluster_labels,
+        )
+        result._threshold = self.threshold
+        return result
+
+    @staticmethod
+    def plot_heatmap(result: FactorCorrelationResult, output_path: str = '') -> None:
+        """
+        绘制因子相关矩阵热力图，高亮超过阈值的单元格。
+
+        Parameters
+        ----------
+        result : FactorCorrelationResult
+        output_path : str
+            若指定，保存为 PNG；否则调用 plt.show()
+        """
+        import numpy as np
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            import matplotlib.colors as mcolors
+        except ImportError:
+            return
+
+        corr = result.corr_matrix
+        if corr.empty:
+            return
+
+        n = len(corr)
+        fig, ax = plt.subplots(figsize=(max(6, n), max(5, n - 1)))
+
+        # 热力图
+        im = ax.imshow(corr.values, vmin=-1, vmax=1, cmap='RdBu_r', aspect='auto')
+        plt.colorbar(im, ax=ax, label='Spearman 相关系数')
+
+        ax.set_xticks(range(n))
+        ax.set_yticks(range(n))
+        ax.set_xticklabels(corr.columns, rotation=45, ha='right', fontsize=8)
+        ax.set_yticklabels(corr.index, fontsize=8)
+
+        # 标注相关系数值
+        for i in range(n):
+            for j in range(n):
+                val = corr.iloc[i, j]
+                color = 'white' if abs(val) > 0.5 else 'black'
+                ax.text(j, i, f'{val:.2f}', ha='center', va='center',
+                        fontsize=7, color=color)
+
+        # 高亮冗余对（红色边框）
+        for a, b, _ in result.redundant_pairs:
+            if a in corr.index and b in corr.columns:
+                i_idx = list(corr.index).index(a)
+                j_idx = list(corr.columns).index(b)
+                for ii, jj in [(i_idx, j_idx), (j_idx, i_idx)]:
+                    rect = plt.Rectangle((jj - 0.5, ii - 0.5), 1, 1,
+                                         fill=False, edgecolor='red', lw=2)
+                    ax.add_patch(rect)
+
+        ax.set_title(f'因子相关矩阵（阈值={result._threshold:.2f}，红框=冗余对）',
+                     fontsize=10, pad=12)
+        plt.tight_layout()
+
+        if output_path:
+            import os
+            os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+            plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        else:
+            plt.show()
+        plt.close(fig)

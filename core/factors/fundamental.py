@@ -309,3 +309,64 @@ class CashFlowQualityFactor(Factor):
         raw = smoothed - 1.0  # 中心化：>0 质量好，<0 质量差
 
         return self.normalize(raw.fillna(0.0))
+
+
+# ---------------------------------------------------------------------------
+# 6. 股东变动因子（筹码集中度）
+# ---------------------------------------------------------------------------
+
+class ShareholderConcentrationFactor(Factor):
+    """
+    股东变动因子（筹码集中度信号）。
+
+    逻辑：
+      - 股东人数减少 → 筹码向大户集中 → 机构/大股东看好 → 正向信号
+      - 股东人数增加 → 筹码分散 → 散户涌入 → 中性/负向信号
+
+    因子值 = -1 × 股东人数季度变化率（单位：%）
+      正值 = 股东人数下降（筹码集中）→ 看多
+      负值 = 股东人数上升（筹码分散）→ 看空
+
+    数据来源：
+      AKShare `stock_hold_num_cninfo(symbol)` 季度股东人数
+      financial_data 需包含 'holder_num' 列（股东人数，单位：万人）
+
+    无数据时自动降级为全零，不影响流水线运行。
+
+    Parameters
+    ----------
+    financial_data : pd.DataFrame, optional
+        含 'holder_num' 列，index 为日期（季度末）
+    rolling_window : int
+        滚动平滑窗口（默认 120 天，跨越约 2 个季报）
+    """
+
+    name = 'ShareholderConcentration'
+    category = FactorCategory.FUNDAMENTAL
+
+    def __init__(
+        self,
+        financial_data: Optional[pd.DataFrame] = None,
+        rolling_window: int = 120,
+        symbol: str = '',
+    ):
+        self.financial_data = financial_data
+        self.rolling_window = rolling_window
+        self.symbol = symbol
+
+    def evaluate(self, data: pd.DataFrame) -> pd.Series:
+        holder_num = _align_financial(self.financial_data, data.index, 'holder_num')
+
+        if holder_num.isna().all():
+            return pd.Series(0.0, index=data.index)
+
+        # 季度环比变化率（约 63 个交易日 ≈ 1 季度）
+        qoq_change = holder_num.pct_change(periods=63) * 100.0  # 单位：%
+
+        # 取反：股东人数下降 → 因子值为正（筹码集中看多）
+        raw = -qoq_change
+
+        # 滚动平滑（季报数据非连续，跨周期平均降低噪声）
+        smoothed = raw.rolling(self.rolling_window, min_periods=1).mean()
+
+        return self.normalize(smoothed.fillna(0.0))

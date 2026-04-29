@@ -154,6 +154,7 @@ class StrategyHealthMonitor:
         consecutive_loss_warn: int = 5,
         turnover_spike_factor: float = 2.0,
         risk_free_rate: float = 0.03,
+        notify: bool = True,
     ) -> None:
         self.sharpe_window_short = sharpe_window_short
         self.sharpe_window_long = sharpe_window_long
@@ -163,6 +164,7 @@ class StrategyHealthMonitor:
         self.consecutive_loss_warn = consecutive_loss_warn
         self.turnover_spike_factor = turnover_spike_factor
         self.risk_free_rate = risk_free_rate
+        self.notify = notify  # True → check() 完成后自动推送 AlertManager
 
     def check(self, daily_stats: list) -> HealthReport:
         """
@@ -289,7 +291,7 @@ class StrategyHealthMonitor:
         recent_rets = rets[-self.sharpe_window_short:] if len(rets) >= self.sharpe_window_short else rets
         win_rate_20d = float(np.mean(recent_rets > 0)) if len(recent_rets) > 0 else 0.0
 
-        return HealthReport(
+        report = HealthReport(
             check_date=check_date,
             alerts=alerts,
             rolling_sharpe_20d=round(sharpe_short, 4),
@@ -301,6 +303,27 @@ class StrategyHealthMonitor:
             avg_trades_20d=round(avg_recent, 2),
             avg_trades_hist=round(avg_hist, 2),
         )
+
+        if self.notify and alerts:
+            self._fire_alerts(report)
+
+        return report
+
+    def _fire_alerts(self, report: 'HealthReport') -> None:
+        """将 HealthReport 中的告警推送到 AlertManager（延迟导入避免循环依赖）。"""
+        try:
+            from core.alerting import get_alert_manager
+            am = get_alert_manager()
+            text = report.to_feishu_text()
+            if report.has_critical():
+                am.send_critical(text)
+            else:
+                am.send_warning(text)
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger('core.strategy_health').error(
+                '[StrategyHealth] AlertManager 推送失败: %s', exc
+            )
 
     def check_series(
         self,

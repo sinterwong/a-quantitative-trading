@@ -376,16 +376,30 @@ class DynamicWeightPipeline(FactorPipeline):
         update_freq_days: int = 21,
         reg: Optional[FactorRegistry] = None,
         min_bars: int = 30,
+        decay_window: int = 3,
+        recovery_rate: float = 0.5,
     ) -> None:
+        """
+        Parameters
+        ----------
+        decay_window : int
+            连续多少次权重更新 IC < 0 才触发衰减保护（默认 3 次 ≈ 63 天）
+        recovery_rate : float
+            因子从衰减恢复时，首次恢复的权重占等权的比例（默认 0.5，即先恢复到半权）
+        """
         super().__init__(reg=reg, min_bars=min_bars)
         self.ic_window_days = ic_window_days
         self.update_freq_days = update_freq_days
+        self.decay_window = decay_window
+        self.recovery_rate = recovery_rate
 
         # 运行时状态
-        self._ic_history: Dict[str, List[float]] = {}   # factor_name → IC 序列
+        self._ic_history: Dict[str, List[float]] = {}   # factor_name → 每次更新的 IC 值序列
         self._dynamic_weights: Dict[str, float] = {}    # factor_name → 最新权重
         self._bars_since_update: int = 0
         self._weight_history: List[Dict[str, float]] = []  # 权重历史（诊断用）
+        self._decay_disabled: Dict[str, bool] = {}      # factor_name → 是否因衰减被禁用
+        self._factor_status_log: List[Dict] = []        # 因子状态变更日志
 
     # ------------------------------------------------------------------
     # Override run() — 在执行前更新动态权重
@@ -458,18 +472,97 @@ class DynamicWeightPipeline(FactorPipeline):
             except Exception:
                 ic_map[name] = 0.0
 
+        # 更新 IC 历史，检测衰减 / 恢复
+        for name, ic in ic_map.items():
+            hist = self._ic_history.setdefault(name, [])
+            hist.append(ic)
+            self._check_decay(name, hist)
+
         # 权重 = max(IC, 0)，负 IC 因子权重归零（等效于不使用）
-        positive_ic = {k: max(v, 0.0) for k, v in ic_map.items()}
+        # 同时跳过衰减保护已禁用的因子
+        active_ic: Dict[str, float] = {}
+        for k, v in ic_map.items():
+            if self._decay_disabled.get(k, False):
+                active_ic[k] = 0.0      # 衰减保护：强制权重为 0
+            else:
+                active_ic[k] = max(v, 0.0)
+
+        positive_ic = {k: v for k, v in active_ic.items() if v > 0}
         total_pos = sum(positive_ic.values())
 
-        if total_pos > 1e-8:
-            self._dynamic_weights = {k: v / total_pos for k, v in positive_ic.items()}
-        else:
-            # 全部因子 IC ≤ 0，退回等权
-            n = len(self._entries)
-            self._dynamic_weights = {e.factor.name: 1.0 / n for e in self._entries}
+        n = len(self._entries)
+        eq_weight = 1.0 / n if n > 0 else 0.0
 
-        self._weight_history.append(dict(self._dynamic_weights))
+        if total_pos > 1e-8:
+            self._dynamic_weights = {k: (positive_ic.get(k, 0.0) / total_pos)
+                                     for k in active_ic}
+        else:
+            # 全部因子 IC ≤ 0（或全部被衰减保护），退回等权（仅对未禁用因子）
+            active_names = [k for k, disabled in self._decay_disabled.items()
+                            if not disabled]
+            if not active_names:
+                active_names = [e.factor.name for e in self._entries]
+            eq = 1.0 / len(active_names)
+            self._dynamic_weights = {
+                k: (eq if k in active_names else 0.0)
+                for k in active_ic
+            }
+
+        # 对恢复中的因子按 recovery_rate 缩放权重（避免一步回满）
+        for name, disabled in self._decay_disabled.items():
+            if not disabled and name in self._dynamic_weights:
+                # 检查是否刚从禁用状态恢复（ic 刚转正）
+                hist = self._ic_history.get(name, [])
+                if len(hist) >= 2 and hist[-2] <= 0 < hist[-1]:
+                    self._dynamic_weights[name] *= self.recovery_rate
+
+        self._weight_history.append({
+            **{f'w_{k}': v for k, v in self._dynamic_weights.items()},
+            **{f'ic_{k}': ic_map.get(k, 0.0) for k in ic_map},
+        })
+
+    # ------------------------------------------------------------------
+    # 衰减检测
+    # ------------------------------------------------------------------
+
+    def _check_decay(self, name: str, hist: List[float]) -> None:
+        """
+        检测因子是否持续衰减（连续 decay_window 次 IC < 0）或已恢复。
+        状态变更记录到 _factor_status_log。
+        """
+        if len(hist) < self.decay_window:
+            return
+
+        recent = hist[-self.decay_window:]
+        was_disabled = self._decay_disabled.get(name, False)
+
+        if all(ic < 0 for ic in recent):
+            if not was_disabled:
+                self._decay_disabled[name] = True
+                self._factor_status_log.append({
+                    'factor': name,
+                    'event': 'DECAY_DISABLED',
+                    'ic_recent': recent,
+                    'update_index': len(hist),
+                })
+                import logging
+                logging.getLogger('core.factor_pipeline').warning(
+                    '[DynamicWeightPipeline] 因子 %s 连续 %d 次 IC<0，已触发衰减保护（权重归零）',
+                    name, self.decay_window,
+                )
+        elif was_disabled and hist[-1] > 0:
+            self._decay_disabled[name] = False
+            self._factor_status_log.append({
+                'factor': name,
+                'event': 'DECAY_RECOVERED',
+                'ic_recent': recent,
+                'update_index': len(hist),
+            })
+            import logging
+            logging.getLogger('core.factor_pipeline').info(
+                '[DynamicWeightPipeline] 因子 %s IC 转正 (%.4f)，已从衰减保护恢复（半权）',
+                name, hist[-1],
+            )
 
     # ------------------------------------------------------------------
     # 诊断接口
@@ -477,8 +570,8 @@ class DynamicWeightPipeline(FactorPipeline):
 
     def weight_history_df(self) -> pd.DataFrame:
         """
-        返回权重历史 DataFrame（行=更新时间序列，列=因子名）。
-        可用于绘制权重随时间的变化图。
+        返回权重历史 DataFrame（行=更新时间序列，列=因子名 + IC 列）。
+        可用于绘制权重与 IC 随时间的变化图。
         """
         if not self._weight_history:
             return pd.DataFrame()
@@ -490,3 +583,24 @@ class DynamicWeightPipeline(FactorPipeline):
             return dict(self._dynamic_weights)
         n = len(self._entries)
         return {e.factor.name: 1.0 / n for e in self._entries} if n else {}
+
+    def factor_status(self) -> Dict[str, Dict]:
+        """
+        返回各因子的当前状态摘要，包含：
+          - disabled: bool  是否因衰减被禁用
+          - ic_history: List[float]  历次 IC 值
+          - current_weight: float  当前权重
+        """
+        result = {}
+        for e in self._entries:
+            name = e.factor.name
+            result[name] = {
+                'disabled': self._decay_disabled.get(name, False),
+                'ic_history': list(self._ic_history.get(name, [])),
+                'current_weight': self._dynamic_weights.get(name, e.weight),
+            }
+        return result
+
+    def factor_status_log(self) -> List[Dict]:
+        """返回因子衰减/恢复事件日志（DECAY_DISABLED / DECAY_RECOVERED）。"""
+        return list(self._factor_status_log)

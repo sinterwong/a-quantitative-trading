@@ -291,20 +291,39 @@ class RiskEngine:
         return RiskResult.ok()
 
     def check_loss_limit(self, daily_limit: float = 0.02) -> RiskResult:
-        """日亏损熔断：当日亏损超 2% → 禁止开新仓"""
+        """日亏损熔断：当日亏损超 2% → 禁止开新仓，并通过 AlertManager 推送警告"""
         today = date.today().isoformat()
         if self.book._peak_trade_date != today:
             self.book._today_pnl = 0
             self.book._peak_trade_date = today
 
         if self.book._equity < self.book._peak_equity * (1 - daily_limit):
+            loss_pct = 1 - self.book._equity / self.book._peak_equity
+            self._alert_loss_limit(loss_pct, daily_limit)
             return RiskResult.reject(
                 f'Daily loss {daily_limit*100:.0f}% exceeded',
                 equity=self.book._equity,
                 peak=self.book._peak_equity,
-                loss_pct=(1 - self.book._equity / self.book._peak_equity)
+                loss_pct=loss_pct,
             )
         return RiskResult.ok()
+
+    def _alert_loss_limit(self, loss_pct: float, limit: float) -> None:
+        """日亏损熔断触发时推送 AlertManager（延迟导入，避免循环依赖）。"""
+        try:
+            from core.alerting import get_alert_manager
+            msg = (
+                f'日亏损熔断触发！当日亏损 {loss_pct*100:.2f}%，'
+                f'超过阈值 {limit*100:.0f}%，已暂停新仓开仓。'
+                f'当前权益 {self.book._equity:,.0f}，'
+                f'峰值权益 {self.book._peak_equity:,.0f}'
+            )
+            get_alert_manager().send_critical(msg)
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger('core.risk_engine').error(
+                '[RiskEngine] AlertManager 推送失败: %s', exc
+            )
 
     # ── InTrade ──────────────────────────────────────────────────────────────
 

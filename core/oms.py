@@ -359,6 +359,12 @@ class OMS:
             fill = self.submit_from_signal(signal)
             if fill and fill.shares > 0:
                 self._update_position_book(fill)  # 同步更新本地持仓快照
+                # 写入合规审计日志
+                try:
+                    from core.audit_log import log_fill
+                    log_fill(fill, signal=signal, risk_passed=True)
+                except Exception:
+                    pass
                 if self.bus:
                     from core.event_bus import FillEvent
                     fe = FillEvent(
