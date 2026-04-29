@@ -308,7 +308,7 @@ def portfolio_summary():
     Query params:
         refresh=1  — fetch latest prices before calculating P&L
     """
-    refresh = request.args.get('refresh', '0') == '1'
+    refresh = request.args.get('refresh', '1') != '0'
     svc = get_svc()
     return ok(**svc.get_portfolio_summary(refresh_prices_now=refresh))
 

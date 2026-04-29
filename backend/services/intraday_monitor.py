@@ -819,7 +819,11 @@ class IntradayMonitor:
         except Exception as e:
             logger.warning('Sector flow check error: %s', e)
 
-        # 获取当前持仓
+        # 刷新持仓价格并获取持仓
+        try:
+            self._svc.refresh_prices()
+        except Exception as e:
+            logger.warning('refresh_prices failed: %s', e)
         try:
             positions = self._svc.get_positions()
         except Exception as e:
@@ -1046,6 +1050,8 @@ class IntradayMonitor:
                     snap = fetch_realtime(p.get('symbol', ''))
                     if snap and snap.get('price', 0) > 0:
                         p['current_price'] = snap['price']
+                        # 持久化到 DB（确保 latest_price 字段被更新）
+                        self._svc.update_position_price(p['symbol'], snap['price'])
                         # 同步更新 peak_price
                         if p['current_price'] > float(p.get('peak_price', 0) or 0):
                             p['peak_price'] = p['current_price']
