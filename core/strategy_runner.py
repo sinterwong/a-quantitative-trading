@@ -381,8 +381,8 @@ class StrategyRunner:
             result = self.risk_engine.check(dummy_signal)
             return result.passed, result.reason
         except Exception as exc:
-            logger.warning("[StrategyRunner] risk_check error: %s", exc)
-            return True, ''   # 风控失败时放行（宁可过检不可误杀）
+            logger.error("[StrategyRunner] risk_check exception, rejecting order: %s", exc)
+            return False, f'risk_check_exception: {exc}'
 
     # ------------------------------------------------------------------
     # Signal emission

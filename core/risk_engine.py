@@ -86,14 +86,17 @@ class RiskPosition:
 class PositionBook:
     """持仓账本（内存）"""
 
-    def __init__(self):
+    def __init__(self, refresh_interval: int = 300):
         self._positions: Dict[str, RiskPosition] = {}
         self._equity: float = 100000
         self._cash: float = 100000
         self._peak_equity: float = 100000
         self._today_pnl: float = 0
         self._peak_trade_date: str = ''
+        self._refresh_interval = refresh_interval  # 秒，默认5分钟
+        self._stop_refresh = False
         self._load_from_api()
+        self._start_refresh_thread()
 
     def _load_from_api(self):
         try:
@@ -103,7 +106,8 @@ class PositionBook:
                 s = json.loads(r.read())
             self._equity = s.get('position_value', 0) + s.get('cash', 0)
             self._cash = s.get('cash', 0)
-            self._peak_equity = self._equity
+            if self._equity > self._peak_equity:
+                self._peak_equity = self._equity
             self._positions.clear()
             with urllib.request.urlopen(f'{base}/positions', timeout=5) as r:
                 pos_data = json.loads(r.read())
@@ -116,7 +120,26 @@ class PositionBook:
                     current_price=float(p.get('current_price', 0)),
                 )
         except Exception as e:
-            print(f"[PositionBook] load error: {e}")
+            import logging
+            logging.getLogger('core.risk_engine').debug('[PositionBook] load error: %s', e)
+
+    def _start_refresh_thread(self):
+        """启动后台线程，每 refresh_interval 秒重新从 Backend API 同步持仓快照。"""
+        import threading
+
+        def _refresh_loop():
+            import time
+            while not self._stop_refresh:
+                time.sleep(self._refresh_interval)
+                if not self._stop_refresh:
+                    self._load_from_api()
+
+        t = threading.Thread(target=_refresh_loop, daemon=True, name='PositionBook-Refresh')
+        t.start()
+
+    def stop_refresh(self):
+        """停止定期刷新线程（用于测试或优雅关闭）。"""
+        self._stop_refresh = True
 
     @property
     def equity(self) -> float:

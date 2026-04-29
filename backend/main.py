@@ -41,14 +41,24 @@ LOG_FILE = os.path.join(THIS_DIR, 'backend.log')
 
 
 def setup_logging():
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s [%(levelname)s] %(name)s — %(message)s',
-        handlers=[
-            logging.FileHandler(LOG_FILE, encoding='utf-8'),
-            logging.StreamHandler(sys.stdout),
-        ],
+    from logging.handlers import RotatingFileHandler
+    fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s — %(message)s')
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    # 文件 handler：100 MB 轮转，保留 5 个备份
+    fh = RotatingFileHandler(
+        LOG_FILE, encoding='utf-8',
+        maxBytes=100 * 1024 * 1024,  # 100 MB
+        backupCount=5,
     )
+    fh.setFormatter(fmt)
+
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(fmt)
+
+    root.addHandler(fh)
+    root.addHandler(sh)
     return logging.getLogger('backend')
 
 
@@ -56,11 +66,46 @@ def setup_logging():
 # Scheduler
 # ============================================================
 
-def is_trading_day():
-    """Check if today is a weekday (simplified — no holiday check)."""
+def _build_trade_calendar() -> set:
+    """从 AKShare 获取 A 股交易日历，返回 'YYYY-MM-DD' 字符串集合。失败时返回空集合。"""
+    try:
+        import akshare as ak
+        df = ak.tool_trade_date_hist_sina()
+        # 返回 DataFrame，列名为 'trade_date'，类型为 datetime.date 或 str
+        dates = df.iloc[:, 0]
+        return {str(d)[:10] for d in dates}
+    except Exception:
+        return set()
+
+
+# 模块级缓存：交易日集合 + 加载日期
+_trade_calendar: set = set()
+_trade_calendar_date: str = ''
+
+
+def is_trading_day() -> bool:
+    """Check if today is an A-share trading day using AKShare calendar.
+
+    Falls back to weekday check (Mon-Fri) when AKShare is unavailable.
+    Calendar is cached for the entire calendar day to avoid repeated API calls.
+    """
     from datetime import datetime
-    wd = datetime.now().weekday()
-    return wd < 5   # 0=Mon, 4=Fri
+    global _trade_calendar, _trade_calendar_date
+
+    today_str = datetime.now().strftime('%Y-%m-%d')
+
+    # 每天首次调用时刷新日历
+    if _trade_calendar_date != today_str:
+        cal = _build_trade_calendar()
+        if cal:
+            _trade_calendar = cal
+            _trade_calendar_date = today_str
+
+    if _trade_calendar:
+        return today_str in _trade_calendar
+
+    # 降级：简单周一~周五判断
+    return datetime.now().weekday() < 5
 
 
 def wait_until_next(target_hour=15, target_min=10):

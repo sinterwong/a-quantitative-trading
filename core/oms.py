@@ -329,6 +329,7 @@ class OMS:
         self._order_book: Dict[str, Order] = {}
         self._position_book: Dict[str, Position] = {}
         self._pending_signals: set = set()  # 防止重复下单
+        self._load_positions_from_backend()
 
     def set_bus(self, bus: 'EventBus'):
         self.bus = bus
@@ -357,6 +358,7 @@ class OMS:
         try:
             fill = self.submit_from_signal(signal)
             if fill and fill.shares > 0:
+                self._update_position_book(fill)  # 同步更新本地持仓快照
                 if self.bus:
                     from core.event_bus import FillEvent
                     fe = FillEvent(
@@ -433,6 +435,50 @@ class OMS:
             return max(shares, 0)
         except Exception:
             return 0
+
+    def _update_position_book(self, fill) -> None:
+        """成交后更新本地持仓快照，供当次 run_once() 周期内的 PreTrade 检查使用。"""
+        sym = fill.symbol
+        pos = self._position_book.get(sym)
+        if fill.direction == 'BUY':
+            if pos:
+                total_cost = pos.shares * pos.avg_price + fill.shares * fill.price
+                pos.shares += fill.shares
+                pos.avg_price = total_cost / pos.shares if pos.shares > 0 else 0
+                pos.current_price = fill.price
+            else:
+                self._position_book[sym] = Position(
+                    symbol=sym,
+                    shares=fill.shares,
+                    avg_price=fill.price,
+                    current_price=fill.price,
+                )
+        elif fill.direction == 'SELL' and pos:
+            pos.shares = max(0, pos.shares - fill.shares)
+            if pos.shares == 0:
+                del self._position_book[sym]
+
+    def _load_positions_from_backend(self) -> None:
+        """启动时从 Backend API 加载持仓快照，初始化 _position_book。"""
+        try:
+            import urllib.request, json as jsonlib
+            base = 'http://127.0.0.1:5555'
+            with urllib.request.urlopen(f'{base}/positions', timeout=5) as r:
+                data = jsonlib.loads(r.read())
+            for p in data.get('positions', []):
+                sym = p.get('symbol', '')
+                if not sym:
+                    continue
+                self._position_book[sym] = Position(
+                    symbol=sym,
+                    shares=int(p.get('shares', 0)),
+                    avg_price=float(p.get('avg_price', 0)),
+                    current_price=float(p.get('current_price', 0)),
+                )
+        except Exception as e:
+            # Backend 未启动时静默跳过；_position_book 保持空字典
+            import logging
+            logging.getLogger('core.oms').debug('[OMS] position pre-load skipped: %s', e)
 
     @dataclass
     class PreTradeResult:
