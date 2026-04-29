@@ -71,7 +71,7 @@ def rate_limit(max_per_window: int = None, window_seconds: int = None):
                 return jsonify({
                     'status': 'error',
                     'code': 429,
-                    'message': f'Too many requests (max {mw}/{'{0}s'.format(ws)}). Please retry later.',
+                    'message': f'Too many requests (max {mw}/{ws}s). Please retry later.',
                 }), 429
             _RATE_LIMIT[key].append(now)
             return f(*args, **kwargs)
