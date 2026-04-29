@@ -28,7 +28,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install pandas numpy requests flask werkzeug pyyaml pyarrow
-          pip install flake8
+          pip install flake8 pytest
 
       - name: Syntax check (py_compile)
         run: |
@@ -139,7 +139,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install --upgrade pip pandas numpy requests flask werkzeug pyyaml pyarrow
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pandas numpy requests flask werkzeug pyyaml pyarrow pytest
 
       - name: Syntax check (Windows)
         shell: bash
