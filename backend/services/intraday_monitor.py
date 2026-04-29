@@ -166,6 +166,8 @@ class IntradayMonitor:
         self._peak_equity: float = 0.0
         self._risk_warn_fired: bool = False   # 8% 熔断已触发（当天不重复推送）
         self._risk_stop_fired: bool = False   # 12% 熔断已触发
+        # 市场环境缓存（LLM prompt 使用，BUG-4 fix: 必须在 __init__ 初始化）
+        self._market_regime: dict = {}
         # 组合风控参数
         self._dd_warn: float = 0.08    # 8% 回撤警告
         self._dd_stop: float = 0.12    # 12% 回撤清仓
@@ -358,6 +360,7 @@ class IntradayMonitor:
             sel.fetch_market_news(30)
             sel.fetch_sectors()
             sel.calc_all_scores()
+            selected = sel.select_stocks(top_n=self._selector_top_n)  # 获取选股结果
             # ── Method B：新闻情绪过滤 ──────────────────────────
             if self._llm is not None:
                 filtered = []
@@ -397,6 +400,7 @@ class IntradayMonitor:
         if not watched:
             return
 
+        existing_positions = self._svc.get_positions()  # BUG-2 fix: 定义 existing_positions
         check_time = now.strftime('%H:%M')
         for sym in watched:
             # 冷却：每天每个标的只尝试一次（用 new_ 前缀区分）
@@ -409,7 +413,7 @@ class IntradayMonitor:
                     rsi_buy=int(params.get('rsi_buy', 25)),
                     rsi_sell=int(params.get('rsi_sell', 65)),
                     atr_threshold=float(params.get('atr_threshold', 0.90)),
-                    positions=existing,
+                    positions=existing_positions,
                 )
                 if not alert:
                     continue
@@ -763,8 +767,39 @@ class IntradayMonitor:
         except Exception as e:
             logger.warning('_refresh_kelly_from_trades failed: %s', e)
 
+    def _sync_market_regime(self):
+        """从 StrategyRunner 同步最新市场环境到 _market_regime（供 LLM prompt 使用）。"""
+        try:
+            import sys as _sys
+            _main = _sys.modules.get('__main__') or _sys.modules.get('backend.main')
+            _runner = getattr(_main, '_strategy_runner', None)
+            if _runner is not None and _runner.current_regime is not None:
+                r = _runner.current_regime
+                self._market_regime = {
+                    'regime': r.regime,
+                    'reason': r.reason,
+                    'atr_ratio': getattr(r, 'atr_ratio', 0.0),
+                }
+                return
+        except Exception:
+            pass
+        # 降级：直接调用 get_regime()
+        try:
+            from core.regime import get_regime
+            r = get_regime()
+            self._market_regime = {
+                'regime': r.regime,
+                'reason': r.reason,
+                'atr_ratio': getattr(r, 'atr_ratio', 0.0),
+            }
+        except Exception:
+            pass  # 保持上次缓存或空字典
+
     def _check_and_push(self, now: datetime):
         """获取持仓 → 检查信号 → 推送飞书 + 自动下单（使用WFA优化参数）"""
+
+        # ── 同步市场环境（供 LLM 审核使用）────────────────────────
+        self._sync_market_regime()
 
         # ── 大盘指数异动检查（每次轮询都检查，独立冷却）─────────
         try:
@@ -798,16 +833,13 @@ class IntradayMonitor:
             self._risk_stop_fired = False
             return
 
-        # ── 组合熔断检查 ─────────────────────────────────
-        self._check_portfolio_risk(positions)
-
         # ── 行业集中度检查 ─────────────────────────────────
         try:
             self._check_sector_concentration(positions)
         except Exception as e:
             logger.warning('Sector concentration check error: %s', e)
 
-        # 使用 WFA 优化参数逐个检查持仓信号
+        # 使用 WFA 优化参数逐个检查持仓信号（买入方向）
         from services.signals import evaluate_signal, format_feishu_message
         alerts = []
         for pos in positions:
@@ -824,39 +856,34 @@ class IntradayMonitor:
             )
             if alert:
                 alerts.append(alert)
-        if not alerts:
-            logger.debug('No signals at %s', now.strftime('%H:%M'))
-            return
 
         # 过滤冷却期内标的
         actionable = [a for a in alerts if self._cooldown.can_fire(a.symbol)]
-        if not actionable:
-            logger.debug('All alerts in cooldown at %s', now.strftime('%H:%M'))
-            return
 
-        # 推送飞书
-        check_time = now.strftime('%H:%M')
-        msg = format_feishu_message(actionable, check_time)
-        if msg:
-            self._deliver_alert(msg)
-            logger.info('Pushed %d alerts to Feishu at %s', len(actionable), check_time)
+        # 推送飞书（有信号时）
+        if actionable:
+            check_time = now.strftime('%H:%M')
+            msg = format_feishu_message(actionable, check_time)
+            if msg:
+                self._deliver_alert(msg)
+                logger.info('Pushed %d alerts to Feishu at %s', len(actionable), check_time)
 
-        # 自动下单（使用 per-symbol 参数）
-        if self._broker:
-            for alert in actionable:
-                self._submit_order_for_signal(alert)
+            # 自动下单（使用 per-symbol 参数）
+            if self._broker:
+                for alert in actionable:
+                    self._submit_order_for_signal(alert)
+        else:
+            logger.debug('No buy/sell alerts at %s', now.strftime('%H:%M'))
 
         # ── 动态选股：主动建仓检查 ─────────────────────────
         if self._broker and self._daily_refresh:
             self._check_new_positions(now)
 
-        # ── ATR 止损检查（每次轮询都检查）──────────────────
-        if self._broker:
-            self._check_stop_losses(positions, now)
-
-        # ── 止盈检查（ATR移动止盈 + 固定止盈）──────────────
-        if self._broker:
-            self._check_take_profits(positions, now)
+        # ── 统一退出引擎：止损 + 止盈 + 组合熔断（替代三个分散方法）──
+        try:
+            self._run_exit_engine(positions, now)
+        except Exception as e:
+            logger.error('ExitEngine error: %s', e, exc_info=True)
 
     def _submit_market_sell(self, sym, shares, reason=""):
         """Helper: market sell for portfolio risk exits."""
@@ -886,27 +913,8 @@ class IntradayMonitor:
         drawdown = (self._peak_equity - current_equity) / self._peak_equity
         now_str = datetime.now().strftime("%H:%M")
 
-        # 8pct warning: reduce to 50pct
-        if drawdown >= self._dd_warn and not self._risk_warn_fired:
-            self._risk_warn_fired = True
-            msg = "[WARNING] Portfolio DD warning DD: %.1f%% (threshold %.0f%%)\n" % (
-                   drawdown * 100, self._dd_warn * 100)
-            msg += " Equity: %.2f  Peak: %.2f  Time: %s\n" % (
-                   current_equity, self._peak_equity, now_str)
-            msg += " ACTION: Reduce position to 50pct"
-            self._deliver_alert(msg)
-            if self._broker:
-                for pos in positions:
-                    sym = pos.get("symbol")
-                    shares = pos.get("shares", 0)
-                    if shares > 0:
-                        half = shares // 2
-                        if half > 0:
-                            self._submit_market_sell(sym, half, reason="portfolio_risk_reduce")
-            # Return after warn action - stop will be checked on next poll if DD grows
-            return
-
-        # 12pct stop: full liquidation
+        # BUG-1 fix: 先检查 12% 熔断，再检查 8% 警告，避免 early return 屏蔽高优先级熔断
+        # 12pct stop: full liquidation（优先执行，不受 8% 分支 return 影响）
         if drawdown >= self._dd_stop and not self._risk_stop_fired:
             self._risk_stop_fired = True
             msg = "[EMERGENCY] Portfolio cascade STOP! DD: %.1f%% (threshold %.0f%%)\n" % (
@@ -921,6 +929,24 @@ class IntradayMonitor:
                     shares = pos.get("shares", 0)
                     if shares > 0:
                         self._submit_market_sell(sym, shares, reason="portfolio_cascade_stop")
+            return
+
+        # 8pct warning: reduce to 50pct（在 12% 检查之后，避免被 early return 屏蔽）
+        if drawdown >= self._dd_warn and not self._risk_warn_fired:
+            self._risk_warn_fired = True
+            msg = "[WARNING] Portfolio DD warning DD: %.1f%% (threshold %.0f%%)\n" % (
+                   drawdown * 100, self._dd_warn * 100)
+            msg += " Equity: %.2f  Peak: %.2f  Time: %s\n" % (
+                   current_equity, self._peak_equity, now_str)
+            msg += " ACTION: Reduce position to 50pct"
+            self._deliver_alert(msg)
+            if self._broker:
+                for pos in positions:
+                    sym = pos.get("symbol")
+                    shares = pos.get("shares", 0)
+                    if shares > 0:
+                        half = max(100, (shares // 2 // 100) * 100)  # BUG-3 fix: 整手且不低于100
+                        self._submit_market_sell(sym, half, reason="portfolio_risk_reduce")
             return
 
         logger.debug("Portfolio DD=%.1f%% warn_fired=%s", drawdown * 100, self._risk_warn_fired)
@@ -970,6 +996,178 @@ class IntradayMonitor:
                                     self._submit_market_sell(sym, half, reason='sector_concentration')
                             break
 
+
+    def _run_exit_engine(self, positions: list, now: datetime):
+        """
+        统一卖出信号引擎集成层。
+        替代分散的 _check_stop_losses() + _check_take_profits() + _check_portfolio_risk()，
+        使用 ExitEngine 生成优先级排序的退出信号并统一执行。
+        """
+        try:
+            from core.exit_engine import ExitEngine
+        except ImportError as e:
+            logger.warning('ExitEngine import failed, falling back to legacy checks: %s', e)
+            self._check_portfolio_risk(positions)
+            self._check_stop_losses(positions, now)
+            self._check_take_profits(positions, now)
+            return
+
+        # ── 准备 price_bars（ATR/RSI 所需的 OHLCV 数据）─────────────────
+        price_bars: dict = {}
+        try:
+            from core.data_layer import get_data_layer
+            dl = get_data_layer()
+            for pos in positions:
+                sym = pos.get('symbol')
+                if not sym:
+                    continue
+                try:
+                    bars = dl.get_bars(sym, days=60)
+                    if bars is not None and len(bars) >= 20:
+                        price_bars[sym] = bars
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug('price_bars fetch failed: %s', e)
+
+        # ── 准备 per-symbol 参数（WFA 优化参数优先）────────────────────
+        params_map = {
+            pos['symbol']: self._get_params(pos['symbol'])
+            for pos in positions if pos.get('symbol')
+        }
+
+        # ── 补全 current_price（ExitEngine 需要）───────────────────────
+        enriched: list = []
+        from services.signals import fetch_realtime
+        for pos in positions:
+            p = dict(pos)
+            if not p.get('current_price') or p['current_price'] <= 0:
+                try:
+                    snap = fetch_realtime(p.get('symbol', ''))
+                    if snap and snap.get('price', 0) > 0:
+                        p['current_price'] = snap['price']
+                        # 同步更新 peak_price
+                        if p['current_price'] > float(p.get('peak_price', 0) or 0):
+                            p['peak_price'] = p['current_price']
+                except Exception:
+                    pass
+            enriched.append(p)
+
+        # ── 获取当前总权益并更新历史峰值 ──────────────────────────────
+        current_equity = 0.0
+        try:
+            summary = self._svc.get_portfolio_summary(refresh_prices_now=False)
+            current_equity = float(summary.get('total_equity', 0) or 0)
+        except Exception:
+            pass
+        if current_equity > self._peak_equity:
+            self._peak_equity = current_equity
+            # 新高时重置熔断标志
+            self._risk_warn_fired = False
+            self._risk_stop_fired = False
+
+        # ── 从 StrategyRunner 获取因子评分（可选，失败不影响运行）──────
+        # 通过 sys.modules['__main__'] 读取主模块的 _strategy_runner，
+        # 避免 `import backend.main` 重新加载模块导致实例不同的问题。
+        pipeline_scores: dict = {}
+        try:
+            import sys as _sys
+            _main = _sys.modules.get('__main__') or _sys.modules.get('backend.main')
+            _runner = getattr(_main, '_strategy_runner', None)
+            if _runner is not None:
+                for rr in _runner.last_results:
+                    if rr.pipeline_result is not None:
+                        pipeline_scores[rr.symbol] = rr.pipeline_result.combined_score
+        except Exception:
+            pass  # pipeline_scores 为空时 ExitEngine 跳过 FACTOR_REVERSAL 检查
+
+        # ── 调用 ExitEngine 生成信号 ───────────────────────────────────
+        engine = ExitEngine(
+            dd_warn=self._dd_warn,
+            dd_stop=self._dd_stop,
+        )
+        signals = engine.generate(
+            positions=enriched,
+            equity_peak=self._peak_equity,
+            current_equity=current_equity,
+            pipeline_scores=pipeline_scores or None,
+            price_bars=price_bars or None,
+            params_map=params_map or None,
+        )
+
+        if not signals:
+            return
+
+        logger.info('ExitEngine: %d signals generated at %s', len(signals), now.strftime('%H:%M'))
+
+        _EMOJI = {0: '🚨', 1: '⚠️', 2: '🛑', 3: '📉',
+                  4: '↩️', 5: '⚡', 6: '🎯', 7: '🏆', 8: '📊', 9: '⏰'}
+
+        for sig in signals:
+            sym = sig.symbol
+            is_portfolio_level = sig.priority.value <= 1  # P0=EMERGENCY, P1=PORTFOLIO_REDUCE
+
+            # 组合级别信号：使用 _risk_*_fired 防重入（而非 cooldown）
+            if is_portfolio_level:
+                if sig.priority.value == 0 and self._risk_stop_fired:
+                    continue
+                if sig.priority.value == 1 and self._risk_warn_fired:
+                    continue
+                if sig.priority.value == 0:
+                    self._risk_stop_fired = True
+                if sig.priority.value == 1:
+                    self._risk_warn_fired = True
+            else:
+                # 个股级别：冷却检查（紧急信号 P2 降低冷却要求）
+                cooldown_key = f'exit_{sym}'
+                if not self._cooldown.can_fire(cooldown_key):
+                    continue
+
+            # 计算实际卖出股数
+            pos_dict = next((p for p in enriched if p.get('symbol') == sym), None)
+            if not pos_dict:
+                continue
+            shares = pos_dict.get('shares', 0)
+            if shares <= 0:
+                continue
+            sell_shares = sig.shares_to_sell(shares)
+            current_price = sig.current_price or float(pos_dict.get('current_price', 0) or 0)
+            if current_price <= 0:
+                continue
+
+            emoji = _EMOJI.get(sig.priority.value, '📤')
+            label = sig.priority.name.replace('_', ' ').title()
+            pnl_str = f'{sig.unrealized_pct * 100:+.1f}%'
+
+            if not self._can_trade():
+                self._deliver_alert(
+                    f'📋 [{sym}] 模拟模式：退出信号跳过执行\n'
+                    f'   {label} | 卖出: {sell_shares}股 ({sig.exit_pct*100:.0f}%仓) | 价: {current_price:.2f}\n'
+                    f'   浮盈: {pnl_str} | 原因: {sig.reason}\n'
+                    f'   （切换"实盘"模式后生效）'
+                )
+                logger.info('Simulation: skipped ExitEngine %s %s %d @ %.2f',
+                            sig.priority.name, sym, sell_shares, current_price)
+                continue
+
+            try:
+                result = self._broker.submit_order(
+                    symbol=sym,
+                    direction='SELL',
+                    shares=sell_shares,
+                    price=current_price,
+                    price_type='market',
+                )
+                status_str = '✅ 成交' if result.status == 'filled' else f'❌ {result.status}'
+                self._deliver_alert(
+                    f'{emoji}[{sym}] {label}（ExitEngine 自动平仓）\n'
+                    f'   {status_str} {sell_shares}股 @ {result.avg_price:.2f} | 浮盈: {pnl_str}\n'
+                    f'   原因: {sig.reason}'
+                )
+                logger.info('ExitEngine SELL %s %s %d @ %.2f => %s',
+                            sig.priority.name, sym, sell_shares, result.avg_price, result.status)
+            except Exception as e:
+                logger.error('ExitEngine order failed %s %s: %s', sig.priority.name, sym, e)
 
     def _check_take_profits(self, positions, now: datetime):
         """

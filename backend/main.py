@@ -39,6 +39,9 @@ BACKEND_DIR = THIS_DIR
 
 LOG_FILE = os.path.join(THIS_DIR, 'backend.log')
 
+# StrategyRunner 实例（由 main() 启动后赋值，供 IntradayMonitor 读取 pipeline_scores）
+_strategy_runner = None
+
 
 def setup_logging():
     from logging.handlers import RotatingFileHandler
@@ -336,6 +339,9 @@ def main():
                 interval=300,
                 signal_threshold=0.5,
             )
+            # 暴露为模块级变量，供 IntradayMonitor._run_exit_engine() 读取 pipeline_scores
+            import backend.main as _self_module
+            _self_module._strategy_runner = runner
             runner_t = threading.Thread(
                 target=runner.run_loop, daemon=True, name='StrategyRunner')
             runner_t.start()
