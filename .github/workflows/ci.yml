@@ -112,13 +112,14 @@ jobs:
             --no-error-summary \
             || true   # mypy 错误不阻断 CI，仅展示结果
 
-      - name: Run pytest (新增 Phase 1 测试)
+      - name: Run Phase 1 tests (custom check() framework, not pytest-compatible)
+        # 这三个文件使用 check(cond, msg) 自定义框架，顶层直接运行测试代码，
+        # 无 def test_*() 函数，pytest 收集 0 项会返回 exit code 5 导致 CI 失败。
+        # 使用 python 直接执行；测试失败时文件末尾 sys.exit(1) 触发 CI 报错。
         run: |
-          python -m pytest \
-            tests/test_backtest_engine.py \
-            tests/test_walkforward.py \
-            tests/test_data_quality.py \
-            -v --tb=short
+          python tests/test_backtest_engine.py
+          python tests/test_walkforward.py
+          python tests/test_data_quality.py
 
   # ---------------------------------------------------------------
   # Job 3: Windows CI - single version (syntax + unit tests)
