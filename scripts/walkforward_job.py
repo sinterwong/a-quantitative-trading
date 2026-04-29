@@ -305,6 +305,45 @@ def update_backend_params(symbol: str, strategy: str, params: Dict, test_sharpe:
     print(f"  [OK] Params written to {param_file}")
 
 
+# ─── 贝叶斯优化入口 ────────────────────────────────────────
+def run_bayesian_for_symbol(symbol: str, strategy: str, n_trials: int = 50) -> dict:
+    """
+    用 bayesian_optimize.py 对单个标的做贝叶斯超参数优化，
+    结果写入 backend/services/live_params.json，并返回摘要 dict。
+    """
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from bayesian_optimize import optimize, _load_price_data
+
+        print(f"\n{'='*60}")
+        print(f"  [Bayesian] Symbol: {symbol} | Strategy: {strategy} | Trials: {n_trials}")
+        print(f"{'='*60}")
+
+        df = _load_price_data(symbol, n_days=1500)
+        result = optimize(symbol=symbol, strategy=strategy, df=df,
+                          n_trials=n_trials, quiet=False)
+        result.print_summary()
+
+        return {
+            'symbol':   result.symbol,
+            'strategy': result.strategy,
+            'summary': {
+                'avg_sharpe':       result.best_oos_sharpe,
+                'avg_return':       result.best_oos_return * 100,
+                'avg_winrate':      result.wfa_positive_sharpe_pct * 100,
+                'max_maxdd':        0.0,   # bayesian_optimize 暂不计算 maxDD
+                'n_windows':        result.wfa_n_windows,
+                'positive_windows': int(result.wfa_positive_sharpe_pct * result.wfa_n_windows),
+            },
+            'best_params': result.best_params,
+        }
+    except Exception as e:
+        print(f"  [ERROR] Bayesian optimization failed for {symbol}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 # ─── 主入口 ────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description='Walk-Forward Training Job')
@@ -314,10 +353,18 @@ def main():
     parser.add_argument('--test-years', type=int, default=1)
     parser.add_argument('--daemon', action='store_true',
                         help='守护进程模式，每季度自动运行')
+    parser.add_argument('--bayesian', action='store_true',
+                        help='用贝叶斯优化（optuna）替代网格搜索，输出最优参数并写入 live_params.json')
+    parser.add_argument('--n-trials', type=int, default=50,
+                        help='贝叶斯优化 trial 数量（--bayesian 模式有效，默认 50）')
     args = parser.parse_args()
 
     print(
         f"\n[Walk-Forward Job] Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if args.bayesian:
+        print(f"  [模式] 贝叶斯优化 (trials={args.n_trials})")
+    else:
+        print(f"  [模式] 网格搜索 WFA")
 
     if args.symbol:
         symbols = [args.symbol]
@@ -336,6 +383,32 @@ def main():
     all_results = []
     for sym in symbols:
         try:
+            # ── 贝叶斯模式 ───────────────────────────────────────
+            if args.bayesian:
+                result = run_bayesian_for_symbol(
+                    symbol=sym,
+                    strategy=args.strategy,
+                    n_trials=args.n_trials,
+                )
+                if result:
+                    all_results.append(result)
+                    # 贝叶斯模式最优参数已由 optimize() 写入 live_params.json
+                    if PERSISTENCE_OK:
+                        # 包装成 WFA 格式持久化（兼容 walkforward_persistence）
+                        try:
+                            save_wfa_results(
+                                symbol=result['symbol'],
+                                strategy=result['strategy'],
+                                wfa_results=[],   # bayesian 无 WFA window 列表
+                                train_start='', train_end='',
+                                test_start='',  test_end='',
+                            )
+                        except Exception:
+                            pass
+                time.sleep(2)
+                continue
+
+            # ── 网格搜索模式（原有逻辑）─────────────────────────
             result = run_walkforward_for_symbol(
                 symbol=sym,
                 strategy=args.strategy,

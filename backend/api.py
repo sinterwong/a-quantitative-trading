@@ -33,6 +33,8 @@ import traceback
 from datetime import datetime, date
 from functools import wraps
 
+import pandas as pd
+
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.dirname(THIS_DIR)
 PROJ_DIR = os.path.dirname(BACKEND_DIR)
@@ -467,6 +469,188 @@ def analysis_status():
     if metas:
         return ok(**metas[0])
     return ok(message="No analysis run yet")
+
+
+# ============================================================
+# Pipeline 工厂（DynamicWeightPipeline + 全量因子）
+# ============================================================
+
+def build_pipeline(symbol: str = ''):
+    """构建生产用因子流水线（委托给 core.pipeline_factory）。"""
+    from core.pipeline_factory import build_pipeline as _build
+    return _build(symbol=symbol)
+
+
+# ============================================================
+# 行业轮动信号
+# ============================================================
+
+@app.route('/analysis/sector_rotation', methods=['POST'])
+def sector_rotation_signal():
+    """
+    POST /analysis/sector_rotation
+
+    基于价格动量对行业 ETF 排名，返回本周期换仓建议。
+
+    Body (JSON, 可选):
+        {
+          "top_n": 3,
+          "lookback_days": 60,
+          "rebalance_days": 21,
+          "momentum_method": "return",   // "return" | "sharpe"
+          "current_holdings": ["510170.SH"]
+        }
+
+    Returns:
+        {
+          "rebalance_date": "2026-04-29",
+          "buy":  ["516950.SH", "512660.SH"],
+          "sell": ["510170.SH"],
+          "hold": [],
+          "scores": {"516950.SH": 0.123, ...},
+          "avg_turnover_pct": 0.33
+        }
+    """
+    try:
+        body = request.get_json(silent=True) or {}
+        top_n            = int(body.get('top_n', 3))
+        lookback_days    = int(body.get('lookback_days', 60))
+        rebalance_days   = int(body.get('rebalance_days', 21))
+        momentum_method  = str(body.get('momentum_method', 'return'))
+        current_holdings = list(body.get('current_holdings', []))
+
+        from core.strategies.sector_rotation import SectorRotationStrategy, DEFAULT_SECTOR_ETFS
+        from core.data_layer import get_data_layer
+
+        strategy = SectorRotationStrategy(
+            top_n=top_n,
+            lookback_days=lookback_days,
+            rebalance_days=rebalance_days,
+            momentum_method=momentum_method,
+        )
+
+        dl = get_data_layer()
+        price_data = {}
+        for sym in DEFAULT_SECTOR_ETFS:
+            df = dl.get_bars(sym, days=max(lookback_days + 20, 90))
+            if df is not None and not df.empty:
+                price_data[sym] = df
+
+        if not price_data:
+            return err('无法获取行业 ETF 行情数据', 503)
+
+        signal = strategy.latest_signal(price_data, current_holdings=current_holdings)
+
+        # 记录到 signals 表（SECTOR_FLOW 类型告警）
+        svc = get_svc()
+        for sym in signal.buy:
+            svc.record_signal(sym, 'BUY', signal.scores.get(sym, 0),
+                              f'行业轮动买入: 动量分 {signal.scores.get(sym, 0):.4f}')
+
+        return ok(
+            rebalance_date=signal.rebalance_date,
+            buy=signal.buy,
+            sell=signal.sell,
+            hold=signal.hold,
+            scores=signal.scores,
+            top_n=signal.top_n,
+            universe_size=len(price_data),
+        )
+    except Exception as e:
+        return err(str(e) + '\n' + traceback.format_exc(), 500)
+
+
+# ============================================================
+# 配对交易信号
+# ============================================================
+
+@app.route('/analysis/pairs_trading', methods=['POST'])
+def pairs_trading_signal():
+    """
+    POST /analysis/pairs_trading
+
+    在指定标的池中筛选协整配对，并返回当前信号。
+
+    Body (JSON, 可选):
+        {
+          "symbols": ["600519.SH", "000858.SZ", "000568.SZ"],
+          "entry_z": 2.0,
+          "exit_z":  0.5,
+          "stop_z":  4.0,
+          "lookback_days": 60,
+          "screen_days":   252
+        }
+
+    Returns:
+        {
+          "pairs": [
+            {
+              "symbol_a": "600519.SH",
+              "symbol_b": "000858.SZ",
+              "signal": { "spread_zscore": 2.3, "action_a": "BUY", "action_b": "SELL", ... }
+            }
+          ],
+          "n_pairs_found": 1
+        }
+    """
+    try:
+        body = request.get_json(silent=True) or {}
+        symbols      = list(body.get('symbols', []))
+        entry_z      = float(body.get('entry_z', 2.0))
+        exit_z       = float(body.get('exit_z',  0.5))
+        stop_z       = float(body.get('stop_z',  4.0))
+        lookback_days= int(body.get('lookback_days', 60))
+        screen_days  = int(body.get('screen_days', 252))
+
+        if len(symbols) < 2:
+            return err('至少提供 2 个标的用于配对筛选', 400)
+
+        from core.strategies.pairs_trading import find_cointegrated_pairs, PairsTradingStrategy
+        from core.data_layer import get_data_layer
+
+        dl = get_data_layer()
+        # 加载价格矩阵（close 列）
+        price_dict = {}
+        for sym in symbols:
+            df = dl.get_bars(sym, days=screen_days + 30)
+            if df is not None and not df.empty and 'close' in df.columns:
+                price_dict[sym] = df['close']
+
+        if len(price_dict) < 2:
+            return err('有效行情数据不足 2 个标的', 503)
+
+        price_df = pd.DataFrame(price_dict).dropna()
+
+        # 筛选协整配对
+        pairs = find_cointegrated_pairs(price_df, lookback_days=screen_days)
+
+        results = []
+        for sym_a, sym_b in pairs[:5]:   # 最多返回 5 对
+            try:
+                strat = PairsTradingStrategy(
+                    symbol_a=sym_a, symbol_b=sym_b,
+                    entry_z=entry_z, exit_z=exit_z, stop_z=stop_z,
+                    lookback_days=lookback_days,
+                )
+                signal = strat.latest_signal(price_df)
+                if signal:
+                    results.append({
+                        'symbol_a': sym_a,
+                        'symbol_b': sym_b,
+                        'signal': {
+                            'date':          signal.date,
+                            'spread_zscore': round(signal.spread_zscore, 4),
+                            'action_a':      signal.action_a,
+                            'action_b':      signal.action_b,
+                            'spread':        round(signal.spread, 6),
+                        }
+                    })
+            except Exception:
+                continue
+
+        return ok(pairs=results, n_pairs_found=len(pairs))
+    except Exception as e:
+        return err(str(e) + '\n' + traceback.format_exc(), 500)
 
 
 # ============================================================

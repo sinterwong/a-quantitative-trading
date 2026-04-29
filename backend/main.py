@@ -140,6 +140,23 @@ class Scheduler:
         except Exception as e:
             self.logger.error('Analysis trigger failed: %s', e)
 
+    def _trigger_sector_rotation(self):
+        """HTTP POST to /analysis/sector_rotation — 每周一收盘后触发行业轮动换仓信号。"""
+        import urllib.request, json as _json
+        url = f'http://127.0.0.1:{self.api_port}/analysis/sector_rotation'
+        try:
+            payload = _json.dumps({}).encode()
+            req = urllib.request.Request(url, data=payload, method='POST',
+                                         headers={'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                body = r.read()
+            data = _json.loads(body)
+            buy  = data.get('data', {}).get('buy', [])
+            sell = data.get('data', {}).get('sell', [])
+            self.logger.info('行业轮动信号 — 买入: %s  卖出: %s', buy, sell)
+        except Exception as e:
+            self.logger.error('Sector rotation trigger failed: %s', e)
+
     def _run_loop(self):
         self.logger.info('Scheduler started')
         while not self._stop.is_set():
@@ -157,6 +174,11 @@ class Scheduler:
             if is_trading_day():
                 self.logger.info('Trading day — triggering analysis')
                 self._trigger_analysis()
+                # 每周一额外触发行业轮动（weekday() == 0）
+                from datetime import datetime as _dt
+                if _dt.now().weekday() == 0:
+                    self.logger.info('Monday — triggering sector rotation')
+                    self._trigger_sector_rotation()
             else:
                 self.logger.info('Non-trading day — skipping')
 
@@ -286,6 +308,40 @@ def main():
         )
         api_t.start()
         logger.info('API: http://%s:%s', args.host, args.port)
+
+    # StrategyRunner — 使用 DynamicWeightPipeline 全因子流水线
+    # dry_run=True：仅记录/告警信号，执行权仍在 IntradayMonitor
+    if args.mode in ('scheduler', 'both'):
+        try:
+            from core.pipeline_factory import build_runner
+
+            def _runner_symbols():
+                """动态获取候选标的：持仓标的 + 宽基 ETF 兜底。"""
+                try:
+                    import urllib.request as _req, json as _j
+                    url = f'http://127.0.0.1:{args.port}/positions'
+                    with _req.urlopen(url, timeout=3) as r:
+                        d = _j.loads(r.read())
+                    held = [p['symbol'] for p in d.get('positions', [])
+                            if p.get('shares', 0) > 0]
+                    if held:
+                        return held
+                except Exception:
+                    pass
+                return ['510300.SH', '159915.SZ', '512690.SH']
+
+            runner = build_runner(
+                symbols=_runner_symbols,
+                dry_run=True,    # 信号仅记录日志，不重复下单
+                interval=300,
+                signal_threshold=0.5,
+            )
+            runner_t = threading.Thread(
+                target=runner.run_loop, daemon=True, name='StrategyRunner')
+            runner_t.start()
+            logger.info('StrategyRunner started (DynamicWeightPipeline, dry_run=True)')
+        except Exception as exc:
+            logger.warning('StrategyRunner start failed (non-fatal): %s', exc)
 
     logger.info('Backend running. Press Ctrl+C to stop.')
 

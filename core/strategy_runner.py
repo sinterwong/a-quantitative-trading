@@ -15,10 +15,10 @@ dry_run=True 时只打印信号，不真正下单（调试首选）。
 
 用法（生产）：
     from core.strategy_runner import StrategyRunner, RunnerConfig
-    from core.factor_pipeline import FactorPipeline
+    from core.factor_pipeline import DynamicWeightPipeline
     from core.data_layer import get_data_layer
 
-    pipeline = FactorPipeline()
+    pipeline = DynamicWeightPipeline()
     pipeline.add('RSI', weight=0.5).add('MACD', weight=0.3).add('ATR', weight=0.2)
 
     cfg = RunnerConfig(
@@ -44,7 +44,7 @@ from datetime import datetime, date
 from typing import Any, Callable, Dict, List, Optional
 
 from core.data_layer import DataLayer, get_data_layer
-from core.factor_pipeline import FactorPipeline, PipelineResult
+from core.factor_pipeline import FactorPipeline, DynamicWeightPipeline, PipelineResult
 from core.regime import RegimeInfo, get_regime
 
 logger = logging.getLogger(__name__)
@@ -97,7 +97,7 @@ class RunnerConfig:
         返回 False 表示拦截（不下单）
     """
     symbols: Any                           # List[str] | Callable[[], List[str]]
-    pipeline: FactorPipeline
+    pipeline: FactorPipeline               # FactorPipeline 或 DynamicWeightPipeline（推荐）
     interval: int = 300
     dry_run: bool = True
     signal_threshold: float = 0.5

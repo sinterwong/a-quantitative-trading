@@ -628,6 +628,82 @@ class DataLayer:
         self._cache.set("north_flow", snap, self.NORTH_TTL)
         return snap
 
+    # ── 宏观数据 ─────────────────────────────────────────────────────────────
+
+    MACRO_TTL = 86400   # 宏观月度数据缓存 24 小时
+
+    def get_macro_data(self, indicator: str) -> pd.DataFrame:
+        """
+        获取月度宏观经济数据，供 PMIFactor / M2GrowthFactor / CreditImpulseFactor 使用。
+
+        Parameters
+        ----------
+        indicator : str
+            'PMI'    — 制造业 PMI（列：pmi）
+            'M2'     — M2 货币供应量同比增速（列：m2_yoy）
+            'CREDIT' — 社融同比增速（列：credit_yoy）
+
+        Returns
+        -------
+        pd.DataFrame
+            index 为 DatetimeIndex，失败时返回空 DataFrame（因子自动降级为全零）
+        """
+        cache_key = f'macro:{indicator}'
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        df = pd.DataFrame()
+        try:
+            import akshare as ak
+            if indicator == 'PMI':
+                raw = ak.macro_china_pmi_monthly()
+                # 列名：'月份' + '制造业PMI' 等，取第一列（日期）和第二列（PMI）
+                raw.columns = [c.strip() for c in raw.columns]
+                date_col = raw.columns[0]
+                pmi_col  = next((c for c in raw.columns if 'PMI' in c or 'pmi' in c.lower()), raw.columns[1])
+                raw = raw[[date_col, pmi_col]].copy()
+                raw.columns = ['date', 'pmi']
+                raw['date'] = pd.to_datetime(raw['date'], errors='coerce')
+                raw = raw.dropna(subset=['date']).set_index('date')
+                raw['pmi'] = pd.to_numeric(raw['pmi'], errors='coerce')
+                df = raw.sort_index()
+
+            elif indicator == 'M2':
+                raw = ak.macro_china_money_supply_bal()
+                raw.columns = [c.strip() for c in raw.columns]
+                date_col  = raw.columns[0]
+                m2_col    = next((c for c in raw.columns if 'm2' in c.lower() and 'yoy' in c.lower()), None)
+                if m2_col is None:
+                    m2_col = next((c for c in raw.columns if 'm2' in c.lower()), raw.columns[1])
+                raw = raw[[date_col, m2_col]].copy()
+                raw.columns = ['date', 'm2_yoy']
+                raw['date'] = pd.to_datetime(raw['date'], errors='coerce')
+                raw = raw.dropna(subset=['date']).set_index('date')
+                raw['m2_yoy'] = pd.to_numeric(raw['m2_yoy'], errors='coerce')
+                df = raw.sort_index()
+
+            elif indicator == 'CREDIT':
+                raw = ak.macro_china_shrzgm()
+                raw.columns = [c.strip() for c in raw.columns]
+                date_col   = raw.columns[0]
+                val_col    = next((c for c in raw.columns if 'yoy' in c.lower()), None)
+                if val_col is None:
+                    val_col = next((c for c in raw.columns if '同比' in c), raw.columns[1])
+                col_out = 'credit_yoy' if val_col else 'value'
+                raw = raw[[date_col, val_col]].copy()
+                raw.columns = ['date', col_out]
+                raw['date'] = pd.to_datetime(raw['date'], errors='coerce')
+                raw = raw.dropna(subset=['date']).set_index('date')
+                raw[col_out] = pd.to_numeric(raw[col_out], errors='coerce')
+                df = raw.sort_index()
+
+        except Exception as exc:
+            logger.warning('get_macro_data(%s) failed: %s', indicator, exc)
+
+        self._cache.set(cache_key, df, self.MACRO_TTL)
+        return df
+
     # ── 缓存管理 ─────────────────────────────────────────────────────────────
 
     def invalidate(self, symbol: str = None):
