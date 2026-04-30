@@ -96,6 +96,7 @@ class PositionBook:
         self._refresh_interval = refresh_interval  # 秒，默认5分钟
         self._stop_refresh = False
         self._initialized = False
+        self._init_lock = threading.Lock()
         if not lazy:
             self._ensure_initialized()
 
@@ -103,9 +104,12 @@ class PositionBook:
         """首次使用时才加载 API 数据并启动刷新线程，避免构造时阻塞。"""
         if self._initialized:
             return
-        self._initialized = True
-        self._load_from_api()
-        self._start_refresh_thread()
+        with self._init_lock:
+            if self._initialized:      # double-check
+                return
+            self._initialized = True
+            self._load_from_api()
+            self._start_refresh_thread()
 
     def _load_from_api(self):
         try:

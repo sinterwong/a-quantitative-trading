@@ -473,6 +473,20 @@ class IntradayMonitor:
                     shares = shares // 2
                 if shares < 100:
                     continue
+                # PreTrade 风控检查（仓位/暴露/日亏损限制）
+                if self._strategy_runner is not None and self._strategy_runner.risk_engine is not None:
+                    try:
+                        from core.factors.base import Signal as _Sig
+                        _dummy = _Sig(
+                            timestamp=now, symbol=sym, direction='BUY',
+                            strength=1.0, factor_name='DynamicSelector', price=alert.price,
+                        )
+                        rr = self._strategy_runner.risk_engine.check(_dummy)
+                        if not rr.passed:
+                            logger.info('RiskEngine rejected new BUY %s: %s', sym, rr.reason)
+                            continue
+                    except Exception as e:
+                        logger.warning('RiskEngine check failed for %s: %s', sym, e)
                 if not self._can_trade():
                     self._deliver_alert(
                         f'📋 [{sym}] 模拟模式：信号触发但跳过执行\n'

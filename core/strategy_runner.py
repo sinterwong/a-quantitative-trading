@@ -141,6 +141,7 @@ class StrategyRunner:
         self._running = False
         self._run_count = 0                       # 已完成轮次
         self._last_run_results: List[RunResult] = []
+        self._results_lock = threading.Lock()     # 保护跨线程读写
         self._current_regime: Optional[RegimeInfo] = None
 
     # ------------------------------------------------------------------
@@ -177,7 +178,8 @@ class StrategyRunner:
             results.append(r)
 
         self._run_count += 1
-        self._last_run_results = results
+        with self._results_lock:
+            self._last_run_results = results
         logger.info(
             "[StrategyRunner] run #%d: %d symbols, %d actions",
             self._run_count,
@@ -225,7 +227,8 @@ class StrategyRunner:
 
     @property
     def last_results(self) -> List[RunResult]:
-        return list(self._last_run_results)
+        with self._results_lock:
+            return list(self._last_run_results)
 
     @property
     def current_regime(self) -> Optional[RegimeInfo]:

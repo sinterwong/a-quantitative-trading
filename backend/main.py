@@ -368,12 +368,13 @@ def main():
                 max_position_pct=max_pos_pct,
                 llm_service=llm_service,
             )
-            monitor.start()
-            logger.info('IntradayMonitor started (broker=PaperBroker, max_pos_pct=%.0f%%, llm=%s)',
+            # 注意：延迟 monitor.start()，待 StrategyRunner 注入后再启动
+            logger.info('IntradayMonitor created (broker=PaperBroker, max_pos_pct=%.0f%%, llm=%s)',
                         max_pos_pct * 100, llm_service is not None)
         except Exception as e:
-            logger.warning('IntradayMonitor start failed (non-fatal): %s', e)
+            logger.warning('IntradayMonitor init failed (non-fatal): %s', e)
 
+    # API server 必须在 StrategyRunner 之前启动（runner 的 _runner_symbols 依赖 API）
     if args.mode in ('api', 'both'):
         logger.info('Starting API server thread')
         api_t = threading.Thread(
@@ -412,7 +413,7 @@ def main():
                 interval=300,
                 signal_threshold=0.5,
             )
-            # 注入到 IntradayMonitor，替代原先的 sys.modules 黑魔法
+            # 注入到 IntradayMonitor（在 start() 之前，避免竞态读取 None）
             if monitor is not None:
                 monitor.set_strategy_runner(runner)
             runner_t = threading.Thread(
@@ -421,6 +422,14 @@ def main():
             logger.info('StrategyRunner started (DynamicWeightPipeline, dry_run=True)')
         except Exception as exc:
             logger.warning('StrategyRunner start failed (non-fatal): %s', exc)
+
+    # StrategyRunner 已注入 → 安全启动 IntradayMonitor
+    if monitor is not None:
+        try:
+            monitor.start()
+            logger.info('IntradayMonitor started')
+        except Exception as e:
+            logger.warning('IntradayMonitor start failed (non-fatal): %s', e)
 
     logger.info('Backend running. Press Ctrl+C to stop.')
 

@@ -473,6 +473,22 @@ def run_analysis():
         except Exception:
             pass  # 持久化失败不影响 API 响应
 
+        # ── 记录 daily_meta（供 StrategyHealthMonitor 读取）─────────
+        try:
+            summary = svc.get_portfolio_summary()
+            trades_today = svc.get_trades(limit=200)
+            today_str_iso = datetime.now().strftime('%Y-%m-%d')
+            n_trades = sum(1 for t in trades_today
+                          if str(t.get('timestamp', ''))[:10] == today_str_iso)
+            svc.record_daily_meta(
+                equity=float(summary.get('total_equity', 0) or 0),
+                cash=float(summary.get('cash', 0) or 0),
+                n_signals=len(top_bks),
+                n_trades=n_trades,
+            )
+        except Exception:
+            pass
+
         return ok(**result)
     except Exception as e:
         return err(str(e) + '\n' + traceback.format_exc(), 500)
