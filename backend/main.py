@@ -204,6 +204,19 @@ class Scheduler:
         except ImportError as e:
             self.logger.error('Fundamental refresh import failed: %s', e)
 
+    def _trigger_daily_ops_report(self):
+        """每日 16:00 生成运营报告并推送告警。"""
+        try:
+            sys.path.insert(0, PROJ_DIR)
+            from core.daily_ops_reporter import DailyOpsReporter
+            reporter = DailyOpsReporter(api_port=self.api_port)
+            report = reporter.run()
+            n_trades = report.get('trades', {}).get('n_trades', 0)
+            pnl = report.get('portfolio', {}).get('total_unrealized_pnl', 0.0)
+            self.logger.info('Daily ops report sent — trades=%d unrealized_pnl=%.2f', n_trades, pnl)
+        except Exception as e:
+            self.logger.error('Daily ops report failed: %s', e)
+
     def _run_loop(self):
         self.logger.info('Scheduler started')
         while not self._stop.is_set():
@@ -234,6 +247,16 @@ class Scheduler:
                     label = 'quarter-end' if is_quarter_end else 'earnings-season'
                     self.logger.info('%s — refreshing fundamental data cache', label)
                     self._refresh_fundamentals()
+                # 等待至 16:00 触发每日运营报告
+                ops_wait = wait_until_next(16, 0)
+                ops_waited = 0
+                while ops_waited < ops_wait and not self._stop.is_set():
+                    chunk = min(60, ops_wait - ops_waited)
+                    time.sleep(chunk)
+                    ops_waited += chunk
+                if not self._stop.is_set():
+                    self.logger.info('16:00 — generating daily ops report')
+                    self._trigger_daily_ops_report()
             else:
                 self.logger.info('Non-trading day — skipping')
 

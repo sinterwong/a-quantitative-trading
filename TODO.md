@@ -237,10 +237,10 @@
 
 ### 运营
 
-- [ ] **自动化每日运营报告**
-  - 内容：因子 IC 日报 / 策略健康度 / AlertManager 发送摘要
-  - 触发：`backend/main.py Scheduler` 每日 16:00
-  - 输出：企业微信 / 钉钉 Markdown 格式
+- [x] **自动化每日运营报告** *(2026-04-30 完成)*
+  - `core/daily_ops_reporter.py DailyOpsReporter`：汇聚 P&L / 策略健康 / 告警摘要 / 因子 IC
+  - Scheduler 每日 16:00 自动触发（`_trigger_daily_ops_report()`）
+  - JSON 输出到 `outputs/daily_ops/ops_{date}.json` + AlertManager 推送
 
 - [x] **参数自动优化（贝叶斯调参）** *(2026-04-29 完成)*
   - `scripts/bayesian_optimize.py`（已实现）：optuna + Walk-Forward 框架
