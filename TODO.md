@@ -214,9 +214,10 @@
   - `core/audit_log.py`（已实现）：append-only JSONL + SHA-256 篡改检测
   - 每笔交易记录：时间戳、信号来源、因子值、风控检查结果
 
-- [ ] **回测报告 PDF 导出**
-  - 工具：`reportlab` 或 `weasyprint`
-  - 内容：净值曲线、Sharpe/MaxDD/Calmar、WFA 热力图、因子 IC 汇总
+- [x] **回测报告 PDF 导出** *(2026-04-30 完成)*
+  - `core/report_exporter.py BacktestReportExporter`：封面 + 净值曲线 + 回撤图 + 绩效表 + 交易统计
+  - 可选：WFA 结果表 + 因子 IC 汇总（参数传入）
+  - 工具：`reportlab` + `matplotlib`，无需外部服务
 
 ### 策略研究
 
