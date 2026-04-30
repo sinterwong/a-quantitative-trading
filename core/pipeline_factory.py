@@ -121,6 +121,7 @@ def build_runner(
     """
     from core.strategy_runner import StrategyRunner, RunnerConfig
     from core.data_layer import get_data_layer
+    from core.risk_engine import RiskEngine
 
     pipeline = build_pipeline()
     cfg = RunnerConfig(
@@ -131,4 +132,8 @@ def build_runner(
         signal_threshold=signal_threshold,
         regime_aware=True,
     )
-    return StrategyRunner(cfg, data_layer=get_data_layer())
+    try:
+        risk_engine = RiskEngine()
+    except Exception:
+        risk_engine = None
+    return StrategyRunner(cfg, data_layer=get_data_layer(), risk_engine=risk_engine)

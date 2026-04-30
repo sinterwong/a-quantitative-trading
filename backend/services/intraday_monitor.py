@@ -134,13 +134,16 @@ class IntradayMonitor:
                  max_position_pct: float = 0.20,
                  selector_top_n: int = 5,
                  daily_selector_refresh: bool = True,
-                 llm_service=None):
+                 llm_service=None,
+                 strategy_runner=None):
         """
         broker: BrokerBase instance (e.g. PaperBroker). 如果不传，只推送不下单。
         max_position_pct: 每笔买入占总现金的比例（默认 20%）
         selector_top_n: 动态选股取前N（默认 5）
         daily_selector_refresh: 每天开盘前刷新一次选股列表（默认 True）
         llm_service: LLMService instance. 如果不传，新闻情绪检查被跳过。
+        strategy_runner: StrategyRunner instance. 注入后可从 last_results 读取
+            pipeline_scores，用于 ExitEngine 的 FACTOR_REVERSAL 检查。
         """
         self._svc       = svc
         self._broker    = broker
@@ -154,6 +157,8 @@ class IntradayMonitor:
         self._daily_refresh = daily_selector_refresh
         self._selector_cache: list = []
         self._selector_loaded_date: str = ''
+        # StrategyRunner 引用（可在启动后通过 set_strategy_runner() 注入）
+        self._strategy_runner = strategy_runner
         # WFA 参数缓存（每天刷新一次）
         self._params_cache: dict = {}
         self._params_cache_date: str = ''
@@ -211,6 +216,14 @@ class IntradayMonitor:
         self._trading_mode = mode
         self._save_trading_mode()
         logger.info('Trading mode changed: %s → %s', old, mode)
+
+    def set_strategy_runner(self, runner) -> None:
+        """注入 StrategyRunner 实例，用于读取 pipeline_scores。
+
+        可在 monitor.start() 之前或之后调用；线程安全（GIL 保护的单次赋值）。
+        """
+        self._strategy_runner = runner
+        logger.info('StrategyRunner injected into IntradayMonitor')
 
     def _load_trading_mode(self):
         mode_file = os.path.join(BACKEND_DIR, 'trading_mode.json')
@@ -769,20 +782,18 @@ class IntradayMonitor:
 
     def _sync_market_regime(self):
         """从 StrategyRunner 同步最新市场环境到 _market_regime（供 LLM prompt 使用）。"""
-        try:
-            import sys as _sys
-            _main = _sys.modules.get('__main__') or _sys.modules.get('backend.main')
-            _runner = getattr(_main, '_strategy_runner', None)
-            if _runner is not None and _runner.current_regime is not None:
-                r = _runner.current_regime
-                self._market_regime = {
-                    'regime': r.regime,
-                    'reason': r.reason,
-                    'atr_ratio': getattr(r, 'atr_ratio', 0.0),
-                }
-                return
-        except Exception:
-            pass
+        if self._strategy_runner is not None:
+            try:
+                r = self._strategy_runner.current_regime
+                if r is not None:
+                    self._market_regime = {
+                        'regime': r.regime,
+                        'reason': r.reason,
+                        'atr_ratio': getattr(r, 'atr_ratio', 0.0),
+                    }
+                    return
+            except Exception:
+                pass
         # 降级：直接调用 get_regime()
         try:
             from core.regime import get_regime
@@ -1073,19 +1084,14 @@ class IntradayMonitor:
             self._risk_stop_fired = False
 
         # ── 从 StrategyRunner 获取因子评分（可选，失败不影响运行）──────
-        # 通过 sys.modules['__main__'] 读取主模块的 _strategy_runner，
-        # 避免 `import backend.main` 重新加载模块导致实例不同的问题。
         pipeline_scores: dict = {}
-        try:
-            import sys as _sys
-            _main = _sys.modules.get('__main__') or _sys.modules.get('backend.main')
-            _runner = getattr(_main, '_strategy_runner', None)
-            if _runner is not None:
-                for rr in _runner.last_results:
+        if self._strategy_runner is not None:
+            try:
+                for rr in self._strategy_runner.last_results:
                     if rr.pipeline_result is not None:
                         pipeline_scores[rr.symbol] = rr.pipeline_result.combined_score
-        except Exception:
-            pass  # pipeline_scores 为空时 ExitEngine 跳过 FACTOR_REVERSAL 检查
+            except Exception:
+                pass  # pipeline_scores 为空时 ExitEngine 跳过 FACTOR_REVERSAL 检查
 
         # ── 调用 ExitEngine 生成信号 ───────────────────────────────────
         engine = ExitEngine(

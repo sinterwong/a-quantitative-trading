@@ -419,10 +419,11 @@ def recent_orders():
 def run_analysis():
     """
     POST /analysis/run — trigger daily analysis.
-    Phase 1: runs the analysis and returns the report.
-    """
-    import subprocess
 
+    运行 DynamicStockSelectorV2 选股 + 记录信号，并将完整结果持久化到
+    outputs/analysis/analysis_{date}.json，供 /analysis/health 和
+    DailyOpsReporter 读取。
+    """
     # Import the dynamic selector to run analysis
     try:
         sys.path.insert(0, os.path.join(PROJ_DIR, 'scripts'))
@@ -447,18 +448,92 @@ def run_analysis():
                 f"板块:{info.get('name','')} 涨幅:{info.get('change_pct',0):.2f}%"
             )
 
-        return ok(
-            sources=sources,
-            top_sectors=[
+        result = {
+            'sources': sources,
+            'top_sectors': [
                 {'bk': bk, 'name': info.get('name'), 'total': info.get('total'),
                  'change_pct': info.get('change_pct')}
                 for bk, info in top_bks
             ],
-            news_summary=news,
-            selected_stocks=stocks,
-        )
+            'news_summary': news,
+            'selected_stocks': stocks,
+        }
+
+        # ── 持久化到 outputs/analysis/ ──────────────────────────────
+        try:
+            out_dir = os.path.join(BACKEND_DIR, 'outputs', 'analysis')
+            os.makedirs(out_dir, exist_ok=True)
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            out_path = os.path.join(out_dir, f'analysis_{today_str}.json')
+            with open(out_path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'timestamp': datetime.now().isoformat(),
+                    **result,
+                }, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass  # 持久化失败不影响 API 响应
+
+        return ok(**result)
     except Exception as e:
         return err(str(e) + '\n' + traceback.format_exc(), 500)
+
+
+@app.route('/analysis/health', methods=['GET'])
+def analysis_health():
+    """GET /analysis/health — 系统健康状态汇总。
+
+    综合持仓、最近分析、信号等数据，返回 OK / WARN / CRITICAL 健康等级。
+    """
+    try:
+        svc = get_svc()
+        summary = svc.get_portfolio_summary()
+        positions = svc.get_positions()
+        n_positions = len(positions)
+        total_pnl = sum(float(p.get('unrealized_pnl', 0) or 0) for p in positions)
+        cash = float(summary.get('cash', 0) or 0)
+        equity = float(summary.get('total_equity', 0) or 0)
+
+        # 简单健康规则
+        level = 'OK'
+        reasons = []
+
+        # 1. 现金占比过低 → WARN
+        if equity > 0 and cash / equity < 0.05:
+            level = 'WARN'
+            reasons.append(f'现金占比仅 {cash/equity*100:.1f}%，低于 5%')
+
+        # 2. 未实现亏损超过总权益 5% → WARN
+        if equity > 0 and total_pnl < -0.05 * equity:
+            level = 'WARN'
+            reasons.append(f'未实现亏损 {total_pnl:.0f} 超过总权益 5%')
+
+        # 3. 未实现亏损超过总权益 10% → CRITICAL
+        if equity > 0 and total_pnl < -0.10 * equity:
+            level = 'CRITICAL'
+            reasons.append(f'未实现亏损 {total_pnl:.0f} 超过总权益 10%')
+
+        # 4. 最近分析时间检查
+        latest_analysis = None
+        try:
+            analysis_dir = os.path.join(BACKEND_DIR, 'outputs', 'analysis')
+            if os.path.isdir(analysis_dir):
+                files = sorted(os.listdir(analysis_dir), reverse=True)
+                if files:
+                    latest_analysis = files[0]
+        except Exception:
+            pass
+
+        return ok(
+            level=level,
+            reasons=reasons,
+            n_positions=n_positions,
+            total_unrealized_pnl=round(total_pnl, 2),
+            cash=round(cash, 2),
+            equity=round(equity, 2),
+            latest_analysis=latest_analysis,
+        )
+    except Exception as e:
+        return err(str(e), 500)
 
 
 @app.route('/analysis/status', methods=['GET'])
