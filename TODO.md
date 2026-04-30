@@ -134,11 +134,10 @@
   - 纯 numpy Engle-Granger 协整检验，`POST /analysis/pairs_trading` 接口
   - A 股限制处理：ETF + 个股组合代替纯做空
 
-- [ ] **[P3] 基于 ML 的因子动态选择**
-  - 思路：用 LightGBM 预测"未来 21 天哪些因子 IC 较高"，自适应调整权重
-  - 特征：市场 Regime / 波动率水平 / 行业资金流向 / 宏观指标
-  - 依赖：`core/ml/feature_store.py`（已有）+ 新增 Regime 特征
-  - 文件：`core/ml/factor_selector.py`（新建）
+- [x] **[P3] 基于 ML 的因子动态选择** *(2026-04-30 完成)*
+  - `core/ml/factor_selector.py`：`FactorICLabeler` + `FactorSelectorModel` + `WalkForwardFactorSelector` + `FactorSelector`
+  - LightGBM 预测各因子在未来 21 天 IC 是否高于阈值，输出 `factor_weights` 字典
+  - Walk-Forward 框架（252/63/21）防过拟合，LightGBM 缺失时等权降级
 
 ### P5-C：另类数据接入
 
