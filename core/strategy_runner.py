@@ -235,6 +235,21 @@ class StrategyRunner:
         """最近一次检测到的市场环境，未检测时为 None。"""
         return self._current_regime
 
+    @property
+    def last_scores(self) -> Dict[str, float]:
+        """
+        返回 {symbol: combined_score} 字典，供 IntradayMonitor 读取。
+
+        - 无结果或 pipeline_result 为 None 时，该标的不出现
+        - 线程安全（复用 _results_lock）
+        """
+        with self._results_lock:
+            return {
+                r.symbol: r.pipeline_result.combined_score
+                for r in self._last_run_results
+                if r.pipeline_result is not None
+            }
+
     # ------------------------------------------------------------------
     # Internal: per-symbol processing
     # ------------------------------------------------------------------

@@ -1,11 +1,11 @@
 """
-intraday_monitor.py — 盘中实时监控服务
+intraday_monitor.py - 盘中实时监控服务
 ========================================
-后台线程，交易时段持续运行：
+后台线程,交易时段持续运行:
   - 每 5 分钟检查一次持仓信号
   - 合条件时主动推送 Feishu 消息
 
-使用方法：
+使用方法:
   from backend.services.intraday_monitor import IntradayMonitor
   mon = IntradayMonitor(svc=portfolio_service)
   mon.start()   # 启动后台线程
@@ -42,8 +42,8 @@ from .signals import (
 logger = logging.getLogger('intraday_monitor')
 
 # 全局配置
-CHECK_INTERVAL  = 300   # 秒（5分钟）
-COOLDOWN       = 900   # 同一标的信号推送冷却时间（15分钟）
+CHECK_INTERVAL  = 300   # 秒(5分钟)
+COOLDOWN       = 900   # 同一标的信号推送冷却时间(15分钟)
 
 
 # ─── 交易时段判断 ─────────────────────────────────────────
@@ -66,7 +66,7 @@ def is_market_open(now: Optional[datetime] = None) -> bool:
 
 
 def next_market_seconds(now: Optional[datetime] = None) -> int:
-    """距离下次开市还有多少秒（用于启动前 sleep）"""
+    """距离下次开市还有多少秒(用于启动前 sleep)"""
     if now is None:
         now = datetime.now()
     h, m = now.hour, now.minute
@@ -110,19 +110,19 @@ class CooldownTracker:
 class IntradayMonitor:
     """
     盘中信号监控后台线程。
-    检测到信号时：
+    检测到信号时:
       1. 推送飞书提醒
-      2. 自动提交订单（如果 broker 已注入）
+      2. 自动提交订单(如果 broker 已注入)
     """
 
-    # 信号 → 订单方向映射（涨跌停类不交易）
+    # 信号 → 订单方向映射(涨跌停类不交易)
     SIGNAL_TO_ORDER = {
         'RSI_BUY':     'BUY',
         'WATCH_BUY':   'BUY',
         'RSI_SELL':    'SELL',
         'WATCH_SELL':  'SELL',
     }
-    # 涨跌停类信号不交易（无法以合理价格买入/卖出）
+    # 涨跌停类信号不交易(无法以合理价格买入/卖出)
     NO_TRADE_SIGNALS = {
         'LIMIT_UP', 'LIMIT_DOWN',
         'LIMIT_RISK_UP', 'LIMIT_RISK_DOWN',
@@ -137,13 +137,13 @@ class IntradayMonitor:
                  llm_service=None,
                  strategy_runner=None):
         """
-        broker: BrokerBase instance (e.g. PaperBroker). 如果不传，只推送不下单。
-        max_position_pct: 每笔买入占总现金的比例（默认 20%）
-        selector_top_n: 动态选股取前N（默认 5）
-        daily_selector_refresh: 每天开盘前刷新一次选股列表（默认 True）
-        llm_service: LLMService instance. 如果不传，新闻情绪检查被跳过。
+        broker: BrokerBase instance (e.g. PaperBroker). 如果不传,只推送不下单。
+        max_position_pct: 每笔买入占总现金的比例(默认 20%)
+        selector_top_n: 动态选股取前N(默认 5)
+        daily_selector_refresh: 每天开盘前刷新一次选股列表(默认 True)
+        llm_service: LLMService instance. 如果不传,新闻情绪检查被跳过。
         strategy_runner: StrategyRunner instance. 注入后可从 last_results 读取
-            pipeline_scores，用于 ExitEngine 的 FACTOR_REVERSAL 检查。
+            pipeline_scores,用于 ExitEngine 的 FACTOR_REVERSAL 检查。
         """
         self._svc       = svc
         self._broker    = broker
@@ -157,32 +157,32 @@ class IntradayMonitor:
         self._daily_refresh = daily_selector_refresh
         self._selector_cache: list = []
         self._selector_loaded_date: str = ''
-        # StrategyRunner 引用（可在启动后通过 set_strategy_runner() 注入）
+        # StrategyRunner 引用(可在启动后通过 set_strategy_runner() 注入)
         self._strategy_runner = strategy_runner
-        # WFA 参数缓存（每天刷新一次）
+        # WFA 参数缓存(每天刷新一次)
         self._params_cache: dict = {}
         self._params_cache_date: str = ''
-        # LLM 新闻情绪服务（可空）
+        # LLM 新闻情绪服务(可空)
         self._llm = llm_service
-        # 新闻情绪缓存：{symbol: (sentiment, confidence, summary, date)}  每天刷新
+        # 新闻情绪缓存:{symbol: (sentiment, confidence, summary, date)}  每天刷新
         self._sentiment_cache: dict = {}
         self._sentiment_cache_date: str = ''
         # 组合熔断追踪
         self._peak_equity: float = 0.0
-        self._risk_warn_fired: bool = False   # 8% 熔断已触发（当天不重复推送）
+        self._risk_warn_fired: bool = False   # 8% 熔断已触发(当天不重复推送)
         self._risk_stop_fired: bool = False   # 12% 熔断已触发
-        # 市场环境缓存（LLM prompt 使用，BUG-4 fix: 必须在 __init__ 初始化）
+        # 市场环境缓存(LLM prompt 使用,BUG-4 fix: 必须在 __init__ 初始化)
         self._market_regime: dict = {}
         # 组合风控参数
         self._dd_warn: float = 0.08    # 8% 回撤警告
         self._dd_stop: float = 0.12    # 12% 回撤清仓
         # Kelly 仓位
-        self._kelly_pct: float = 0.10   # 默认 10%，每交易日根据历史交易更新
+        self._kelly_pct: float = 0.10   # 默认 10%,每交易日根据历史交易更新
         self._kelly_last_updated: str = ''  # ISO date string
-        # 交易模式：'simulation' (默认，不执行Broker订单) | 'live' (执行Broker订单)
+        # 交易模式:'simulation' (默认,不执行Broker订单) | 'live' (执行Broker订单)
         self._trading_mode: str = 'simulation'
         self._load_trading_mode()
-        # 策略健康监控（每日开盘时检查一次）
+        # 策略健康监控(每日开盘时检查一次)
         self._health_check_date: str = ''
 
     # ── Public API ────────────────────────────────────────
@@ -213,16 +213,16 @@ class IntradayMonitor:
         return self._trading_mode
 
     def set_trading_mode(self, mode: str):
-        """动态切换交易模式：'simulation' | 'live'"""
+        """动态切换交易模式:'simulation' | 'live'"""
         old = self._trading_mode
         self._trading_mode = mode
         self._save_trading_mode()
         logger.info('Trading mode changed: %s → %s', old, mode)
 
     def set_strategy_runner(self, runner) -> None:
-        """注入 StrategyRunner 实例，用于读取 pipeline_scores。
+        """注入 StrategyRunner 实例,用于读取 pipeline_scores。
 
-        可在 monitor.start() 之前或之后调用；线程安全（GIL 保护的单次赋值）。
+        可在 monitor.start() 之前或之后调用;线程安全(GIL 保护的单次赋值)。
         """
         self._strategy_runner = runner
         logger.info('StrategyRunner injected into IntradayMonitor')
@@ -253,7 +253,7 @@ class IntradayMonitor:
             logger.warning('Failed to save trading_mode.json: %s', e)
 
     def _can_trade(self) -> bool:
-        """检查是否允许执行实单（Broker下单）。simulation模式返回False。"""
+        """检查是否允许执行实单(Broker下单)。simulation模式返回False。"""
         return self._trading_mode == 'live'
 
     # ── Internal ───────────────────────────────────────────
@@ -265,16 +265,16 @@ class IntradayMonitor:
             now = datetime.now()
 
             if not is_market_open(now):
-                # 非交易时段：sleep 到下次开盘
+                # 非交易时段:sleep 到下次开盘
                 wait = next_market_seconds(now)
                 logger.info('Market closed. Sleeping %ds until next open', wait)
-                # 分段 sleep，方便快速响应 stop
+                # 分段 sleep,方便快速响应 stop
                 for _ in range(min(wait, 3600)):  # 最多等1小时再检查
                     if self._stop_evt.wait(timeout=1):
                         return
                 continue
 
-            # 交易时段：检查信号
+            # 交易时段:检查信号
             try:
                 self._check_and_push(now)
             except Exception as e:
@@ -288,8 +288,8 @@ class IntradayMonitor:
 
     def _calc_shares(self, symbol: str, price: float) -> int:
         """
-        根据 Kelly 仓位比例计算可买股数（整手 100 股）。
-        使用 _kelly_pct（0.0~1.0）作为仓位比例。
+        根据 Kelly 仓位比例计算可买股数(整手 100 股)。
+        使用 _kelly_pct(0.0~1.0)作为仓位比例。
         """
         try:
             cash = self._svc.get_cash()
@@ -301,7 +301,7 @@ class IntradayMonitor:
         raw_shares = int(max_cost / price)
         return max(100, (raw_shares // 100) * 100)
 
-    # ── 新闻情绪检查（Method A & B 共享）───────────────────────
+    # ── 新闻情绪检查(Method A & B 共享)───────────────────────
 
     BEARISH_BLOCK_CONFIDENCE = 0.60  # 空方置信度 >此值则阻止建仓/换仓
 
@@ -311,10 +311,10 @@ class IntradayMonitor:
 
         Returns:
             (blocked, sentiment, confidence, summary)
-            blocked=True  → 新闻情绪强烈看空，不应建仓/不追加
-            blocked=False → 可以交易（或无法获取情绪）
+            blocked=True  → 新闻情绪强烈看空,不应建仓/不追加
+            blocked=False → 可以交易(或无法获取情绪)
 
-        情绪缓存：每天早上刷新一次（盘中不重复请求 LLM）。
+        情绪缓存:每天早上刷新一次(盘中不重复请求 LLM)。
         """
         today = date.today().isoformat()
         if self._sentiment_cache_date != today:
@@ -330,8 +330,8 @@ class IntradayMonitor:
         if self._llm is None:
             return False, None, None, None
 
-        # 构建搜索关键词：股票名称 + "板块" + "利好/利空"
-        # 从持仓 params 拿股票名称（兜底用代码）
+        # 构建搜索关键词:股票名称 + "板块" + "利好/利空"
+        # 从持仓 params 拿股票名称(兜底用代码)
         params = self._get_params(symbol)
         name = params.get('name', symbol)
 
@@ -354,13 +354,13 @@ class IntradayMonitor:
             self._sentiment_cache[symbol] = ('unknown', 0.0, '')
             return False, 'unknown', 0.0, ''
 
-    # ── 每日动态选股 + 新闻过滤（Method B）───────────────────────
+    # ── 每日动态选股 + 新闻过滤(Method B)───────────────────────
 
     def _load_selector_once(self):
         """每天开盘前只加载一次动态选股结果。"""
         today = date.today().isoformat()
         if self._selector_loaded_date == today and self._selector_cache:
-            return  # 已刷新，跳过
+            return  # 已刷新,跳过
         self._selector_loaded_date = today
         self._selector_cache = []
         if not self._broker:
@@ -376,7 +376,7 @@ class IntradayMonitor:
             sel.fetch_sectors()
             sel.calc_all_scores()
             selected = sel.select_stocks(top_n=self._selector_top_n)  # 获取选股结果
-            # ── Method B：新闻情绪过滤 ──────────────────────────
+            # ── Method B:新闻情绪过滤 ──────────────────────────
             if self._llm is not None:
                 filtered = []
                 for sym in selected:
@@ -386,9 +386,9 @@ class IntradayMonitor:
                                    sym, sent, conf)
                         self._deliver_alert(
                             f'\u26d4[{sym}] 开盘前新闻情绪过滤\n'
-                            f'   情绪：{sent}（置信度 {conf:.0%}）\n'
-                            f'   摘要：{summ[:60] if summ else "无"}\n'
-                            f'   原因：利空强烈，暂不纳入候选'
+                            f'   情绪:{sent}(置信度 {conf:.0%})\n'
+                            f'   摘要:{summ[:60] if summ else "无"}\n'
+                            f'   原因:利空强烈,暂不纳入候选'
                         )
                     else:
                         filtered.append(sym)
@@ -401,7 +401,7 @@ class IntradayMonitor:
             self._selector_cache = []
 
     def _get_watched_symbols(self) -> set:
-        """返回今日动态选股列表（仅未持仓的标的）。"""
+        """返回今日动态选股列表(仅未持仓的标的)。"""
         self._load_selector_once()
         existing = {p.get('symbol') for p in self._svc.get_positions() if p.get('symbol')}
         return {s for s in self._selector_cache if s not in existing}
@@ -409,45 +409,85 @@ class IntradayMonitor:
     def _check_new_positions(self, now: datetime):
         """
         检查动态选股列表中的标的，如有买入信号则自动建仓。
+
+        信号来源优先级：
+          1. StrategyRunner.last_scores（FactorPipeline 动态 IC 加权）
+          2. 降级到 evaluate_signal()（RSI/ATR 硬编码阈值）
         """
-        from services.signals import evaluate_signal, confirm_signal_minute
+        from services.signals import evaluate_signal, confirm_signal_minute, fetch_realtime
         watched = self._get_watched_symbols()
         if not watched:
             return
 
-        existing_positions = self._svc.get_positions()  # BUG-2 fix: 定义 existing_positions
+        existing_positions = self._svc.get_positions()
         check_time = now.strftime('%H:%M')
+
+        # 获取 pipeline scores（有 StrategyRunner 时）
+        pipeline_scores: dict = {}
+        if self._strategy_runner is not None:
+            try:
+                pipeline_scores = self._strategy_runner.last_scores
+            except Exception:
+                pass
+
         for sym in watched:
             # 冷却：每天每个标的只尝试一次（用 new_ 前缀区分）
             if not self._cooldown.can_fire(f'new_{sym}'):
                 continue
             try:
-                params = self._get_params(sym)
-                alert = evaluate_signal(
-                    sym,
-                    rsi_buy=int(params.get('rsi_buy', 25)),
-                    rsi_sell=int(params.get('rsi_sell', 65)),
-                    atr_threshold=float(params.get('atr_threshold', 0.90)),
-                    positions=existing_positions,
-                )
-                if not alert:
-                    continue
-                if alert.signal not in ('RSI_BUY', 'WATCH_BUY', 'HOLD', 'RSI_SELL', 'WATCH_SELL'):
-                    continue
+                score = pipeline_scores.get(sym)
+                use_pipeline = score is not None and abs(score) > 0
+
+                if use_pipeline:
+                    # ── 分支：FactorPipeline 信号 ──────────────────
+                    threshold = getattr(self._strategy_runner.config, 'signal_threshold', 0.5) if self._strategy_runner else 0.5
+                    if score < threshold:
+                        continue
+
+                    # 获取实时价格
+                    try:
+                        rt = fetch_realtime(sym)
+                        price = float(rt.get('price', 0)) if rt else 0
+                    except Exception:
+                        price = 0
+                    if price <= 0:
+                        continue
+
+                    signal_reason = f'Pipeline score={score:.3f} > threshold={threshold:.3f}'
+                    logger.info('Pipeline %s score=%.3f > threshold=%.3f', sym, score, threshold)
+
+                else:
+                    # ── 降级：evaluate_signal() 硬编码逻辑 ────────
+                    params = self._get_params(sym)
+                    alert = evaluate_signal(
+                        sym,
+                        rsi_buy=int(params.get('rsi_buy', 25)),
+                        rsi_sell=int(params.get('rsi_sell', 65)),
+                        atr_threshold=float(params.get('atr_threshold', 0.90)),
+                        positions=existing_positions,
+                    )
+                    if not alert:
+                        continue
+                    if alert.signal not in ('RSI_BUY', 'WATCH_BUY', 'HOLD', 'RSI_SELL', 'WATCH_SELL'):
+                        continue
+                    price = alert.price
+                    signal_reason = alert.reason
+
+                # ── 公共安全层（pipeline / fallback 共用）─────────
+
                 # 分钟确认
                 confirmed, m_rsi, reason = confirm_signal_minute(sym, 'BUY')
                 logger.info('DynamicSelector %s @ %.2f: minute_rsi=%s → %s',
-                           sym, alert.price,
+                           sym, price,
                            f'{m_rsi:.0f}' if m_rsi else 'N/A', reason)
                 if not confirmed:
                     self._deliver_alert(
                         f'🚫 [{sym}] 动态选股触发但分钟RSI拒绝建仓\n'
-                        f'   现价：{alert.price:.2f} | {reason}'
+                        f'   现价：{price:.2f} | {reason}'
                     )
                     continue
 
-
-                # Method A: news sentiment check before buying (new position)
+                # 新闻情绪检查
                 if self._llm is not None:
                     blocked, sent, conf, summ = self._check_news_sentiment(sym)
                     if blocked:
@@ -457,9 +497,18 @@ class IntradayMonitor:
                             f'   \u6458\u8981\uff1a{summ[:80] if summ else "无"}'
                         )
                         continue
-                shares = self._calc_shares(sym, alert.price)
-                # LLM 终极审核（新仓位 BUY）
-                llm_approved, llm_reason, llm_conf, size_rec = self._llm_review_signal(alert, 'BUY')
+
+                shares = self._calc_shares(sym, price)
+
+                # LLM 终极审核（构造兼容 alert-like 对象）
+                class _PipelineAlert:
+                    pass
+                _pa = _PipelineAlert()
+                _pa.symbol = sym
+                _pa.price = price
+                _pa.reason = signal_reason
+                _pa.signal = 'BUY'
+                llm_approved, llm_reason, llm_conf, size_rec = self._llm_review_signal(_pa, 'BUY')
                 if not llm_approved:
                     self._deliver_alert(
                         f'\u274c [{sym}] LLM 审核否决新仓买入\n'
@@ -473,13 +522,14 @@ class IntradayMonitor:
                     shares = shares // 2
                 if shares < 100:
                     continue
-                # PreTrade 风控检查（仓位/暴露/日亏损限制）
+
+                # PreTrade 风控检查
                 if self._strategy_runner is not None and self._strategy_runner.risk_engine is not None:
                     try:
                         from core.factors.base import Signal as _Sig
                         _dummy = _Sig(
                             timestamp=now, symbol=sym, direction='BUY',
-                            strength=1.0, factor_name='DynamicSelector', price=alert.price,
+                            strength=1.0, factor_name='DynamicSelector', price=price,
                         )
                         rr = self._strategy_runner.risk_engine.check(_dummy)
                         if not rr.passed:
@@ -487,31 +537,34 @@ class IntradayMonitor:
                             continue
                     except Exception as e:
                         logger.warning('RiskEngine check failed for %s: %s', sym, e)
+
                 if not self._can_trade():
                     self._deliver_alert(
                         f'📋 [{sym}] 模拟模式：信号触发但跳过执行\n'
-                        f'   方向：BUY | 股数：{shares} | 价：{alert.price:.2f}\n'
-                        f'   原因：{alert.reason}（切换到"实盘"模式后生效）'
+                        f'   方向：BUY | 股数：{shares} | 价：{price:.2f}\n'
+                        f'   原因：{signal_reason}（切换到“实盘”模式后生效）'
                     )
-                    logger.info('Simulation mode: skipped BUY %s %d @ %.2f', sym, shares, alert.price)
+                    logger.info('Simulation mode: skipped BUY %s %d @ %.2f', sym, shares, price)
                     continue
+
                 result = self._broker.submit_order(
                     symbol=sym, direction='BUY',
-                    shares=shares, price=alert.price, price_type='market',
+                    shares=shares, price=price, price_type='market',
                 )
                 status_str = '✅ 成交' if result.status == 'filled' else f'❌ {result.status}'
+                source_tag = 'Pipeline' if use_pipeline else 'evaluate_signal'
                 self._deliver_alert(
-                    f'🆕[{sym}] 自动建仓（动态选股→分钟确认）\n'
+                    f'🆕[{sym}] 自动建仓（{source_tag}→分钟确认）\n'
                     f'   {status_str} {shares}股 @ {result.avg_price:.2f}\n'
-                    f'   原因: {alert.reason} | {reason}'
+                    f'   原因: {signal_reason} | {reason}'
                 )
-                logger.info('DynamicSelector auto BUY %s %d @ %.2f => %s',
-                           sym, shares, result.avg_price, result.status)
+                logger.info('DynamicSelector auto BUY %s %d @ %.2f => %s [source=%s]',
+                           sym, shares, result.avg_price, result.status, source_tag)
             except Exception as e:
                 logger.error('DynamicSelector check %s error: %s', sym, e)
 
     def _submit_order_for_signal(self, alert: SignalAlert):
-        """将信号转换为订单并提交（含分钟级二次确认）。"""
+        """将信号转换为订单并提交(含分钟级二次确认)。"""
         signal = alert.signal
 
         # 涨跌停等不交易
@@ -524,14 +577,14 @@ class IntradayMonitor:
             logger.debug('No order mapping for signal %s', signal)
             return None
 
-        # 分钟确认（仅对 BUY 信号）
+        # 分钟确认(仅对 BUY 信号)
         if direction == 'BUY':
             confirmed, m_rsi, reason = confirm_signal_minute(alert.symbol, 'BUY')
             logger.info('Minute confirm %s %s: %s', alert.symbol, alert.signal, reason)
             if not confirmed:
                 self._deliver_alert(
                     f'⚠️ [{alert.symbol}] 持仓信号触发但分钟RSI拒绝追高\n'
-                    f'   现价：{alert.price:.2f} | {reason}'
+                    f'   现价:{alert.price:.2f} | {reason}'
                 )
                 return None
 
@@ -576,7 +629,7 @@ class IntradayMonitor:
                 logger.debug('No position to sell for %s', alert.symbol)
                 return None
             shares = (pos['shares'] // 100) * 100  # 整手
-            # LLM size_rec 处理（SELL 时可能建议半仓或持有）
+            # LLM size_rec 处理(SELL 时可能建议半仓或持有)
             if size_rec == 'hold':
                 logger.info('LLM SELL hold recommended for %s: %s', alert.symbol, llm_reason)
                 return None
@@ -587,9 +640,9 @@ class IntradayMonitor:
         try:
             if not self._can_trade():
                 self._deliver_alert(
-                    f'📋 [{alert.symbol}] 模拟模式：持仓信号跳过执行\n'
-                    f'   方向：{direction} | 股数：{shares} | 价：{alert.price:.2f}\n'
-                    f'   信号：{signal}（切换到"实盘"模式后生效）'
+                    f'📋 [{alert.symbol}] 模拟模式:持仓信号跳过执行\n'
+                    f'   方向:{direction} | 股数:{shares} | 价:{alert.price:.2f}\n'
+                    f'   信号:{signal}(切换到"实盘"模式后生效)'
                 )
                 logger.info('Simulation mode: skipped %s %s %d @ %.2f', direction, alert.symbol, shares, alert.price)
                 return None
@@ -609,11 +662,11 @@ class IntradayMonitor:
 
     def _llm_review_signal(self, alert: SignalAlert, direction: str):
         """
-        LLM 终极审核：收集全部上下文，让大模型决定是否执行交易。
+        LLM 终极审核:收集全部上下文,让大模型决定是否执行交易。
         返回 (approved: bool, reason: str, confidence: float, size_rec: str)
         """
         if self._llm is None:
-            # 无 LLM，降级为直接放行
+            # 无 LLM,降级为直接放行
             return True, 'LLM unavailable, auto-approve', 0.5, 'full'
 
         try:
@@ -632,24 +685,24 @@ class IntradayMonitor:
             except Exception:
                 mb = {}
 
-            # 新闻情绪（已有缓存）
+            # 新闻情绪(已有缓存)
             sent_key = sym
             sentiment_info = ''
             if sent_key in self._sentiment_cache:
                 sent, conf_s, summ = self._sentiment_cache[sent_key]
-                sentiment_info = f'情绪={sent}（置信度{conf_s:.0%}），摘要：{summ[:60]}'
+                sentiment_info = f'情绪={sent}(置信度{conf_s:.0%}),摘要:{summ[:60]}'
 
-            # 构建持仓摘要（提前计算避免 f-string 反斜杠问题）
+            # 构建持仓摘要(提前计算避免 f-string 反斜杠问题)
             if pos:
-                _pos_label = f"是（{pos.get('shares', 0)}股，成本{'{:.2f}'.format(pos.get('entry_price', 0))}）"
+                _pos_label = f"是({pos.get('shares', 0)}股,成本{'{:.2f}'.format(pos.get('entry_price', 0))})"
             else:
-                _pos_label = "否（可建仓）"
+                _pos_label = "否(可建仓)"
 
             pos_summary = []
             for p in (positions or []):
                 if p.get('shares', 0) > 0:
                     pos_summary.append(
-                        f"{p['symbol']}: {p['shares']}股，成本{p.get('entry_price', 0):.2f}"
+                        f"{p['symbol']}: {p['shares']}股,成本{p.get('entry_price', 0):.2f}"
                     )
 
             # 近期交易摘要
@@ -665,64 +718,64 @@ class IntradayMonitor:
             if direction == 'BUY':
                 system_prompt = (
                     "你是一个严格的A股量化交易员。每笔买入都需要通过你的最终审核。\n"
-                    "你极其重视：\n"
-                    "1. 当前市场环境是否适合建仓（不要在熊市/高波动环境重仓）\n"
-                    "2. RSI 是否真的处于低位（是否有足够的安全边际）\n"
-                    "3. ATR 波动率是否在合理范围（排除极度高波动标的）\n"
-                    "4. 板块是否处于强势（避免逆势买入）\n"
-                    "5. 资金管理是否合理（单只仓位不超过25%，Kelly半仓原则）\n\n"
-                    "输出严格JSON格式：\n"
-                    "{\"decision\": \"approve\"或\"reject\"或\"delay\"（仅当充分理由时delay，否则reject）, "
+                    "你极其重视:\n"
+                    "1. 当前市场环境是否适合建仓(不要在熊市/高波动环境重仓)\n"
+                    "2. RSI 是否真的处于低位(是否有足够的安全边际)\n"
+                    "3. ATR 波动率是否在合理范围(排除极度高波动标的)\n"
+                    "4. 板块是否处于强势(避免逆势买入)\n"
+                    "5. 资金管理是否合理(单只仓位不超过25%,Kelly半仓原则)\n\n"
+                    "输出严格JSON格式:\n"
+                    "{\"decision\": \"approve\"或\"reject\"或\"delay\"(仅当充分理由时delay,否则reject), "
                     "\"confidence\": 0.0~1.0, "
-                    "\"reason\": \"简短理由（20字内）\", "
-                    "\"risk_note\": \"风险提示（如有）\", "
-                    "\"size_rec\": \"full\"（按Kelly满仓）或\"half\"（半仓）或\"skip\"（跳过）\"\n"
+                    "\"reason\": \"简短理由(20字内)\", "
+                    "\"risk_note\": \"风险提示(如有)\", "
+                    "\"size_rec\": \"full\"(按Kelly满仓)或\"half\"(半仓)或\"skip\"(跳过)\"\n"
                     "}"
                 )
                 user_prompt = (
                     f"【买入信号审核】\n"
-                    f"标的：{sym}（名称：{params.get('name', sym)}）\n"
-                    f"信号类型：{alert.signal}\n"
-                    f"当前价：{alert.price:.2f}（今日涨幅：{getattr(alert, 'pct', 0):+.2f}%）\n"
-                    f"触发原因：{alert.reason}\n"
-                    f"RSI 参数：买入阈值={params.get('rsi_buy', 25)}，当前RSI≈{alert.prev_rsi:.0f if alert.prev_rsi is not None else 'N/A'}\n"
-                    f"ATR 阈值：{params.get('atr_threshold', 0.85)}（当前ATR ratio={getattr(alert, 'atr_ratio', 'N/A')}）\n"
-                    f"市场环境：{self._market_regime.get('regime', 'UNKNOWN')}（ATR ratio={self._market_regime.get('atr_ratio', 0):.3f}）\n"
-                    f"大盘状态：{mb.get('趋势', '未知')} | 情绪：{mb.get('情绪', '未知')}\n"
-                    f"可用现金：¥{cash:,.0f}（总权益：¥{self._svc.get_equity():,.0f}）\n"
-                    f"该股已有持仓：{_pos_label}\n"
-                    f"当前持仓：{' | '.join(pos_summary) if pos_summary else '空仓'}\n"
-                    f"近期交易：{' | '.join(trade_summary) if trade_summary else '无'}\n"
-                    f"新闻情绪：{sentiment_info if sentiment_info else '无情绪数据（自动放行）'}"
+                    f"标的:{sym}(名称:{params.get('name', sym)})\n"
+                    f"信号类型:{alert.signal}\n"
+                    f"当前价:{alert.price:.2f}(今日涨幅:{getattr(alert, 'pct', 0):+.2f}%)\n"
+                    f"触发原因:{alert.reason}\n"
+                    f"RSI 参数:买入阈值={params.get('rsi_buy', 25)},当前RSI≈{alert.prev_rsi:.0f if alert.prev_rsi is not None else 'N/A'}\n"
+                    f"ATR 阈值:{params.get('atr_threshold', 0.85)}(当前ATR ratio={getattr(alert, 'atr_ratio', 'N/A')})\n"
+                    f"市场环境:{self._market_regime.get('regime', 'UNKNOWN')}(ATR ratio={self._market_regime.get('atr_ratio', 0):.3f})\n"
+                    f"大盘状态:{mb.get('趋势', '未知')} | 情绪:{mb.get('情绪', '未知')}\n"
+                    f"可用现金:¥{cash:,.0f}(总权益:¥{self._svc.get_equity():,.0f})\n"
+                    f"该股已有持仓:{_pos_label}\n"
+                    f"当前持仓:{' | '.join(pos_summary) if pos_summary else '空仓'}\n"
+                    f"近期交易:{' | '.join(trade_summary) if trade_summary else '无'}\n"
+                    f"新闻情绪:{sentiment_info if sentiment_info else '无情绪数据(自动放行)'}"
                 )
             else:  # SELL
                 system_prompt = (
-                    "你是一个纪律严明的A股交易员，专注于精准止盈止损。\n"
-                    "卖出决策依据：\n"
-                    "1. 止盈：是否达到预设目标（TakeProfit），趋势是否已衰竭\n"
-                    "2. 止损：是否触发 ATR 止损线（Chandelier Exit），还是假突破\n"
-                    "3. 仓位管理：是否需要减仓还是清仓\n"
-                    "4. 相对大盘：标的是否跑输大盘（弱势股优先清仓）\n\n"
-                    "输出严格JSON格式：\n"
-                    "{\"decision\": \"approve\"或\"reject\"或\"hold\"（持有不卖）, "
+                    "你是一个纪律严明的A股交易员,专注于精准止盈止损。\n"
+                    "卖出决策依据:\n"
+                    "1. 止盈:是否达到预设目标(TakeProfit),趋势是否已衰竭\n"
+                    "2. 止损:是否触发 ATR 止损线(Chandelier Exit),还是假突破\n"
+                    "3. 仓位管理:是否需要减仓还是清仓\n"
+                    "4. 相对大盘:标的是否跑输大盘(弱势股优先清仓)\n\n"
+                    "输出严格JSON格式:\n"
+                    "{\"decision\": \"approve\"或\"reject\"或\"hold\"(持有不卖), "
                     "\"confidence\": 0.0~1.0, "
-                    "\"reason\": \"简短理由（20字内）\", "
-                    "\"risk_note\": \"风险提示（如有）\", "
-                    "\"size_rec\": \"full\"（清仓）或\"half\"（半仓）或\"hold\"（持有）\"\n"
+                    "\"reason\": \"简短理由(20字内)\", "
+                    "\"risk_note\": \"风险提示(如有)\", "
+                    "\"size_rec\": \"full\"(清仓)或\"half\"(半仓)或\"hold\"(持有)\"\n"
                     "}"
                 )
                 user_prompt = (
                     f"【卖出信号审核】\n"
-                    f"标的：{sym}（名称：{params.get('name', sym)}）\n"
-                    f"信号类型：{alert.signal}\n"
-                    f"当前价：{alert.price:.2f}（持仓成本：{pos.get('entry_price', 0):.2f}，浮动盈亏：{((alert.price - pos.get('entry_price', 0)) / pos.get('entry_price', 1) * 100):+.1f}%）\n"
-                    f"触发原因：{alert.reason}\n"
-                    f"RSI 参数：卖出阈值={params.get('rsi_sell', 65)}\n"
-                    f"止盈目标：{params.get('take_profit', 0.20):.0%}，止损线：{params.get('stop_loss', 0.05):.0%}\n"
-                    f"市场环境：{self._market_regime.get('regime', 'UNKNOWN')}（ATR ratio={self._market_regime.get('atr_ratio', 0):.3f}）\n"
-                    f"持仓数量：{pos.get('shares', 0)}股（整手：{(pos.get('shares', 0) // 100) * 100}股）\n"
-                    f"当前持仓：{' | '.join(pos_summary) if pos_summary else '空仓'}\n"
-                    f"近期交易：{' | '.join(trade_summary) if trade_summary else '无'}\n"
+                    f"标的:{sym}(名称:{params.get('name', sym)})\n"
+                    f"信号类型:{alert.signal}\n"
+                    f"当前价:{alert.price:.2f}(持仓成本:{pos.get('entry_price', 0):.2f},浮动盈亏:{((alert.price - pos.get('entry_price', 0)) / pos.get('entry_price', 1) * 100):+.1f}%)\n"
+                    f"触发原因:{alert.reason}\n"
+                    f"RSI 参数:卖出阈值={params.get('rsi_sell', 65)}\n"
+                    f"止盈目标:{params.get('take_profit', 0.20):.0%},止损线:{params.get('stop_loss', 0.05):.0%}\n"
+                    f"市场环境:{self._market_regime.get('regime', 'UNKNOWN')}(ATR ratio={self._market_regime.get('atr_ratio', 0):.3f})\n"
+                    f"持仓数量:{pos.get('shares', 0)}股(整手:{(pos.get('shares', 0) // 100) * 100}股)\n"
+                    f"当前持仓:{' | '.join(pos_summary) if pos_summary else '空仓'}\n"
+                    f"近期交易:{' | '.join(trade_summary) if trade_summary else '无'}\n"
                 )
 
             messages = [
@@ -730,7 +783,7 @@ class IntradayMonitor:
                 {"role": "user", "content": user_prompt},
             ]
 
-            # 调用 LLM（通过 provider.chat）
+            # 调用 LLM(通过 provider.chat)
             resp = self._llm.provider.chat(messages, max_tokens=512, temperature=0.3)
             content = resp.content.strip()
 
@@ -749,15 +802,15 @@ class IntradayMonitor:
                 return approved, reason, confidence, size_rec
             else:
                 logger.warning('LLM response parse failed: %s', content[:200])
-                return True, f'LLM parse failed（{content[:50]}），自动放行', 0.0, 'full'
+                return True, f'LLM parse failed({content[:50]}),自动放行', 0.0, 'full'
 
         except Exception as e:
             logger.error('LLM review error for %s: %s', alert.symbol, e)
-            return True, f'LLM异常（{str(e)[:30]}），自动放行', 0.0, 'full'
+            return True, f'LLM异常({str(e)[:30]}),自动放行', 0.0, 'full'
 
     def _get_params(self, symbol: str) -> dict:
         """
-        返回股票的参数集（WFA优先，fallback到params.json）。
+        返回股票的参数集(WFA优先,fallback到params.json)。
         每天刷新一次缓存。
         """
         today = date.today().isoformat()
@@ -772,8 +825,8 @@ class IntradayMonitor:
 
     def _refresh_kelly_from_trades(self):
         """
-        每交易日上午 9:05（params_cache 刷新时）根据历史交易记录更新 Kelly 仓位。
-        从 PortfolioService.get_trades() 获取全部历史交易，计算 P&L 后更新 _kelly_pct。
+        每交易日上午 9:05(params_cache 刷新时)根据历史交易记录更新 Kelly 仓位。
+        从 PortfolioService.get_trades() 获取全部历史交易,计算 P&L 后更新 _kelly_pct。
         """
         try:
             import sys, os
@@ -797,7 +850,7 @@ class IntradayMonitor:
             logger.warning('_refresh_kelly_from_trades failed: %s', e)
 
     def _sync_market_regime(self):
-        """从 StrategyRunner 同步最新市场环境到 _market_regime（供 LLM prompt 使用）。"""
+        """从 StrategyRunner 同步最新市场环境到 _market_regime(供 LLM prompt 使用)。"""
         if self._strategy_runner is not None:
             try:
                 r = self._strategy_runner.current_regime
@@ -810,7 +863,7 @@ class IntradayMonitor:
                     return
             except Exception:
                 pass
-        # 降级：直接调用 get_regime()
+        # 降级:直接调用 get_regime()
         try:
             from core.regime import get_regime
             r = get_regime()
@@ -823,7 +876,7 @@ class IntradayMonitor:
             pass  # 保持上次缓存或空字典
 
     def _run_daily_health_check(self):
-        """每日开盘时运行一次 StrategyHealthMonitor，检查策略健康度并推送告警。"""
+        """每日开盘时运行一次 StrategyHealthMonitor,检查策略健康度并推送告警。"""
         today = date.today().isoformat()
         if self._health_check_date == today:
             return
@@ -833,7 +886,7 @@ class IntradayMonitor:
             raw = self._svc.get_daily_metas(limit=60)
             if not raw or len(raw) < 2:
                 return
-            # daily_meta 表有 trade_date/n_trades/equity，需补算 daily_return
+            # daily_meta 表有 trade_date/n_trades/equity,需补算 daily_return
             raw.sort(key=lambda r: r.get('trade_date', ''))
             stats = []
             for i, row in enumerate(raw):
@@ -857,15 +910,22 @@ class IntradayMonitor:
             logger.warning('Daily health check failed: %s', e)
 
     def _check_and_push(self, now: datetime):
-        """获取持仓 → 检查信号 → 推送飞书 + 自动下单（使用WFA优化参数）"""
+        """获取持仓 → 检查信号 → 推送飞书 + 自动下单(使用WFA优化参数)"""
 
-        # ── 每日策略健康度检查（开盘时运行一次）────────────────────
+        # ── 每日策略健康度检查(开盘时运行一次)────────────────────
         self._run_daily_health_check()
 
-        # ── 同步市场环境（供 LLM 审核使用）────────────────────────
+        # ── 同步市场环境(供 LLM 审核使用)────────────────────────
         self._sync_market_regime()
 
-        # ── 大盘指数异动检查（每次轮询都检查，独立冷却）─────────
+        # ── 驱动 StrategyRunner 刷新 pipeline scores ────────────
+        if self._strategy_runner is not None:
+            try:
+                self._strategy_runner.run_once()
+            except Exception as e:
+                logger.warning('StrategyRunner.run_once() failed (will fallback): %s', e)
+
+        # ── 大盘指数异动检查(每次轮询都检查,独立冷却)─────────
         try:
             self._check_market_index(now)
         except Exception as e:
@@ -907,7 +967,7 @@ class IntradayMonitor:
         except Exception as e:
             logger.warning('Sector concentration check error: %s', e)
 
-        # 使用 WFA 优化参数逐个检查持仓信号（买入方向）
+        # 使用 WFA 优化参数逐个检查持仓信号(买入方向)
         from services.signals import evaluate_signal, format_feishu_message
         alerts = []
         for pos in positions:
@@ -928,7 +988,7 @@ class IntradayMonitor:
         # 过滤冷却期内标的
         actionable = [a for a in alerts if self._cooldown.can_fire(a.symbol)]
 
-        # 推送飞书（有信号时）
+        # 推送飞书(有信号时)
         if actionable:
             check_time = now.strftime('%H:%M')
             msg = format_feishu_message(actionable, check_time)
@@ -936,18 +996,18 @@ class IntradayMonitor:
                 self._deliver_alert(msg)
                 logger.info('Pushed %d alerts to Feishu at %s', len(actionable), check_time)
 
-            # 自动下单（使用 per-symbol 参数）
+            # 自动下单(使用 per-symbol 参数)
             if self._broker:
                 for alert in actionable:
                     self._submit_order_for_signal(alert)
         else:
             logger.debug('No buy/sell alerts at %s', now.strftime('%H:%M'))
 
-        # ── 动态选股：主动建仓检查 ─────────────────────────
+        # ── 动态选股:主动建仓检查 ─────────────────────────
         if self._broker and self._daily_refresh:
             self._check_new_positions(now)
 
-        # ── 统一退出引擎：止损 + 止盈 + 组合熔断（替代三个分散方法）──
+        # ── 统一退出引擎:止损 + 止盈 + 组合熔断(替代三个分散方法)──
         try:
             self._run_exit_engine(positions, now)
         except Exception as e:
@@ -981,8 +1041,8 @@ class IntradayMonitor:
         drawdown = (self._peak_equity - current_equity) / self._peak_equity
         now_str = datetime.now().strftime("%H:%M")
 
-        # BUG-1 fix: 先检查 12% 熔断，再检查 8% 警告，避免 early return 屏蔽高优先级熔断
-        # 12pct stop: full liquidation（优先执行，不受 8% 分支 return 影响）
+        # BUG-1 fix: 先检查 12% 熔断,再检查 8% 警告,避免 early return 屏蔽高优先级熔断
+        # 12pct stop: full liquidation(优先执行,不受 8% 分支 return 影响)
         if drawdown >= self._dd_stop and not self._risk_stop_fired:
             self._risk_stop_fired = True
             msg = "[EMERGENCY] Portfolio cascade STOP! DD: %.1f%% (threshold %.0f%%)\n" % (
@@ -999,7 +1059,7 @@ class IntradayMonitor:
                         self._submit_market_sell(sym, shares, reason="portfolio_cascade_stop")
             return
 
-        # 8pct warning: reduce to 50pct（在 12% 检查之后，避免被 early return 屏蔽）
+        # 8pct warning: reduce to 50pct(在 12% 检查之后,避免被 early return 屏蔽)
         if drawdown >= self._dd_warn and not self._risk_warn_fired:
             self._risk_warn_fired = True
             msg = "[WARNING] Portfolio DD warning DD: %.1f%% (threshold %.0f%%)\n" % (
@@ -1037,7 +1097,7 @@ class IntradayMonitor:
             logger.warning('Sector concentration violation: %s=%.1f%% (max 40%%)',
                           v['sector'], v['pct'])
             msg = (
-                f'[WARNING] 行业集中度风险！\n'
+                f'[WARNING] 行业集中度风险!\n'
                 f'  行业: {v["sector"]}\n'
                 f'  当前占比: {v["pct"]}% (上限 40%)\n'
                 f'  需减仓: {v["reduce_value"]:.0f}元 ({v["reduce_pct"]}% 仓位)\n'
@@ -1046,7 +1106,7 @@ class IntradayMonitor:
             )
             self._deliver_alert(msg)
 
-            # 自动减仓（broker 模式下）
+            # 自动减仓(broker 模式下)
             if self._broker:
                 from services.portfolio import _load_sector_map
                 sector_map = _load_sector_map()
@@ -1068,7 +1128,7 @@ class IntradayMonitor:
     def _run_exit_engine(self, positions: list, now: datetime):
         """
         统一卖出信号引擎集成层。
-        替代分散的 _check_stop_losses() + _check_take_profits() + _check_portfolio_risk()，
+        替代分散的 _check_stop_losses() + _check_take_profits() + _check_portfolio_risk(),
         使用 ExitEngine 生成优先级排序的退出信号并统一执行。
         """
         try:
@@ -1080,7 +1140,7 @@ class IntradayMonitor:
             self._check_take_profits(positions, now)
             return
 
-        # ── 准备 price_bars（ATR/RSI 所需的 OHLCV 数据）─────────────────
+        # ── 准备 price_bars(ATR/RSI 所需的 OHLCV 数据)─────────────────
         price_bars: dict = {}
         try:
             from core.data_layer import get_data_layer
@@ -1098,13 +1158,13 @@ class IntradayMonitor:
         except Exception as e:
             logger.debug('price_bars fetch failed: %s', e)
 
-        # ── 准备 per-symbol 参数（WFA 优化参数优先）────────────────────
+        # ── 准备 per-symbol 参数(WFA 优化参数优先)────────────────────
         params_map = {
             pos['symbol']: self._get_params(pos['symbol'])
             for pos in positions if pos.get('symbol')
         }
 
-        # ── 补全 current_price（ExitEngine 需要）───────────────────────
+        # ── 补全 current_price(ExitEngine 需要)───────────────────────
         enriched: list = []
         from services.signals import fetch_realtime
         for pos in positions:
@@ -1114,7 +1174,7 @@ class IntradayMonitor:
                     snap = fetch_realtime(p.get('symbol', ''))
                     if snap and snap.get('price', 0) > 0:
                         p['current_price'] = snap['price']
-                        # 持久化到 DB（确保 latest_price 字段被更新）
+                        # 持久化到 DB(确保 latest_price 字段被更新)
                         self._svc.update_position_price(p['symbol'], snap['price'])
                         # 同步更新 peak_price
                         if p['current_price'] > float(p.get('peak_price', 0) or 0):
@@ -1136,7 +1196,7 @@ class IntradayMonitor:
             self._risk_warn_fired = False
             self._risk_stop_fired = False
 
-        # ── 从 StrategyRunner 获取因子评分（可选，失败不影响运行）──────
+        # ── 从 StrategyRunner 获取因子评分(可选,失败不影响运行)──────
         pipeline_scores: dict = {}
         if self._strategy_runner is not None:
             try:
@@ -1172,7 +1232,7 @@ class IntradayMonitor:
             sym = sig.symbol
             is_portfolio_level = sig.priority.value <= 1  # P0=EMERGENCY, P1=PORTFOLIO_REDUCE
 
-            # 组合级别信号：使用 _risk_*_fired 防重入（而非 cooldown）
+            # 组合级别信号:使用 _risk_*_fired 防重入(而非 cooldown)
             if is_portfolio_level:
                 if sig.priority.value == 0 and self._risk_stop_fired:
                     continue
@@ -1183,7 +1243,7 @@ class IntradayMonitor:
                 if sig.priority.value == 1:
                     self._risk_warn_fired = True
             else:
-                # 个股级别：冷却检查（紧急信号 P2 降低冷却要求）
+                # 个股级别:冷却检查(紧急信号 P2 降低冷却要求)
                 cooldown_key = f'exit_{sym}'
                 if not self._cooldown.can_fire(cooldown_key):
                     continue
@@ -1206,10 +1266,10 @@ class IntradayMonitor:
 
             if not self._can_trade():
                 self._deliver_alert(
-                    f'📋 [{sym}] 模拟模式：退出信号跳过执行\n'
+                    f'📋 [{sym}] 模拟模式:退出信号跳过执行\n'
                     f'   {label} | 卖出: {sell_shares}股 ({sig.exit_pct*100:.0f}%仓) | 价: {current_price:.2f}\n'
                     f'   浮盈: {pnl_str} | 原因: {sig.reason}\n'
-                    f'   （切换"实盘"模式后生效）'
+                    f'   (切换"实盘"模式后生效)'
                 )
                 logger.info('Simulation: skipped ExitEngine %s %s %d @ %.2f',
                             sig.priority.name, sym, sell_shares, current_price)
@@ -1225,7 +1285,7 @@ class IntradayMonitor:
                 )
                 status_str = '✅ 成交' if result.status == 'filled' else f'❌ {result.status}'
                 self._deliver_alert(
-                    f'{emoji}[{sym}] {label}（ExitEngine 自动平仓）\n'
+                    f'{emoji}[{sym}] {label}(ExitEngine 自动平仓)\n'
                     f'   {status_str} {sell_shares}股 @ {result.avg_price:.2f} | 浮盈: {pnl_str}\n'
                     f'   原因: {sig.reason}'
                 )
@@ -1236,9 +1296,9 @@ class IntradayMonitor:
 
     def _check_take_profits(self, positions, now: datetime):
         """
-        对持仓检查止盈条件（优先用 params.json 配置）：
-        1. ATR 移动止盈（Chandelier Exit）：峰值回撤超过 2×ATR 时触发
-        2. 固定止盈：涨幅达到 take_profit_pct 时触发
+        对持仓检查止盈条件(优先用 params.json 配置):
+        1. ATR 移动止盈(Chandelier Exit):峰值回撤超过 2×ATR 时触发
+        2. 固定止盈:涨幅达到 take_profit_pct 时触发
         触发 → 市价卖出 → 推送飞书。
         """
         from services.signals import (
@@ -1268,14 +1328,14 @@ class IntradayMonitor:
                 continue
             current_price = snap['price']
 
-            # 同时更新持仓峰值（内存层面）
+            # 同时更新持仓峰值(内存层面)
             if current_price > peak_price:
                 peak_price = current_price
 
             # 止盈冷却 key
             tp_key = f'tp_{sym}'
 
-            # 1. ATR 移动止盈（优先，让利润奔跑）
+            # 1. ATR 移动止盈(优先,让利润奔跑)
             atr_triggered, atr_stop, atr_reason = check_atr_trailing_stop(
                 sym, peak_price, entry_price, current_price,
                 atr_period=int(params.get('atr_period', 14)),
@@ -1287,12 +1347,12 @@ class IntradayMonitor:
                 entry_price, current_price, tp_pct=tp_pct)
             logger.debug('TakeProfit fixed %s @ %.2f: %s', sym, current_price, fixed_reason)
 
-            # 哪个先触发用哪个（取更早的信号）
+            # 哪个先触发用哪个(取更早的信号)
             triggered = atr_triggered or fixed_triggered
             if not triggered:
                 continue
 
-            # 优先报告 ATR 移动止盈（更智能）
+            # 优先报告 ATR 移动止盈(更智能)
             if atr_triggered:
                 reason = atr_reason
                 label = f'ATR移动止盈({atr_multiplier}x)'
@@ -1308,9 +1368,9 @@ class IntradayMonitor:
             try:
                 if not self._can_trade():
                     self._deliver_alert(
-                        f'📋 [{sym}] 模拟模式：止盈跳过执行\n'
-                        f'   止盈：{label} | 卖出：{sell_shares}股 | 价：{current_price:.2f}\n'
-                        f'   原因: {reason}（切换"实盘"后生效）'
+                        f'📋 [{sym}] 模拟模式:止盈跳过执行\n'
+                        f'   止盈:{label} | 卖出:{sell_shares}股 | 价:{current_price:.2f}\n'
+                        f'   原因: {reason}(切换"实盘"后生效)'
                     )
                     logger.info('Simulation: skipped TakeProfit SELL %s %d', sym, sell_shares)
                     continue
@@ -1320,7 +1380,7 @@ class IntradayMonitor:
                 )
                 status_str = '✅ 成交' if result.status == 'filled' else f'❌ {result.status}'
                 self._deliver_alert(
-                    f'🎯[{sym}] {label}触发（自动止盈）\n'
+                    f'🎯[{sym}] {label}触发(自动止盈)\n'
                     f'   {status_str} {sell_shares}股 @ {result.avg_price:.2f}\n'
                     f'   原因: {reason}'
                 )
@@ -1360,7 +1420,7 @@ class IntradayMonitor:
                 continue
             current_price = snap['price']
 
-            # 检查止损（per-symbol params，WFA 优先）
+            # 检查止损(per-symbol params,WFA 优先)
             triggered, stop_price, reason = check_position_stop_loss(
                 sym, entry_price, current_price,
                 atr_period=int(params.get('atr_period', 14)),
@@ -1373,19 +1433,19 @@ class IntradayMonitor:
             if not triggered:
                 continue
 
-            # 冷却检查（止损触发后 15 分钟内不重复）
+            # 冷却检查(止损触发后 15 分钟内不重复)
             sl_key = f'sl_{sym}'
             if not self._cooldown.can_fire(sl_key):
                 continue
 
-            # 执行止损卖出（全部清仓）
+            # 执行止损卖出(全部清仓)
             sell_shares = (shares // 100) * 100
             try:
                 if not self._can_trade():
                     self._deliver_alert(
-                        f'📋 [{sym}] 模拟模式：止损跳过执行\n'
-                        f'   止损触发 | 卖出：{sell_shares}股 | 价：{current_price:.2f}\n'
-                        f'   止损价：{stop_price:.2f} | 原因: {reason}（切换"实盘"后生效）'
+                        f'📋 [{sym}] 模拟模式:止损跳过执行\n'
+                        f'   止损触发 | 卖出:{sell_shares}股 | 价:{current_price:.2f}\n'
+                        f'   止损价:{stop_price:.2f} | 原因: {reason}(切换"实盘"后生效)'
                     )
                     logger.info('Simulation: skipped StopLoss SELL %s %d', sym, sell_shares)
                     continue
@@ -1398,9 +1458,9 @@ class IntradayMonitor:
                 )
                 status_str = '✅ 成交' if result.status == 'filled' else f'❌ {result.status}'
                 self._deliver_alert(
-                    f'🛑[{sym}] ATR止损触发（自动平仓）\n'
+                    f'🛑[{sym}] ATR止损触发(自动平仓)\n'
                     f'   {status_str} {sell_shares}股 @ {result.avg_price:.2f}\n'
-                    f'   止损价：{stop_price:.2f} | 当前价：{current_price:.2f}\n'
+                    f'   止损价:{stop_price:.2f} | 当前价:{current_price:.2f}\n'
                     f'   原因: {reason}'
                 )
                 logger.info('StopLoss SELL %s %d @ %.2f => %s',
@@ -1409,7 +1469,7 @@ class IntradayMonitor:
                 logger.error('StopLoss order failed for %s: %s', sym, e)
 
     # ── 大盘指数监控 ───────────────────────────────────────────────
-    # 监控的指数及其预警阈值（涨跌幅绝对值超过此值则告警）
+    # 监控的指数及其预警阈值(涨跌幅绝对值超过此值则告警)
     INDEX_CONFIG = {
         'sh000001': {'name': '上证指数', 'alert_pct': 1.5},
         'sz399001': {'name': '深证成指', 'alert_pct': 1.5},
@@ -1427,9 +1487,9 @@ class IntradayMonitor:
 
     def _check_market_index(self, now: datetime):
         """
-        检查大盘指数是否出现显著异动（涨跌超过阈值）。
+        检查大盘指数是否出现显著异动(涨跌超过阈值)。
         发现异动 → 推送飞书 + 记录 alert_history。
-        冷却：每只指数 30 分钟内不重复告警。
+        冷却:每只指数 30 分钟内不重复告警。
         """
         data = self._fetch_index_data()
         if not data:
@@ -1476,9 +1536,9 @@ class IntradayMonitor:
 
     def _check_watchlist(self, now: datetime):
         """
-        检查自选股列表中的股票是否出现异动（涨跌幅超过各股阈值）。
-        阈值默认 5%，可在 watchlist 表中逐股配置。
-        只做预警推送，不自动交易。
+        检查自选股列表中的股票是否出现异动(涨跌幅超过各股阈值)。
+        阈值默认 5%,可在 watchlist 表中逐股配置。
+        只做预警推送,不自动交易。
         """
         from services.watchlist import get_watchlist, get_stock_alert_pct
         from services.signals import fetch_bulk
@@ -1534,7 +1594,7 @@ class IntradayMonitor:
     # ── 板块资金流向监控 ───────────────────────────────────────────
 
     def _load_sector_flows(self):
-        """加载今日板块资金流向数据（从 dynamic_selector）"""
+        """加载今日板块资金流向数据(从 dynamic_selector)"""
         try:
             import sys as _sys
             PROJ_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1552,7 +1612,7 @@ class IntradayMonitor:
     def _check_sector_flow(self, now: datetime):
         """
         检查板块资金流向是否出现异常突变。
-        资金流入评分从上一轮监控到这一轮出现显著提升（flow ↑>20分）→ 预警。
+        资金流入评分从上一轮监控到这一轮出现显著提升(flow ↑>20分)→ 预警。
         每只板块 30 分钟冷却。
         """
         if not hasattr(self, '_prev_sector_flows'):
@@ -1567,7 +1627,7 @@ class IntradayMonitor:
             prev_flow = prev.get('flow', 0)
             curr_flow = info.get('flow', 0)
 
-            # 检测突变：资金流入评分跃升 > 20 分
+            # 检测突变:资金流入评分跃升 > 20 分
             if prev_flow > 0 and (curr_flow - prev_flow) > 20:
                 cooldown_key = f'sf_{bk}'
                 if not self._cooldown.can_fire(cooldown_key):
@@ -1580,7 +1640,7 @@ class IntradayMonitor:
                     f'💰【资金异动】{name} 资金大幅流入\n'
                     f'   板块涨幅: {chg_emoji}{chg:+.2f}%\n'
                     f'   资金评分: {prev_flow:.0f} → {curr_flow:.0f} (+{curr_flow - prev_flow:.0f})\n'
-                    f'   可能受消息面驱动，关注持续性\n'
+                    f'   可能受消息面驱动,关注持续性\n'
                     f'   时间: {now.strftime("%H:%M")}'
                 )
                 self._deliver_alert(msg)
@@ -1602,7 +1662,7 @@ class IntradayMonitor:
 
     def _deliver_alert(self, text: str, alert_type: str = 'POSITION',
                        symbol: str = '', price: float = None, pct: float = None):
-        """通过飞书 IM API 推送文本消息给用户，并记录到历史。"""
+        """通过飞书 IM API 推送文本消息给用户,并记录到历史。"""
         app_id = os.environ.get('FEISHU_APP_ID', '')
         app_secret = os.environ.get('FEISHU_APP_SECRET', '')
         user_open_id = os.environ.get('FEISHU_USER_OPEN_ID', '')

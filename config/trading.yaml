@@ -139,6 +139,11 @@ runner:
   bars_lookback: 120     # 拉取历史 K 线天数
   log_level: INFO
 
+# ─── FactorPipeline 信号 ───────────────────────────────────
+pipeline:
+  enabled: true                # false 时完全降级到 evaluate_signal()
+  signal_threshold: 0.5        # combined_score 超过此值触发 BUY（z-score 空间）
+
 # ─── 数据源 ────────────────────────────────────────────────
 data:
   bar_ttl: 3600          # 日K线缓存 TTL（秒）
