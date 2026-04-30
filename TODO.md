@@ -1,8 +1,8 @@
 # TODO — A 股量化交易系统开发路线图
 
-> 评估日期：2026-04-27  
-> 当前状态：**~95 分**，系统完成三阶段专业化升级，829 个测试全部通过  
-> 下一目标：实盘验证闭环 + 策略持续迭代 + 运营稳定性提升
+> 评估日期：2026-04-29  
+> 当前状态：**~97 分**，系统完成六阶段专业化升级，841 个测试通过（1 个因缺少 `anthropic` 依赖报错）  
+> 下一目标：实盘验证闭环（Futu OpenD 部署 + 真实 Webhook 配置）
 
 ---
 
@@ -16,6 +16,18 @@
 | Phase A | Bug 修复精修 + 22 个多类别因子 | 2026-04-24 | 90 → 91 |
 | Phase B | ML 价格预测、VWAP/TWAP 执行、Futu 纸交易 | 2026-04-25 | 91 → 93 |
 | Phase C | MVO+BL 组合优化、NLP 情感因子、AlertManager | 2026-04-26 | 93 → 95 |
+| Phase D | AlertManager 执行链集成、因子衰减/相关性去重、行业轮动、配对交易、宏观因子、股东因子、合规审计、贝叶斯调参 | 2026-04-29 | 95 → 97 |
+| Phase E | ExitEngine P0-P9 退出体系、pipeline_factory 生产流水线、主流程全模块接入、早报修复 | 2026-04-29 | 97（巩固）|
+
+### 新增完成（Phase D/E，2026-04-29）
+
+| 模块 | 文件 | 说明 |
+|------|------|------|
+| ExitEngine | `core/exit_engine.py` | P0-P9 优先级退出体系（EMERGENCY→TIME_STOP），统一卖出信号引擎 |
+| PipelineFactory | `core/pipeline_factory.py` | 生产用因子流水线工厂（技术层/基本面层/宏观层） |
+| 主流程集成 | `backend/api.py`, `backend/main.py` | 行业轮动/配对交易 API 端点，Scheduler 自动触发 |
+| 早报修复 | `backend/morning_report.py` | 5 处设计缺陷修复，新增市场环境/开盘订单区块 |
+| 监控闭环 | `backend/services/intraday_monitor.py` | 价格刷新链路修复，浮盈实时更新 |
 
 ---
 
@@ -45,11 +57,10 @@
   - 接入：`core/strategy_health.py` 触发点 → `alerting.send_critical()`
   - 接入：`core/risk_engine.py` 日亏损熔断 → `alerting.send_warning()`
 
-- [ ] **[P1] 集成 AlertManager 到策略执行链**
+- [x] **[P1] 集成 AlertManager 到策略执行链** *(2026-04-29 完成)*
   - `core/strategy_health.py HealthReport` → CRITICAL/WARNING 自动推送
   - `core/risk_engine.py PostTradeChecker` → 触发日亏损限制时立即告警
   - `core/daily_diff_reporter.py` → 每日收盘后发送 `send_daily_report()`
-  - 验证：mock Webhook 下运行 1 个完整交易日无遗漏
 
 ### P4-B：数据管道稳定性
 
@@ -103,33 +114,25 @@
   - 目标：筛出 IC > 0.02 且 IR > 0.3 的"有效因子"子集
   - 决策：有效因子纳入 `DynamicWeightPipeline`，无效因子降权至 0.05 以下
 
-- [ ] **[P2] 因子衰减检测与自动权重调整**
-  - 当前：`DynamicWeightPipeline` 每 21 天更新权重
-  - 升级：检测单因子 IC 连续 60 天 < 0 时自动将权重降至 0（因子失效保护）
-  - 恢复：IC 转正后逐步恢复（不超过 1/N 等权权重）
-  - 输出：因子状态日志到 `outputs/factor_status.json`
+- [x] **[P2] 因子衰减检测与自动权重调整** *(2026-04-29 完成)*
+  - `DynamicWeightPipeline` 新增 `decay_window`/`recovery_rate` 参数
+  - 单因子 IC 连续 60 天 < 0 时自动降权至 0，IC 转正后逐步恢复
 
-- [ ] **[P2] 因子相关性去重**
-  - 工具：`core/research.py StrategyCorrelationAnalyzer`（扩展为因子相关性版本）
-  - 问题：`RSI` / `BollingerBands` / `MACD` 三者高度相关（同属价格动量）
-  - 方案：相关系数 > 0.7 的因子对仅保留 IC 较高的一个
-  - 输出：因子聚类树状图 `outputs/factor_cluster.png`
+- [x] **[P2] 因子相关性去重** *(2026-04-29 完成)*
+  - `core/research.py FactorCorrelationAnalyzer`：Spearman 相关 + Union-Find 聚类
+  - 相关系数 > 0.7 的因子对仅保留 IC 较高的一个
 
 ### P5-B：新策略类型
 
-- [ ] **[P2] 行业轮动策略**
-  - 思路：基于 `SectorMomentumFactor` 跨行业 ETF 排名，持有动量最强的前 3 个行业
-  - 数据：AKShare 行业 ETF 日线（已在 `SectorMomentumFactor` 中接入）
-  - 标的：沪深 300 行业 ETF（28 个申万一级行业 ETF）
+- [x] **[P2] 行业轮动策略** *(2026-04-29 完成)*
+  - 文件：`core/strategies/sector_rotation.py`（已实现）
+  - 申万 ETF 动量排名，每周一 Scheduler 自动触发（`POST /analysis/sector_rotation`）
   - 验证：WFA 回测（train=18m/test=6m），目标 OOS Sharpe > 0.4
-  - 文件：`core/strategies/sector_rotation.py`（新建）
 
-- [ ] **[P2] 均值回归配对交易**
-  - 思路：同行业两只高相关股票，价差偏离均值 2σ 时反向做多/做空价差
-  - 数据：`StrategyCorrelationAnalyzer` 筛选 corr > 0.85 的股票对
-  - A 股限制：无日内做空，用 ETF + 个股组合代替（如 510050 + 个股）
-  - 验证：历史 500 天回测，目标胜率 > 60%
-  - 文件：`core/strategies/pairs_trading.py`（新建）
+- [x] **[P2] 均值回归配对交易** *(2026-04-29 完成)*
+  - 文件：`core/strategies/pairs_trading.py`（已实现）
+  - 纯 numpy Engle-Granger 协整检验，`POST /analysis/pairs_trading` 接口
+  - A 股限制处理：ETF + 个股组合代替纯做空
 
 - [ ] **[P3] 基于 ML 的因子动态选择**
   - 思路：用 LightGBM 预测"未来 21 天哪些因子 IC 较高"，自适应调整权重
@@ -139,21 +142,19 @@
 
 ### P5-C：另类数据接入
 
-- [ ] **[P2] 融资融券完整数据流**
-  - 当前：`MarginTradingFactor` 依赖 AKShare 单日接口，无连续时序
-  - 升级：接入 `stock_margin_detail()` 构建日更新时序，存 Parquet
-  - 目标：融资余额变化率 IC 验证 > 0.02
+- [x] **[P2] 融资融券完整数据流** *(2026-04-30 完成)*
+  - `core/factors/sentiment.py MarginDataStore`：自动拉取 + Parquet 日更新时序（TTL=24h）
+  - `MarginTradingFactor` / `ShortInterestFactor`：symbol 非空时自动调用 MarginDataStore
+  - 向后兼容：显式传入 `sentiment_data` 时优先使用，AKShare 失败时降级全零
 
-- [ ] **[P2] 股东变动（大股东增减持）因子**
-  - 数据：AKShare `stock_hold_num_cninfo()` 季度股东人数变动
-  - 因子：股东人数减少（筹码集中）→ 正向信号
-  - 文件：`core/factors/fundamental.py` 新增 `ShareholderConcentrationFactor`
+- [x] **[P2] 股东变动（大股东增减持）因子** *(2026-04-29 完成)*
+  - `core/factors/fundamental.py ShareholderConcentrationFactor`（已实现）
+  - AKShare `stock_hold_num_cninfo()` 季度股东人数变动，筹码集中 → 正向信号
 
-- [ ] **[P3] 宏观经济因子**
-  - 指标：PMI / CPI / M2 同比增速 / 社融规模
-  - 数据：AKShare `macro_china_pmi_monthly()` 等
-  - 因子化：宏观因子作为 Regime 判断辅助，非直接选股信号
-  - 文件：`core/factors/macro.py`（新建）
+- [x] **[P3] 宏观经济因子** *(2026-04-29 完成)*
+  - `core/factors/macro.py`（已实现）：PMI / M2Growth / CreditImpulse 三类因子
+  - `core/data_layer.py get_macro_data()` TTL 24h 缓存
+  - `core/pipeline_factory.py` 宏观层已接入生产流水线（无数据时自动降级）
 
 ---
 
@@ -209,10 +210,9 @@
   - 指标：当日净值 / 持仓数量 / 信号延迟 / API 响应时间
   - 文件：`core/metrics.py`（新建，暴露 `/metrics` 端点）
 
-- [ ] **合规审计日志**
+- [x] **合规审计日志** *(2026-04-29 完成)*
+  - `core/audit_log.py`（已实现）：append-only JSONL + SHA-256 篡改检测
   - 每笔交易记录：时间戳、信号来源、因子值、风控检查结果
-  - 格式：结构化 JSON，不可篡改（append-only）
-  - 用途：事后复盘、监管合规
 
 - [ ] **回测报告 PDF 导出**
   - 工具：`reportlab` 或 `weasyprint`
@@ -242,10 +242,10 @@
   - 触发：`backend/main.py Scheduler` 每日 16:00
   - 输出：企业微信 / 钉钉 Markdown 格式
 
-- [ ] **参数自动优化（贝叶斯调参）**
-  - 工具：`optuna`（贝叶斯超参数优化）
+- [x] **参数自动优化（贝叶斯调参）** *(2026-04-29 完成)*
+  - `scripts/bayesian_optimize.py`（已实现）：optuna + Walk-Forward 框架
+  - `scripts/walkforward_job.py --bayesian --n-trials N` 参数接入
   - 目标参数：RSI 周期、MACD 快/慢/信号线、ATR 倍数
-  - 约束：在 Walk-Forward 框架内优化，防止过拟合
 
 ---
 
@@ -256,7 +256,8 @@
 | 2026-04-22（初始）| **62** | 18 | 48 | 32 | 65 | 5 | 12 |
 | 2026-04-23（Phase 1-3）| **90** | 45 | 70 | 55 | 78 | 15 | 65 |
 | 2026-04-27（Phase A-C）| **~95** | 72 | 82 | 85 | 82 | 60 | 68 |
-| Phase 4 完成后（预计）| **~97** | 72 | 88 | 85 | 85 | 75 | 85 |
+| 2026-04-29（Phase D-E）| **~97** | 85 | 88 | 88 | 85 | 65 | 72 |
+| Phase 4 完成后（预计）| **~98** | 85 | 92 | 88 | 88 | 75 | 88 |
 | Phase 5 完成后（预计）| **~98** | 88 | 88 | 90 | 88 | 85 | 85 |
 | Phase 6 完成后（预计）| **~99** | 92 | 92 | 92 | 90 | 88 | 92 |
 
