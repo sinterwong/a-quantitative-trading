@@ -3,6 +3,9 @@ pandas
 numpy
 requests
 
+# LLM (Anthropic-compatible, used for news sentiment & market narrative)
+anthropic
+
 # Backend API server
 flask>=3.0.0
 werkzeug>=3.0.0

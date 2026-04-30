@@ -38,6 +38,27 @@ _logger = logging.getLogger('morning_report')
 # ─────────────────────────────────────────────────────────
 
 _sentiment_scorer = None
+_llm_service     = None
+
+
+def _get_llm_service():
+    """懒加载 LLMService（仅当配置了 API key 时才初始化）"""
+    global _llm_service
+    if _llm_service is not None:
+        return _llm_service
+    try:
+        import sys as _sys
+        _sys.path.insert(0, os.path.join(QUANT_DIR, 'backend'))
+        from services.llm.factory import create_llm_service
+        svc = create_llm_service()
+        if svc and svc.is_available:
+            _llm_service = svc
+            _logger.info('LLM service loaded for morning report')
+        else:
+            _logger.warning('LLM provider not available, morning report LLM summary disabled')
+    except Exception as e:
+        _logger.warning('LLM service init failed in morning report: %s', e)
+    return _llm_service
 
 
 def _get_sentiment_scorer():
@@ -61,6 +82,52 @@ def _fetch_market_sentiment() -> Dict:
     except Exception as e:
         _logger.warning('get_market_sentiment failed: %s', e)
         return {}
+
+
+def _fetch_llm_market_narrative(sentiment: Dict) -> str:
+    """
+    用 LLM 批量分析当日热门新闻，生成市场情绪总结。
+    失败时返回空字符串，不阻塞早报其他内容。
+    """
+    llm = _get_llm_service()
+    if llm is None:
+        return ''
+
+    top_pos = sentiment.get('top_positive', [])
+    top_neg = sentiment.get('top_negative', [])
+    if not top_pos and not top_neg:
+        return ''
+
+    # 拼装新闻文本（取前8条，每条限80字）
+    news_lines = []
+    for n in (top_pos + top_neg)[:8]:
+        title = n.get('title', '')[:80]
+        score = n.get('score', 0)
+        label = '🟢' if score >= 10 else '🔴'
+        news_lines.append(f'{label} {title}')
+    news_text = '\n'.join(news_lines)
+
+    prompt = (
+        f"你是一位专业的A股量化分析师。以下是今日最重要的财经新闻：\n"
+        f"{news_text}\n\n"
+        f"请用2-3句话总结：1）今日市场整体情绪和主要驱动力；"
+        f"2）哪些板块/概念最值得关注及原因。"
+        f"回复直接是正文，不要加标题，不要加JSON，直接给总结段落。"
+    )
+
+    try:
+        resp = llm.provider.chat(
+            [{'role': 'user', 'content': prompt}],
+            max_tokens=512,
+            temperature=0.3,
+        )
+        summary = resp.content.strip() if resp.content else ''
+        if summary:
+            _logger.info('LLM market narrative generated (%d chars)', len(summary))
+        return summary
+    except Exception as e:
+        _logger.warning('LLM market narrative failed: %s', e)
+        return ''
 
 
 # ─────────────────────────────────────────────────────────
@@ -154,7 +221,7 @@ def _fetch_selected_stocks(n: int = 5) -> List[Dict]:
 # 格式化区块
 # ─────────────────────────────────────────────────────────
 
-def _format_sentiment_block(sentiment: Dict) -> str:
+def _format_sentiment_block(sentiment: Dict, llm_narrative: str = '') -> str:
     """格式化情绪区块"""
     lines = []
     score = sentiment.get('composite_score', 0)
@@ -171,6 +238,10 @@ def _format_sentiment_block(sentiment: Dict) -> str:
         if top3:
             sector_str = ' / '.join(f'{s}:{v:+.0f}' for s, v in top3)
             lines.append(f'  热门板块情绪：{sector_str}')
+
+    if llm_narrative:
+        lines.append(f'  📝 市场解读：{llm_narrative}')
+
     return '\n'.join(lines)
 
 
@@ -191,7 +262,13 @@ def _format_stock_block(stocks: List[Dict]) -> str:
     for i, s in enumerate(stocks, 1):
         name   = s.get('name', '?')
         code   = s.get('code', s.get('symbol', '?'))
-        chg    = float(s.get('change_pct', s.get('pct', 0)) or 0)
+        chg_raw = s.get('change_pct', s.get('pct', 0)) or 0
+        if isinstance(chg_raw, str):
+            chg_raw = chg_raw.rstrip('%').strip()
+        try:
+            chg = float(chg_raw)
+        except (ValueError, TypeError):
+            chg = 0.0
         sector = s.get('sector_name', s.get('sector', ''))
         score  = s.get('total_score', s.get('score', s.get('total', 0)))
         arrow  = '🔺' if chg >= 0 else '🔻'
@@ -301,8 +378,11 @@ def build_report(
 
     # ── 市场情绪（单次 fetch，供情绪+新闻两个区块复用）────
     sentiment: Dict = {}
+    llm_narrative = ''
     if include_sentiment or include_news:
         sentiment = _fetch_market_sentiment()
+        if sentiment:
+            llm_narrative = _fetch_llm_market_narrative(sentiment)
 
     # ── 一、市场环境（来自 regime，优先于情绪）────────────
     if prefetched_regime:
@@ -316,7 +396,7 @@ def build_report(
         sections.append('【二、市场情绪】')
         sections.append('-' * 50)
         if sentiment:
-            sections.append(_format_sentiment_block(sentiment))
+            sections.append(_format_sentiment_block(sentiment, llm_narrative))
         else:
             sections.append('  ⚠️ 情绪数据获取失败（网络或 NewsSentimentScorer 异常）')
         sections.append('')
