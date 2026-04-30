@@ -86,7 +86,7 @@ class RiskPosition:
 class PositionBook:
     """持仓账本（内存）"""
 
-    def __init__(self, refresh_interval: int = 300):
+    def __init__(self, refresh_interval: int = 300, lazy: bool = True):
         self._positions: Dict[str, RiskPosition] = {}
         self._equity: float = 100000
         self._cash: float = 100000
@@ -95,6 +95,15 @@ class PositionBook:
         self._peak_trade_date: str = ''
         self._refresh_interval = refresh_interval  # 秒，默认5分钟
         self._stop_refresh = False
+        self._initialized = False
+        if not lazy:
+            self._ensure_initialized()
+
+    def _ensure_initialized(self):
+        """首次使用时才加载 API 数据并启动刷新线程，避免构造时阻塞。"""
+        if self._initialized:
+            return
+        self._initialized = True
         self._load_from_api()
         self._start_refresh_thread()
 
@@ -205,6 +214,7 @@ class PositionBook:
                 del self._positions[sym]
 
     def get_all(self) -> Dict[str, RiskPosition]:
+        self._ensure_initialized()
         return dict(self._positions)
 
     def get(self, symbol: str) -> Optional[RiskPosition]:

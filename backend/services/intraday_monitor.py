@@ -182,6 +182,8 @@ class IntradayMonitor:
         # 交易模式：'simulation' (默认，不执行Broker订单) | 'live' (执行Broker订单)
         self._trading_mode: str = 'simulation'
         self._load_trading_mode()
+        # 策略健康监控（每日开盘时检查一次）
+        self._health_check_date: str = ''
 
     # ── Public API ────────────────────────────────────────
 
@@ -806,8 +808,45 @@ class IntradayMonitor:
         except Exception:
             pass  # 保持上次缓存或空字典
 
+    def _run_daily_health_check(self):
+        """每日开盘时运行一次 StrategyHealthMonitor，检查策略健康度并推送告警。"""
+        today = date.today().isoformat()
+        if self._health_check_date == today:
+            return
+        self._health_check_date = today
+        try:
+            from core.strategy_health import StrategyHealthMonitor
+            raw = self._svc.get_daily_metas(limit=60)
+            if not raw or len(raw) < 2:
+                return
+            # daily_meta 表有 trade_date/n_trades/equity，需补算 daily_return
+            raw.sort(key=lambda r: r.get('trade_date', ''))
+            stats = []
+            for i, row in enumerate(raw):
+                equity = float(row.get('equity', 0) or 0)
+                prev_eq = float(raw[i - 1].get('equity', 0) or 0) if i > 0 else equity
+                daily_ret = (equity - prev_eq) / prev_eq if prev_eq > 0 else 0.0
+                stats.append({
+                    'date': row.get('trade_date', today),
+                    'daily_return': daily_ret,
+                    'n_trades': int(row.get('n_trades', 0) or 0),
+                    'equity': equity,
+                })
+            monitor = StrategyHealthMonitor(notify=True)
+            report = monitor.check(stats)
+            if report.has_warn():
+                logger.warning('StrategyHealth: %s', report.worst_level())
+                self._deliver_alert(report.to_feishu_text())
+            else:
+                logger.info('StrategyHealth: OK (sharpe_20d=%.3f)', report.rolling_sharpe_20d)
+        except Exception as e:
+            logger.warning('Daily health check failed: %s', e)
+
     def _check_and_push(self, now: datetime):
         """获取持仓 → 检查信号 → 推送飞书 + 自动下单（使用WFA优化参数）"""
+
+        # ── 每日策略健康度检查（开盘时运行一次）────────────────────
+        self._run_daily_health_check()
 
         # ── 同步市场环境（供 LLM 审核使用）────────────────────────
         self._sync_market_regime()
