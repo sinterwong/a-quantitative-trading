@@ -206,9 +206,10 @@
 
 ### 工程基础设施
 
-- [ ] **Prometheus + Grafana 监控看板**
-  - 指标：当日净值 / 持仓数量 / 信号延迟 / API 响应时间
-  - 文件：`core/metrics.py`（新建，暴露 `/metrics` 端点）
+- [x] **Prometheus + Grafana 监控看板** *(2026-04-30 完成)*
+  - `core/metrics.py MetricsRegistry`：净值/盈亏/持仓/现金/信号/订单延迟/API 请求/因子 IC
+  - `backend/api.py GET /metrics`：Prometheus text 格式，Grafana 可直接接入
+  - prometheus_client 缺失时静默降级，不影响主业务
 
 - [x] **合规审计日志** *(2026-04-29 完成)*
   - `core/audit_log.py`（已实现）：append-only JSONL + SHA-256 篡改检测

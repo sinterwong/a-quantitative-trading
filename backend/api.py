@@ -998,6 +998,66 @@ def set_trading_mode():
 
 
 # ============================================================
+# Prometheus 监控指标端点
+# ============================================================
+
+@app.route('/metrics', methods=['GET'])
+def metrics_endpoint():
+    """
+    暴露 Prometheus 格式监控指标。
+
+    指标包含：
+      trading_net_value         — 组合净值
+      trading_total_pnl_yuan    — 累计浮动盈亏
+      trading_n_positions       — 持仓数量
+      trading_cash_yuan         — 可用现金
+      trading_health_status     — 策略健康状态（0=OK,1=WARN,2=CRITICAL）
+      trading_api_requests_total — API 请求计数
+      trading_api_errors_total  — API 错误计数
+      trading_factor_ic         — 各因子最新 IC 值
+
+    Prometheus 配置示例（prometheus.yml）：
+      scrape_configs:
+        - job_name: 'trading'
+          static_configs:
+            - targets: ['localhost:5555']
+          metrics_path: /metrics
+    """
+    try:
+        from core.metrics import get_registry
+        reg = get_registry()
+
+        # 从本地 portfolio 数据刷新指标
+        try:
+            positions = _svc.get_positions()
+            cash = _svc.get_cash()
+            total_pnl = sum(
+                p.get('unrealized_pnl', 0.0)
+                for p in (positions if isinstance(positions, list) else [])
+            )
+            n_pos = len([p for p in (positions if isinstance(positions, list) else [])
+                         if p.get('shares', 0) > 0])
+            total_val = cash + sum(
+                float(p.get('shares', 0)) * float(p.get('current_price', 0.0))
+                for p in (positions if isinstance(positions, list) else [])
+            )
+            net_val = total_val / max(_svc.get_initial_capital() if hasattr(_svc, 'get_initial_capital') else total_val, 1.0)
+            reg.update_from_portfolio(
+                net_value=net_val,
+                total_pnl=float(total_pnl),
+                n_positions=n_pos,
+                cash=float(cash),
+            )
+        except Exception:
+            pass   # 静默降级，仍返回已有指标
+
+        output = reg.generate()
+        return output, 200, {'Content-Type': reg.content_type}
+    except Exception as e:
+        return f'# metrics error: {e}\n', 500, {'Content-Type': 'text/plain'}
+
+
+# ============================================================
 # Error handlers
 # ============================================================
 
