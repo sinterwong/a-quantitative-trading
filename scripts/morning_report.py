@@ -48,7 +48,15 @@ def _get_llm_service():
         return _llm_service
     try:
         import sys as _sys
-        _sys.path.insert(0, os.path.join(QUANT_DIR, 'backend'))
+        _repo_root = QUANT_DIR  # repo root = .../a-quantitative-trading/
+        _backend_path = os.path.join(_repo_root, 'backend')
+        _logger.info('_get_llm_service: repo_root=%s backend_path=%s exists=%s',
+                     _repo_root, _backend_path, os.path.exists(_backend_path))
+        # 必须先把 repo root 加入 sys.path，factory.py 内部会 import backend.services.llm
+        if _repo_root not in _sys.path:
+            _sys.path.insert(0, _repo_root)
+        if _backend_path not in _sys.path:
+            _sys.path.insert(0, _backend_path)
         from services.llm.factory import create_llm_service
         svc = create_llm_service()
         if svc and svc.is_available:
@@ -57,7 +65,8 @@ def _get_llm_service():
         else:
             _logger.warning('LLM provider not available, morning report LLM summary disabled')
     except Exception as e:
-        _logger.warning('LLM service init failed in morning report: %s', e)
+        import traceback
+        _logger.warning('LLM service init failed in morning report: %s\n%s', e, traceback.format_exc())
     return _llm_service
 
 
