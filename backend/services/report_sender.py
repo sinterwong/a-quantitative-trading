@@ -24,6 +24,17 @@ import io
 if sys.platform == 'win32' and sys.stdout.encoding != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+# 加载 .env 环境变量
+_dotenv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), '.env')
+if os.path.exists(_dotenv_path):
+    with open(_dotenv_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            k, v = line.split('=', 1)
+            os.environ.setdefault(k.strip(), v.strip())
 import json
 import ssl
 import logging
@@ -43,10 +54,10 @@ BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BACKEND_DIR)
 sys.path.insert(0, os.path.join(BASE_DIR, 'scripts'))
 
-# ─── 飞书配置 ────────────────────────────────────────────────
-FEISHU_APP_ID     = 'cli_a9217a3f3f389cc2'
-FEISHU_APP_SECRET = '5kOAKAmFzhySMYQB9nV5ndInIlWS43mt'
-FEISHU_USER_ID    = 'ou_b8add658ac094464606af32933a02d0b'
+# ─── 飞书配置（从环境变量读取）──────────────────────────────────
+FEISHU_APP_ID     = os.environ.get('FEISHU_APP_ID', '')
+FEISHU_APP_SECRET = os.environ.get('FEISHU_APP_SECRET', '')
+FEISHU_USER_ID    = os.environ.get('FEISHU_USER_OPEN_ID', '')
 
 # ─── Backend 配置 ────────────────────────────────────────────
 BACKEND_URL = 'http://127.0.0.1:5555'
