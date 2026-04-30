@@ -2,7 +2,7 @@
 
 基于 A 股的专业化量化研究与全自动模拟交易平台，支持多因子选股、机器学习价格预测、算法订单执行、组合优化、实时盘中监控与告警。
 
-> **系统状态**：829 个测试全部通过 | 22 个因子 | SimulatedBroker + FutuBroker 双模式 | 全自动无人值守模拟交易就绪
+> **系统状态**：920 个测试全部通过 | 29 个因子 | SimulatedBroker + FutuBroker 双模式 | 全自动无人值守模拟交易就绪 | Prometheus 监控就绪
 
 ---
 
@@ -95,7 +95,7 @@
 
 | 模块 | 关键特性 |
 |------|---------|
-| **多因子系统** | 22 个因子（价格/技术/基本面/情绪/ML/NLP），动态 IC 加权 |
+| **多因子系统** | 29 个因子（价格/技术/基本面/情绪/ML/NLP/宏观），动态 IC 加权 + ML 因子选择 |
 | **动态选股** | 五维评分（新闻热度35%+板块行情35%+资金流向25%+技术趋势15%+成分股一致性10%） |
 | **ML 框架** | XGBoost Walk-Forward 训练（252/63/21 窗口），无模型时自动降级 |
 | **算法执行** | VWAP/TWAP 拆单，Almgren-Chriss 市场冲击估算，A 股整手处理 |
@@ -107,6 +107,13 @@
 | **告警系统** | 企业微信/钉钉/SMTP 三渠道，频率限制，每日 P&L 报告 |
 | **回测引擎** | 无前视偏差，A 股印花税/涨跌停/停牌，Walk-Forward 验证 |
 | **异步执行** | `asyncio.gather()` 并发处理多标的，N 标的延迟从 N×200ms → 200ms |
+| **退出引擎** | ExitEngine P0-P9 优先级体系（EMERGENCY→TIME_STOP），统一卖出信号引擎 |
+| **生产流水线** | PipelineFactory 三层因子流水线（技术层/基本面层/宏观层），一键生成 |
+| **运营报告** | DailyOpsReporter 每日 16:00 自动汇总 P&L/策略健康/告警/因子 IC |
+| **监控看板** | Prometheus MetricsRegistry + `/metrics` 端点，Grafana 可直接接入 |
+| **报告导出** | BacktestReportExporter PDF 导出（封面+净值曲线+回撤图+绩效表） |
+| **ML 因子选择** | FactorSelector LightGBM 预测因子 IC，Walk-Forward 防过拟合 |
+| **融资融券** | MarginDataStore 自动拉取 + Parquet 时序，MarginTrading/ShortInterest 因子 |
 
 ---
 
@@ -362,7 +369,7 @@ a-quantitative-trading/
 │   ├── sensitivity_job.py         # 策略参数敏感性分析
 │   └── stock_data_only.py         # 数据拉取（调试用）
 │
-├── tests/                         # 829 个单元测试（37 个测试文件）
+├── tests/                         # 920 个单元测试（40 个测试文件）
 │   ├── test_strategy_runner.py    # 策略主循环 + Regime 联动
 │   ├── test_alerting.py           # AlertManager（36 个测试）
 │   ├── test_algo_execution.py     # VWAP/TWAP/ImpactEstimator（40 个测试）
@@ -376,7 +383,13 @@ a-quantitative-trading/
 │   ├── test_sentiment_factors.py  # 情绪因子（30 个测试）
 │   ├── test_dynamic_selector.py   # 动态选股引擎
 │   ├── test_async_runner.py       # 异步策略执行
-│   └── ...（其余 24 个测试文件）
+│   ├── test_factor_selector.py    # ML 因子选择
+│   ├── test_metrics.py            # Prometheus 监控
+│   ├── test_report_exporter.py    # PDF 报告导出
+│   ├── test_daily_ops_reporter.py # 每日运营报告
+│   ├── test_margin_data_store.py  # 融资融券数据
+│   ├── test_scheduler_fundamental.py # 基本面调度
+│   └── ...（其余 21 个测试文件）
 │
 ├── config/
 │   └── trading.yaml               # 统一策略配置（多策略/风控/数据源/环境切换）
@@ -392,16 +405,17 @@ a-quantitative-trading/
 
 ### 多因子系统
 
-系统内置 **22 个因子**，覆盖价格动量、技术微观结构、基本面、情绪和 AI 信号五大类别：
+系统内置 **29 个因子**，覆盖价格动量、技术微观结构、基本面、情绪、AI 信号和宏观经济六大类别：
 
 | 类别 | 因子名称 | 文件 |
 |------|---------|------|
 | 价格动量 | RSI / BollingerBands / MACD / ATR / OrderImbalance | `factors/price_momentum.py` |
 | 技术微观结构 | IntraVWAP / OpenGap / VolAcceleration / BidAskSpread / BuyingPressure / SectorMomentum / IndexRelativeStrength | `factors/technical.py` |
-| 基本面 | PEPercentile / ROEMomentum / EarningsSurprise / RevenueGrowth / CashFlowQuality | `factors/fundamental.py` |
+| 基本面 | PEPercentile / ROEMomentum / EarningsSurprise / RevenueGrowth / CashFlowQuality / ShareholderConcentration | `factors/fundamental.py` |
 | 情绪 | MarginTrading / NorthboundFlow / ShortInterest | `factors/sentiment.py` |
+| 宏观经济 | PMI / M2Growth / CreditImpulse | `factors/macro.py` |
 | ML 预测 | MLPrediction（XGBoost 上涨概率） | `ml/price_predictor.py` |
-| NLP 情感 | NewsSentiment（东财新闻 + Claude API） | `factors/nlp.py` |
+| NLP 情感 | NewsSentiment（东财新闻 + LLM API） | `factors/nlp.py` |
 
 ```python
 from core.factor_pipeline import FactorPipeline, DynamicWeightPipeline
@@ -731,10 +745,9 @@ pytest tests/test_strategy_runner.py       # 策略主循环
 ### 当前限制
 
 | 限制 | 说明 | 计划解决 |
-|------|------|---------|
+|------|------|----------|
 | Futu 纸交易待验证 | FutuBroker 代码完整，需真实 OpenD 环境运行 | Phase 4-A |
 | ML 模型未用真实数据训练 | XGBoost 框架完备，待接入真实历史数据 | Phase 4-A |
-| AlertManager Webhook 未配置 | 代码完整，待填入真实 Webhook URL | 立即可配置 |
 | NLP 因子 IC 未统计 | 待运行 1 个月历史回测验证 IC > 0 | Phase 4-B |
 | PostgreSQL 未迁移 | SQLite 满足需求，触发条件：10 万条交易记录 | Phase 4-C |
 | 无指数退避重试 | HTTP 调用失败依赖熔断器，无 exponential backoff | Phase 4-A |
@@ -743,9 +756,25 @@ pytest tests/test_strategy_runner.py       # 策略主循环
 ### 未来路线图
 
 详见 [TODO.md](TODO.md)：
-- **Phase 4**（1-3 月）：Futu 纸交易运营、ML 训练、AlertManager 实盘接入、重试机制、进程守护
-- **Phase 5**（3-9 月）：因子 IC 全量验证、行业轮动策略、均值回归配对
+- **Phase 4**（1-3 月）：Futu 纸交易运营、ML 训练、重试机制、进程守护 ← **当前阶段**
+- **Phase 5**（3-9 月）：因子 IC 全量验证、新策略拓展
 - **Phase 6**（9-18 月）：港股/美股多市场扩展
+
+### 已完成里程碑（Phase D/E，2026-04-29—04-30）
+
+| 模块 | 文件 | 说明 |
+|------|------|------|
+| ExitEngine | `core/exit_engine.py` | P0-P9 优先级退出体系（EMERGENCY→TIME_STOP），统一卖出信号引擎 |
+| PipelineFactory | `core/pipeline_factory.py` | 生产用因子流水线工厂（技术层/基本面层/宏观层） |
+| DailyOpsReporter | `core/daily_ops_reporter.py` | 每日 16:00 自动运营报告，AlertManager 推送 |
+| MarginDataStore | `core/factors/sentiment.py` | 融资融券自动拉取 + Parquet 时序（TTL=24h） |
+| MetricsRegistry | `core/metrics.py` | Prometheus 监控看板，`/metrics` 端点 |
+| BacktestReportExporter | `core/report_exporter.py` | PDF 导出（封面+净值+回撤+绩效+交易统计） |
+| FactorSelector | `core/ml/factor_selector.py` | LightGBM 因子选择，Walk-Forward 防过拟合 |
+| 基本面调度 | `backend/main.py` | 季报数据自动刷新调度（Scheduler 集成） |
+| 早报修复 | `scripts/morning_report.py` | 5 处设计缺陷修复，新增市场环境/开盘订单区块 |
+| 主流程集成 | `backend/api.py` | 行业轮动/配对交易 API 端点，全模块接入主流程 |
+| 架构修复 | `core/*.py` | 启动竞态、线程安全、风控覆盖等 10+ 处隐患修复 |
 
 ---
 
