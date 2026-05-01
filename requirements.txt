@@ -4,6 +4,7 @@ numpy
 scipy
 requests
 pyyaml
+akshare
 
 # ML
 lightgbm
