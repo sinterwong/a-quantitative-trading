@@ -46,13 +46,41 @@ CHECK_INTERVAL  = 300   # 秒(5分钟)
 COOLDOWN       = 900   # 同一标的信号推送冷却时间(15分钟)
 
 
+# ─── 交易日判断（与 main.py Scheduler 共享同一套逻辑） ───────
+
+_trade_calendar: set = set()
+_trade_calendar_date: str = ''
+
+
+def _is_trading_day(now: datetime) -> bool:
+    """判断是否为 A 股交易日（复用 Scheduler 的 AKShare 日历逻辑）。"""
+    global _trade_calendar, _trade_calendar_date
+    today_str = now.strftime('%Y-%m-%d')
+
+    if _trade_calendar_date != today_str:
+        try:
+            import akshare as ak
+            df = ak.tool_trade_date_hist_sina()
+            dates = df.iloc[:, 0]
+            _trade_calendar = {str(d)[:10] for d in dates}
+            _trade_calendar_date = today_str
+        except Exception:
+            _trade_calendar = set()
+
+    if _trade_calendar:
+        return today_str in _trade_calendar
+
+    # AKShare 不可用时降级为周一~周五判断
+    return now.weekday() < 5
+
+
 # ─── 交易时段判断 ─────────────────────────────────────────
 
 def is_market_open(now: Optional[datetime] = None) -> bool:
-    """判断当前是否为 A 股交易时段"""
+    """判断当前是否为 A 股交易时段（节假日 + 交易时间双重判断）。"""
     if now is None:
         now = datetime.now()
-    if now.weekday() >= 5:
+    if now.weekday() >= 5 or not _is_trading_day(now):
         return False
     h, m = now.hour, now.minute
 
