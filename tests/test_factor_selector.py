@@ -113,6 +113,10 @@ class TestFactorSelectorModel(unittest.TestCase):
         return X, ic
 
     def test_fit_and_is_fitted(self):
+        try:
+            import lightgbm  # noqa: F401
+        except ImportError:
+            self.skipTest('lightgbm not installed')
         X, ic = self._make_xy(150)
         model = self.ModelClass('RSI', ic_threshold=0.02)
         model.fit(X, ic)

@@ -162,8 +162,8 @@ class TestLastScores:
 class TestCheckNewPositionsWithScore:
     """验证有 pipeline score 时走 pipeline 分支。"""
 
-    @patch('backend.services.intraday_monitor.fetch_realtime')
-    @patch('backend.services.intraday_monitor.confirm_signal_minute')
+    @patch('services.signals.fetch_realtime')
+    @patch('services.signals.confirm_signal_minute')
     def test_pipeline_score_above_threshold_trades(self, mock_confirm, mock_rt):
         """score > threshold → 触发建仓流程。"""
         mock_rt.return_value = {'price': 15.0}
@@ -186,6 +186,7 @@ class TestCheckNewPositionsWithScore:
         monitor._broker = MagicMock()
         monitor._broker.submit_order.return_value = MagicMock(status='filled', avg_price=15.0)
         monitor._deliver_alert = MagicMock()
+        monitor._llm_review_signal.return_value = (True, 'OK', 0.8, 'full')
 
         # 直接调用方法
         from backend.services.intraday_monitor import IntradayMonitor
@@ -197,8 +198,8 @@ class TestCheckNewPositionsWithScore:
         assert call_kwargs[1]['symbol'] == '000001.SZ'
         assert call_kwargs[1]['direction'] == 'BUY'
 
-    @patch('backend.services.intraday_monitor.fetch_realtime')
-    @patch('backend.services.intraday_monitor.confirm_signal_minute')
+    @patch('services.signals.fetch_realtime')
+    @patch('services.signals.confirm_signal_minute')
     def test_pipeline_score_below_threshold_skips(self, mock_confirm, mock_rt):
         """score < threshold → 跳过，不建仓。"""
         monitor = MagicMock()
@@ -223,8 +224,8 @@ class TestCheckNewPositionsWithScore:
 class TestFallbackToEvaluateSignal:
     """验证无 pipeline score 时降级到原有逻辑。"""
 
-    @patch('backend.services.intraday_monitor.evaluate_signal')
-    @patch('backend.services.intraday_monitor.confirm_signal_minute')
+    @patch('services.signals.evaluate_signal')
+    @patch('services.signals.confirm_signal_minute')
     def test_no_score_falls_back(self, mock_confirm, mock_eval):
         """无 score 时调用 evaluate_signal()。"""
         mock_eval.return_value = MagicMock(
@@ -255,7 +256,7 @@ class TestFallbackToEvaluateSignal:
         # 验证：evaluate_signal 被调用
         mock_eval.assert_called_once()
 
-    @patch('backend.services.intraday_monitor.evaluate_signal')
+    @patch('services.signals.evaluate_signal')
     def test_no_runner_falls_back(self, mock_eval):
         """无 StrategyRunner 时完全降级。"""
         mock_eval.return_value = None  # 无信号
@@ -283,7 +284,7 @@ class TestFallbackToEvaluateSignal:
 class TestPipelineErrorGraceful:
     """验证 pipeline 异常时优雅降级。"""
 
-    @patch('backend.services.intraday_monitor.evaluate_signal')
+    @patch('services.signals.evaluate_signal')
     def test_last_scores_exception_falls_back(self, mock_eval):
         """last_scores 抛异常时降级到 evaluate_signal。"""
         mock_eval.return_value = None
@@ -355,8 +356,8 @@ class TestThresholdConfigurable:
 class TestSafetyLayersPreserved:
     """验证 pipeline 分支保留了所有安全层。"""
 
-    @patch('backend.services.intraday_monitor.fetch_realtime')
-    @patch('backend.services.intraday_monitor.confirm_signal_minute')
+    @patch('services.signals.fetch_realtime')
+    @patch('services.signals.confirm_signal_minute')
     def test_minute_confirmation_called(self, mock_confirm, mock_rt):
         """pipeline 分支仍调用分钟确认。"""
         mock_rt.return_value = {'price': 15.0}
@@ -380,8 +381,8 @@ class TestSafetyLayersPreserved:
         mock_confirm.assert_called_once_with('000001.SZ', 'BUY')
         monitor._broker.submit_order.assert_not_called()
 
-    @patch('backend.services.intraday_monitor.fetch_realtime')
-    @patch('backend.services.intraday_monitor.confirm_signal_minute')
+    @patch('services.signals.fetch_realtime')
+    @patch('services.signals.confirm_signal_minute')
     def test_cooldown_still_applies(self, mock_confirm, mock_rt):
         """冷却机制在 pipeline 分支下仍然生效。"""
         monitor = MagicMock()

@@ -1,7 +1,20 @@
 # Core dependencies
 pandas
 numpy
+scipy
 requests
+pyyaml
+
+# ML
+lightgbm
+scikit-learn
+xgboost          # pip install 可能需要较多内存，备选: conda install -n quant-trading xgboost
+
+# Monitoring
+prometheus_client
+
+# Report export
+reportlab
 
 # LLM (Anthropic-compatible, used for news sentiment & market narrative)
 anthropic
