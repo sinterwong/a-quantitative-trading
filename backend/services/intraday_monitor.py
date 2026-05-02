@@ -29,8 +29,6 @@ BACKEND_DIR = THIS_DIR
 sys.path.insert(0, BACKEND_DIR)
 
 from .signals import (
-    check_portfolio_signals,
-    evaluate_signal,
     format_feishu_message,
     SignalAlert,
     confirm_signal_minute,
@@ -982,23 +980,52 @@ class IntradayMonitor:
         except Exception as e:
             logger.warning('Sector concentration check error: %s', e)
 
-        # 使用 WFA 优化参数逐个检查持仓信号(买入方向)
-        from services.signals import evaluate_signal, format_feishu_message
+        # ── 持仓追加买入：Pipeline combined_score 驱动 ────────────
+        #   旧 evaluate_signal 降级分支已删除（RSI 硬编码与 Pipeline 双信号并行有隐患）
+        #   信号来源：FactorPipeline scores（经 WFA 优化，动态 IC 加权）
+        #   触发阈值：combined_score > 0.30 视为买入积累信号
+        from services.signals import SignalAlert, format_feishu_message
+        from datetime import datetime as dt
+
+        pipeline_scores: dict = {}
+        if self._strategy_runner is not None:
+            try:
+                pipeline_scores = self._strategy_runner.last_scores
+            except Exception:
+                pass
+
+        BUY_THRESHOLD = 0.30   # combined_score > 此值视为持仓加仓信号
         alerts = []
         for pos in positions:
             sym = pos.get('symbol')
             if not sym:
                 continue
-            params = self._get_params(sym)
-            alert = evaluate_signal(
-                sym,
-                rsi_buy=int(params.get('rsi_buy', 25)),
-                rsi_sell=int(params.get('rsi_sell', 65)),
-                atr_threshold=float(params.get('atr_threshold', 0.90)),
-                positions=positions,
+            score = pipeline_scores.get(sym, 0.0)
+            if score <= BUY_THRESHOLD:
+                continue
+
+            # 获取实时行情补充 Alert 字段
+            from services.signals import fetch_realtime
+            quote = fetch_realtime(sym)
+            price = quote.get('close', 0) if quote else pos.get('current_price', 0)
+            pct = quote.get('pct', 0) if quote else 0.0
+            day_chg = quote.get('day_chg', 0) if quote else 0.0
+            reason = (f'Pipeline score={score:.4f} > {BUY_THRESHOLD}，持仓加仓信号'
+                      if score > BUY_THRESHOLD else '')
+
+            alert = SignalAlert(
+                symbol=sym,
+                signal='BUY',
+                price=price,
+                pct=pct,
+                prev_rsi=None,
+                volume_ratio=quote.get('volume_ratio') if quote else None,
+                day_chg=day_chg,
+                reason=reason,
+                emitted_at=dt.now().strftime('%H:%M:%S'),
             )
-            if alert:
-                alerts.append(alert)
+            alerts.append(alert)
+            logger.debug('Position add signal: %s score=%.4f', sym, score)
 
         # 过滤冷却期内标的
         actionable = [a for a in alerts if self._cooldown.can_fire(a.symbol)]
