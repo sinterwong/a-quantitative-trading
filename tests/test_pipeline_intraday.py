@@ -3,9 +3,9 @@ tests/test_pipeline_intraday.py — Pipeline → IntradayMonitor 集成测试
 
 验证：
   1. StrategyRunner.last_scores 正确返回
-  2. IntradayMonitor._check_new_positions() 有 score 时用 pipeline 决策
-  3. 无 score 时降级到 evaluate_signal()
-  4. pipeline 异常时降级不中断
+  2. IntradayMonitor._check_new_positions() 唯一信号来源为 pipeline（无 evaluate_signal 降级）
+  3. 无 pipeline scores 时静默跳过（不降级到 RSI 硬编码）
+  4. pipeline 异常时静默跳过，不中断运行
   5. signal_threshold 可配置
 """
 
@@ -218,24 +218,21 @@ class TestCheckNewPositionsWithScore:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Test 3: 无 pipeline score 时降级到 evaluate_signal()
+# Test 3: 无 pipeline scores 时不再降级到 evaluate_signal（消除双信号并行）
 # ═════════════════════════════════════════════════════════════════════════════
 
-class TestFallbackToEvaluateSignal:
-    """验证无 pipeline score 时降级到原有逻辑。"""
+class TestNoFallbackToEvaluateSignal:
+    """验证无 pipeline scores 时不再降级到 evaluate_signal()。"""
 
     @patch('services.signals.evaluate_signal')
     @patch('services.signals.confirm_signal_minute')
-    def test_no_score_falls_back(self, mock_confirm, mock_eval):
-        """无 score 时调用 evaluate_signal()。"""
-        mock_eval.return_value = MagicMock(
-            signal='RSI_BUY', price=15.0, reason='RSI oversold', symbol='000001.SZ'
-        )
+    def test_no_score_does_not_call_evaluate_signal(self, mock_confirm, mock_eval):
+        """无 pipeline score 时不调用 evaluate_signal()，静默跳过。"""
         mock_confirm.return_value = (True, 22.0, 'confirmed')
 
         monitor = MagicMock()
         monitor._strategy_runner = MagicMock()
-        monitor._strategy_runner.last_scores = {}  # 空 → 降级
+        monitor._strategy_runner.last_scores = {}  # 空 → 静默跳过，不降级
         monitor._strategy_runner.risk_engine = None
         monitor._llm = None
         monitor._cooldown = MagicMock()
@@ -243,68 +240,57 @@ class TestFallbackToEvaluateSignal:
         monitor._svc = MagicMock()
         monitor._svc.get_positions.return_value = []
         monitor._get_watched_symbols.return_value = ['000001.SZ']
-        monitor._get_params.return_value = {'rsi_buy': 25, 'rsi_sell': 65, 'atr_threshold': 0.90}
-        monitor._calc_shares.return_value = 100
-        monitor._can_trade.return_value = True
-        monitor._broker = MagicMock()
-        monitor._broker.submit_order.return_value = MagicMock(status='filled', avg_price=15.0)
         monitor._deliver_alert = MagicMock()
 
         from backend.services.intraday_monitor import IntradayMonitor
         IntradayMonitor._check_new_positions(monitor, datetime.now())
 
-        # 验证：evaluate_signal 被调用
-        mock_eval.assert_called_once()
+        # 验证：evaluate_signal 不会被调用
+        mock_eval.assert_not_called()
 
     @patch('services.signals.evaluate_signal')
-    def test_no_runner_falls_back(self, mock_eval):
-        """无 StrategyRunner 时完全降级。"""
-        mock_eval.return_value = None  # 无信号
-
+    def test_no_runner_does_not_call_evaluate_signal(self, mock_eval):
+        """无 StrategyRunner 时静默跳过，不降级到 evaluate_signal。"""
         monitor = MagicMock()
-        monitor._strategy_runner = None  # 无 runner
+        monitor._strategy_runner = None  # 无 runner → 静默跳过
         monitor._cooldown = MagicMock()
-        monitor._cooldown.can_fire.return_value = True
         monitor._svc = MagicMock()
         monitor._svc.get_positions.return_value = []
         monitor._get_watched_symbols.return_value = ['000001.SZ']
-        monitor._get_params.return_value = {'rsi_buy': 25, 'rsi_sell': 65, 'atr_threshold': 0.90}
+        monitor._deliver_alert = MagicMock()
 
         from backend.services.intraday_monitor import IntradayMonitor
         IntradayMonitor._check_new_positions(monitor, datetime.now())
 
-        # 验证：evaluate_signal 被调用（降级路径）
-        mock_eval.assert_called_once()
+        # 验证：evaluate_signal 不会被调用
+        mock_eval.assert_not_called()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Test 4: pipeline 异常时降级不中断
+# Test 4: pipeline 异常时静默跳过，不降级到 evaluate_signal
 # ═════════════════════════════════════════════════════════════════════════════
 
 class TestPipelineErrorGraceful:
-    """验证 pipeline 异常时优雅降级。"""
+    """验证 pipeline 异常时静默跳过，不降级到 evaluate_signal。"""
 
     @patch('services.signals.evaluate_signal')
-    def test_last_scores_exception_falls_back(self, mock_eval):
-        """last_scores 抛异常时降级到 evaluate_signal。"""
-        mock_eval.return_value = None
-
+    def test_last_scores_exception_does_not_fall_back(self, mock_eval):
+        """last_scores 抛异常时静默跳过，不降级到 evaluate_signal。"""
         monitor = MagicMock()
         monitor._strategy_runner = MagicMock()
         type(monitor._strategy_runner).last_scores = PropertyMock(side_effect=RuntimeError('pipeline error'))
         monitor._cooldown = MagicMock()
-        monitor._cooldown.can_fire.return_value = True
         monitor._svc = MagicMock()
         monitor._svc.get_positions.return_value = []
         monitor._get_watched_symbols.return_value = ['000001.SZ']
-        monitor._get_params.return_value = {}
+        monitor._deliver_alert = MagicMock()
 
         from backend.services.intraday_monitor import IntradayMonitor
         # 不应抛异常
         IntradayMonitor._check_new_positions(monitor, datetime.now())
 
-        # 降级到 evaluate_signal
-        mock_eval.assert_called_once()
+        # 验证：不降级到 evaluate_signal
+        mock_eval.assert_not_called()
 
     def test_run_once_exception_continues(self):
         """run_once() 抛异常时不中断 _check_and_push。"""
