@@ -1671,6 +1671,7 @@ def wfa_summary():
 # ============================================================
 # Error handlers
 # ============================================================
+@app.errorhandler(404)
 def not_found(e):
     return err('Not found: ' + str(e), 404)
 
