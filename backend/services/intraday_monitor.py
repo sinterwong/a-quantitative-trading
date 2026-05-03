@@ -145,8 +145,10 @@ class IntradayMonitor:
     SIGNAL_TO_ORDER = {
         'RSI_BUY':     'BUY',
         'WATCH_BUY':   'BUY',
+        'BUY':         'BUY',      # Pipeline combined_score 驱动
         'RSI_SELL':    'SELL',
         'WATCH_SELL':  'SELL',
+        'SELL':        'SELL',     # Pipeline combined_score 驱动
     }
     # 涨跌停类信号不交易(无法以合理价格买入/卖出)
     NO_TRADE_SIGNALS = {
