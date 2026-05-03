@@ -411,6 +411,139 @@ def recent_orders():
     return ok(orders=trades, realized_pnl=svc.get_realized_pnl())
 
 
+@app.route('/orders/pending', methods=['GET'])
+def pending_orders():
+    """
+    GET /orders/pending — 所有挂起/部分成交的订单。
+    """
+    svc = get_svc()
+    pending = svc.get_pending_orders()
+    return ok(orders=pending, count=len(pending))
+
+
+@app.route('/orders/<order_id>/cancel', methods=['POST'])
+def cancel_order(order_id):
+    """
+    POST /orders/<order_id>/cancel — 撤销挂单。
+    触发 PortfolioService.update_order_cancelled()。
+    """
+    svc = get_svc()
+    order = svc.get_order(order_id)
+    if not order:
+        return err(f'Order not found: {order_id}', 404)
+    if order.get('status') not in ('pending', 'partial'):
+        return err(f'Cannot cancel order in status "{order.get("status")}"', 422)
+
+    # 尝试通过 broker 撤单
+    from services.broker import PaperBroker
+    broker = PaperBroker(portfolio_service=svc)
+    broker.connect()
+    cancelled = broker.cancel_order(order_id)
+    if not cancelled:
+        return err('Cancel failed (broker rejected)', 409)
+
+    svc.update_order_cancelled(order_id, reason='user_cancelled')
+    updated = svc.get_order(order_id)
+    return ok(order_id=order_id, status='cancelled', order=updated)
+
+
+# ============================================================
+# Symbol params (P1)
+# ============================================================
+
+@app.route('/params/<symbol>', methods=['GET'])
+def get_symbol_params(symbol):
+    """
+    GET /params/<symbol> — 查询单股参数（WFA + 手工配置合并后）。
+    返回 rsi_buy, rsi_sell, stop_loss, take_profit, atr_threshold 等。
+    """
+    from services.signals import load_symbol_params
+    params = load_symbol_params(symbol)
+    return ok(symbol=symbol, params=params)
+
+
+@app.route('/params/<symbol>', methods=['PATCH'])
+def update_symbol_params(symbol):
+    """
+    PATCH /params/<symbol> — 更新单股参数（写入 params.json）。
+    Body: {"rsi_buy": 30, "stop_loss": 0.06, ...}
+    支持字段: rsi_period, rsi_buy, rsi_sell, stop_loss, take_profit,
+              min_hold_days, atr_threshold, atr_period, atr_multiplier
+    """
+    if (e := require_json()):
+        return e
+    import json as _json
+    body = request.json
+    allowed = {'rsi_period', 'rsi_buy', 'rsi_sell', 'stop_loss', 'take_profit',
+               'min_hold_days', 'atr_threshold', 'atr_period', 'atr_multiplier'}
+    updates = {k: v for k, v in body.items() if k in allowed}
+    if not updates:
+        return err(f'No valid fields. Allowed: {sorted(allowed)}', 422)
+
+    proj = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    params_file = os.path.join(proj, 'params.json')
+    params_all = {}
+    if os.path.exists(params_file):
+        with open(params_file, 'r', encoding='utf-8') as f:
+            params_all = _json.load(f)
+
+    # 查找或创建对应 symbol 的策略条目
+    strategies = params_all.setdefault('strategies', {})
+    target_key = None
+    for name, conf in strategies.items():
+        if conf.get('symbol', '').upper() == symbol.upper():
+            target_key = name
+            break
+    if target_key is None:
+        target_key = f'Custom_{symbol}'
+        strategies[target_key] = {'symbol': symbol.upper(), 'params': {}}
+
+    p = strategies[target_key].setdefault('params', {})
+    for k, v in updates.items():
+        p[k] = v
+    params_all['updated'] = datetime.now().strftime('%Y-%m-%d')
+
+    with open(params_file, 'w', encoding='utf-8') as f:
+        _json.dump(params_all, f, ensure_ascii=False, indent=4)
+
+    return ok(symbol=symbol, updated=updates, params=p)
+
+
+@app.route('/params', methods=['GET'])
+def list_all_params():
+    """
+    GET /params — 全量参数列表（params.json + live_params.json 合并视图）。
+    """
+    import json as _json
+    from services.signals import load_symbol_params
+
+    proj = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    params_file = os.path.join(proj, 'params.json')
+    all_symbols = set()
+    if os.path.exists(params_file):
+        with open(params_file, 'r', encoding='utf-8') as f:
+            params_all = _json.load(f)
+        for conf in params_all.get('strategies', {}).values():
+            sym = conf.get('symbol')
+            if sym:
+                all_symbols.add(sym.upper())
+
+    # 也包含 live_params.json 中的 key
+    live_file = os.path.join(proj, 'backend', 'services', 'live_params.json')
+    if os.path.exists(live_file):
+        with open(live_file, 'r', encoding='utf-8') as f:
+            live = _json.load(f)
+        for k in live:
+            if '_' in k:
+                all_symbols.add(k.rsplit('_', 1)[0])
+
+    result = {}
+    for sym in sorted(all_symbols):
+        result[sym] = load_symbol_params(sym)
+
+    return ok(params=result, count=len(result))
+
+
 # ============================================================
 # Analysis trigger
 # ============================================================
@@ -1045,6 +1178,19 @@ def data_fund_flow():
         return err(f'资金流获取失败: {e}\n{traceback.format_exc()}', 500)
 
 
+@app.route('/data/realtime/<symbol>', methods=['GET'])
+def data_realtime(symbol):
+    """
+    GET /data/realtime/<symbol> — 轻量实时行情接口。
+    包一层 fetch_realtime()，返回最新价、涨跌幅、成交量等。
+    """
+    from services.signals import fetch_realtime
+    quote = fetch_realtime(symbol)
+    if not quote:
+        return err(f'Realtime data unavailable for {symbol}', 502)
+    return ok(symbol=symbol, quote=quote)
+
+
 # ============================================================
 # Trading Mode
 # ============================================================
@@ -1086,6 +1232,83 @@ def set_trading_mode():
         return err(f'invalid mode "{mode}", must be one of: {sorted(_VALID_MODES)}', 422)
     _save_trading_mode(mode)
     return ok(mode=mode, message=f'Trading mode set to {mode}')
+
+
+# ============================================================
+# Monitor status
+# ============================================================
+
+@app.route('/monitor/status', methods=['GET'])
+def monitor_status():
+    """
+    GET /monitor/status
+    返回 IntradayMonitor 的实时运行状态：
+      - 线程状态、交易模式、扫描计数
+      - 最近 10 条信号触发记录
+      - 最近 10 条跳过记录（含原因分类）
+      - 最近 5 条 LLM 审核记录
+      - 风控状态（Kelly 仓位、回撤熔断）
+    """
+    from main import get_monitor
+    monitor = get_monitor()
+    if monitor is None:
+        return err('Monitor not initialized', 503)
+    return ok(monitor.get_status())
+
+
+@app.route('/risk/status', methods=['GET'])
+def risk_status():
+    """
+    GET /risk/status — 风控状态查询。
+    返回：组合敞口、板块集中度、ATR 止损触发状态、回撤水平。
+    """
+    svc = get_svc()
+    from main import get_monitor
+    monitor = get_monitor()
+
+    positions = svc.get_positions()
+    summary = svc.get_portfolio_summary(refresh_prices_now=True)
+
+    # 板块集中度
+    sector_exposure = {}
+    total_market_value = 0
+    for p in positions:
+        mv = p.get('shares', 0) * p.get('current_price', 0)
+        total_market_value += mv
+        sector = p.get('sector', 'unknown')
+        sector_exposure[sector] = sector_exposure.get(sector, 0) + mv
+    if total_market_value > 0:
+        sector_exposure = {k: round(v / total_market_value, 4)
+                           for k, v in sector_exposure.items()}
+
+    # 回撤水平
+    dd_warn = 0.0
+    dd_stop = 0.0
+    peak_equity = 0.0
+    current_equity = summary.get('total_equity', 0)
+    if monitor:
+        peak_equity = monitor._peak_equity
+        dd_warn = monitor._dd_warn
+        dd_stop = monitor._dd_stop
+        if peak_equity > 0:
+            current_dd = 1 - (current_equity / peak_equity)
+        else:
+            current_dd = 0.0
+    else:
+        current_dd = 0.0
+
+    return ok(
+        total_equity=round(current_equity, 2),
+        peak_equity=round(peak_equity, 2),
+        current_drawdown=round(current_dd, 4),
+        dd_warn_threshold=dd_warn,
+        dd_stop_threshold=dd_stop,
+        risk_warn_fired=monitor._risk_warn_fired if monitor else False,
+        risk_stop_fired=monitor._risk_stop_fired if monitor else False,
+        kelly_pct=round(monitor._kelly_pct, 4) if monitor else None,
+        position_count=len(positions),
+        sector_exposure=sector_exposure,
+    )
 
 
 # ============================================================

@@ -63,6 +63,14 @@ def setup_logging():
     return logging.getLogger('backend')
 
 
+# Module-level monitor reference (set in main())
+_monitor = None
+
+def get_monitor():
+    """Return the IntradayMonitor instance, or None if not started."""
+    return _monitor
+
+
 # ============================================================
 # Scheduler
 # ============================================================
@@ -319,6 +327,7 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: on_shutdown())
 
     # Intraday monitor — runs during trading hours, pushes Feishu + auto-orders
+    global _monitor
     monitor = None
     if args.mode in ('scheduler', 'both'):
         sys.path.insert(0, BACKEND_DIR)
@@ -368,6 +377,7 @@ def main():
                 max_position_pct=max_pos_pct,
                 llm_service=llm_service,
             )
+            _monitor = monitor
             # 注意：延迟 monitor.start()，待 StrategyRunner 注入后再启动
             logger.info('IntradayMonitor created (broker=PaperBroker, max_pos_pct=%.0f%%, llm=%s)',
                         max_pos_pct * 100, llm_service is not None)
