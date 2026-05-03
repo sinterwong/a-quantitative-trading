@@ -212,6 +212,15 @@ class IntradayMonitor:
         self._load_trading_mode()
         # 策略健康监控(每日开盘时检查一次)
         self._health_check_date: str = ''
+        # ── 可观测性状态 ──────────────────────────────────
+        self._last_scan_symbol: str = ''          # 当前扫描到的标的
+        self._last_scan_time: str = ''            # 上次扫描时间
+        self._signal_log: list = []               # 最近信号触发记录 (max 50)
+        self._skip_log: list = []                 # 最近跳过记录 (max 50)
+        self._llm_review_log: list = []           # 最近 LLM 审核记录 (max 50)
+        self._scan_count: int = 0                 # 累计扫描次数
+        self._error_count: int = 0                # 累计错误次数
+        self._last_error: str = ''                # 最近一次错误
 
     # ── Public API ────────────────────────────────────────
 
@@ -254,6 +263,73 @@ class IntradayMonitor:
         """
         self._strategy_runner = runner
         logger.info('StrategyRunner injected into IntradayMonitor')
+
+    # ── 可观测性：事件记录 ────────────────────────────────
+
+    def _record_signal(self, symbol: str, signal: str, price: float,
+                       reason: str, result: str = ''):
+        """记录一次信号触发事件。"""
+        self._signal_log.append({
+            'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'symbol': symbol,
+            'signal': signal,
+            'price': round(price, 2),
+            'reason': reason[:200],
+            'result': result,
+        })
+        if len(self._signal_log) > 50:
+            self._signal_log = self._signal_log[-50:]
+
+    def _record_skip(self, symbol: str, reason: str, category: str = ''):
+        """"""
+        self._skip_log.append({
+            'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'symbol': symbol,
+            'reason': reason[:200],
+            'category': category,  # cooldown / non_trading_day / kelly_insufficient / ...
+        })
+        if len(self._skip_log) > 50:
+            self._skip_log = self._skip_log[-50:]
+
+    def _record_llm_review(self, symbol: str, direction: str, approved: bool,
+                           reason: str, confidence: float):
+        """记录一次 LLM 审核事件。"""
+        self._llm_review_log.append({
+            'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'symbol': symbol,
+            'direction': direction,
+            'approved': approved,
+            'reason': reason[:200],
+            'confidence': round(confidence, 2),
+        })
+        if len(self._llm_review_log) > 50:
+            self._llm_review_log = self._llm_review_log[-50:]
+
+    def get_status(self) -> dict:
+        """返回监控状态摘要，供 API 暴露。"""
+        thread_alive = self._thread.is_alive() if self._thread else False
+        return {
+            'running': self._running,
+            'thread_alive': thread_alive,
+            'trading_mode': self._trading_mode,
+            'interval_seconds': self._interval,
+            'last_scan_time': self._last_scan_time,
+            'last_scan_symbol': self._last_scan_symbol,
+            'scan_count': self._scan_count,
+            'error_count': self._error_count,
+            'last_error': self._last_error,
+            'kelly_pct': round(self._kelly_pct, 4),
+            'kelly_last_updated': self._kelly_last_updated,
+            'dd_warn': self._dd_warn,
+            'dd_stop': self._dd_stop,
+            'peak_equity': round(self._peak_equity, 2),
+            'risk_warn_fired': self._risk_warn_fired,
+            'risk_stop_fired': self._risk_stop_fired,
+            'cooldown_active': len(self._cooldown._state),
+            'signals': list(reversed(self._signal_log[-10:])),
+            'skips': list(reversed(self._skip_log[-10:])),
+            'llm_reviews': list(reversed(self._llm_review_log[-5:])),
+        }
 
     def _load_trading_mode(self):
         mode_file = os.path.join(BACKEND_DIR, 'trading_mode.json')
@@ -306,6 +382,8 @@ class IntradayMonitor:
             try:
                 self._check_and_push(now)
             except Exception as e:
+                self._error_count += 1
+                self._last_error = f'{now.strftime("%H:%M:%S")}: {e}'
                 logger.error('Signal check error: %s', e)
 
             # 清理过期冷却记录
@@ -584,11 +662,13 @@ class IntradayMonitor:
 
         # 涨跌停等不交易
         if signal in self.NO_TRADE_SIGNALS:
+            self._record_skip(alert.symbol, f'no-trade signal: {signal}', 'no_trade_signal')
             logger.debug('Skipping order for signal %s (no-trade signal)', signal)
             return None
 
         direction = self.SIGNAL_TO_ORDER.get(signal)
         if not direction:
+            self._record_skip(alert.symbol, f'no order mapping for {signal}', 'no_mapping')
             logger.debug('No order mapping for signal %s', signal)
             return None
 
@@ -597,6 +677,7 @@ class IntradayMonitor:
             confirmed, m_rsi, reason = confirm_signal_minute(alert.symbol, 'BUY')
             logger.info('Minute confirm %s %s: %s', alert.symbol, alert.signal, reason)
             if not confirmed:
+                self._record_skip(alert.symbol, reason, 'minute_rsi_reject')
                 self._deliver_alert(
                     f'⚠️ [{alert.symbol}] 持仓信号触发但分钟RSI拒绝追高\n'
                     f'   现价:{alert.price:.2f} | {reason}'
@@ -619,6 +700,8 @@ class IntradayMonitor:
         # ══ LLM 终极审核 ══════════════════════════════════════
         if direction in ('BUY', 'SELL'):
             llm_approved, llm_reason, llm_conf, size_rec = self._llm_review_signal(alert, direction)
+            self._record_llm_review(alert.symbol, direction, llm_approved,
+                                    llm_reason, llm_conf)
             if not llm_approved:
                 self._deliver_alert(
                     f'\u274c [{alert.symbol}] LLM 审核否决 \u24d2{direction}\n'
@@ -633,6 +716,7 @@ class IntradayMonitor:
 
         shares = self._calc_shares(alert.symbol, alert.price)
         if shares < 100:
+            self._record_skip(alert.symbol, f'insufficient cash (calculated {shares} shares)', 'kelly_insufficient')
             logger.warning('Insufficient cash for %s: calculated %d shares (min 100)',
                            alert.symbol, shares)
             return None
@@ -654,6 +738,7 @@ class IntradayMonitor:
         # 提交订单
         try:
             if not self._can_trade():
+                self._record_skip(alert.symbol, 'simulation mode', 'simulation')
                 self._deliver_alert(
                     f'📋 [{alert.symbol}] 模拟模式:持仓信号跳过执行\n'
                     f'   方向:{direction} | 股数:{shares} | 价:{alert.price:.2f}\n'
@@ -670,9 +755,13 @@ class IntradayMonitor:
             )
             logger.info('Auto-order: %s %s %d @ %.2f => %s',
                         direction, alert.symbol, shares, alert.price, result.status)
+            self._record_signal(alert.symbol, direction, alert.price,
+                                alert.reason, result.status)
             return result
         except Exception as e:
             logger.error('Order submission failed for %s: %s', alert.symbol, e)
+            self._record_signal(alert.symbol, direction, alert.price,
+                                alert.reason, f'error: {e}')
             return None
 
     def _llm_review_signal(self, alert: SignalAlert, direction: str):
@@ -926,6 +1015,8 @@ class IntradayMonitor:
 
     def _check_and_push(self, now: datetime):
         """获取持仓 → 检查信号 → 推送飞书 + 自动下单(使用WFA优化参数)"""
+        self._scan_count += 1
+        self._last_scan_time = now.strftime('%Y-%m-%d %H:%M:%S')
 
         # ── 每日策略健康度检查(开盘时运行一次)────────────────────
         self._run_daily_health_check()
@@ -1002,6 +1093,7 @@ class IntradayMonitor:
             sym = pos.get('symbol')
             if not sym:
                 continue
+            self._last_scan_symbol = sym
             score = pipeline_scores.get(sym, 0.0)
             if score <= BUY_THRESHOLD:
                 continue
@@ -1027,7 +1119,10 @@ class IntradayMonitor:
             alerts.append(alert)
             logger.debug('Position add signal: %s score=%.4f', sym, score)
 
-        # 过滤冷却期内标的
+        # 过滤冷却期内标的（先找出 cooldown 跳过的，记录一次；剩余的才是可执行信号）
+        cooldown_skipped = [a for a in alerts if not self._cooldown.can_fire(a.symbol)]
+        for a in cooldown_skipped:
+            self._record_skip(a.symbol, 'cooldown active', 'cooldown')
         actionable = [a for a in alerts if self._cooldown.can_fire(a.symbol)]
 
         # 推送飞书(有信号时)
