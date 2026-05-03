@@ -1546,7 +1546,7 @@ def market_status():
     return ok(
         is_open=open_now,
         session=session,
-        next_change=next_change.isoformat() if next_change else None,
+        next_change=next_change,
         server_time=now.isoformat(),
     )
 
