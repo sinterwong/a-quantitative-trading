@@ -434,13 +434,19 @@ def cancel_order(order_id):
     if order.get('status') not in ('pending', 'partial'):
         return err(f'Cannot cancel order in status "{order.get("status")}"', 422)
 
-    # 尝试通过 broker 撤单
-    from services.broker import PaperBroker
-    broker = PaperBroker(portfolio_service=svc)
-    broker.connect()
-    cancelled = broker.cancel_order(order_id)
-    if not cancelled:
-        return err('Cancel failed (broker rejected)', 409)
+    # Use the shared broker instance from main(), not a new one
+    from main import get_broker
+    broker = get_broker()
+    trading_mode = monitor.trading_mode() if (monitor := get_monitor()) else 'simulation'
+
+    if broker is not None:
+        cancelled = broker.cancel_order(order_id)
+        # Simulation broker always returns False — that is normal, not an error
+        if not cancelled and trading_mode == 'live':
+            return err('Cancel failed (broker rejected)', 409)
+    else:
+        # No broker initialised yet; skip broker-level cancel
+        pass
 
     svc.update_order_cancelled(order_id, reason='user_cancelled')
     updated = svc.get_order(order_id)

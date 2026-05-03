@@ -65,10 +65,15 @@ def setup_logging():
 
 # Module-level monitor reference (set in main())
 _monitor = None
+_broker = None   # shared PaperBroker instance (same one monitor uses)
 
 def get_monitor():
     """Return the IntradayMonitor instance, or None if not started."""
     return _monitor
+
+def get_broker():
+    """Return the shared broker instance, or None if not started."""
+    return _broker
 
 
 # ============================================================
@@ -347,8 +352,10 @@ def main():
                 svc = PortfolioService()
 
             # Initialize PaperBroker with PortfolioService
+            global _broker
             broker = PaperBroker(portfolio_service=svc)
             broker.connect()
+            _broker = broker
 
             # Load max_position_pct from params.json if available
             import json as _json

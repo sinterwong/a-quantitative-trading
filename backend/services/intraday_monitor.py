@@ -1119,10 +1119,10 @@ class IntradayMonitor:
             alerts.append(alert)
             logger.debug('Position add signal: %s score=%.4f', sym, score)
 
-        # 过滤冷却期内标的
-        for a in alerts:
-            if not self._cooldown.can_fire(a.symbol):
-                self._record_skip(a.symbol, 'cooldown active', 'cooldown')
+        # 过滤冷却期内标的（先找出 cooldown 跳过的，记录一次；剩余的才是可执行信号）
+        cooldown_skipped = [a for a in alerts if not self._cooldown.can_fire(a.symbol)]
+        for a in cooldown_skipped:
+            self._record_skip(a.symbol, 'cooldown active', 'cooldown')
         actionable = [a for a in alerts if self._cooldown.can_fire(a.symbol)]
 
         # 推送飞书(有信号时)
@@ -1136,8 +1136,6 @@ class IntradayMonitor:
             # 自动下单(使用 per-symbol 参数)
             if self._broker:
                 for alert in actionable:
-                    self._record_signal(alert.symbol, alert.signal, alert.price,
-                                        alert.reason, 'submitting')
                     self._submit_order_for_signal(alert)
         else:
             logger.debug('No buy/sell alerts at %s', now.strftime('%H:%M'))
