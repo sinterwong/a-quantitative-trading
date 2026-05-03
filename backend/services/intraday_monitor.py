@@ -984,7 +984,7 @@ class IntradayMonitor:
         #   旧 evaluate_signal 降级分支已删除（RSI 硬编码与 Pipeline 双信号并行有隐患）
         #   信号来源：FactorPipeline scores（经 WFA 优化，动态 IC 加权）
         #   触发阈值：combined_score > 0.30 视为买入积累信号
-        from services.signals import SignalAlert, format_feishu_message
+        from services.signals import SignalAlert, format_feishu_message, fetch_realtime
         from datetime import datetime as dt
 
         pipeline_scores: dict = {}
@@ -1005,13 +1005,11 @@ class IntradayMonitor:
                 continue
 
             # 获取实时行情补充 Alert 字段
-            from services.signals import fetch_realtime
             quote = fetch_realtime(sym)
             price = quote.get('close', 0) if quote else pos.get('current_price', 0)
             pct = quote.get('pct', 0) if quote else 0.0
             day_chg = quote.get('day_chg', 0) if quote else 0.0
-            reason = (f'Pipeline score={score:.4f} > {BUY_THRESHOLD}，持仓加仓信号'
-                      if score > BUY_THRESHOLD else '')
+            reason = f'Pipeline score={score:.4f} > {BUY_THRESHOLD}，持仓加仓信号'
 
             alert = SignalAlert(
                 symbol=sym,
