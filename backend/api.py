@@ -1014,14 +1014,16 @@ def remove_watchlist(symbol):
 def patch_watchlist(symbol):
     """
     PATCH /watchlist/<symbol>
-    Body: {"alert_pct": 7.0} 或 {"enabled": 0}
+    Body: {"alert_pct": 7.0} 和/或 {"enabled": 0}
     """
     if not request.is_json:
         return err('Content-Type must be application/json', 415)
     body = request.json or {}
-    from services.watchlist import set_alert_threshold
+    from services.watchlist import set_alert_threshold, set_watchlist_enabled
     if 'alert_pct' in body:
         set_alert_threshold(symbol, float(body['alert_pct']))
+    if 'enabled' in body:
+        set_watchlist_enabled(symbol, int(body['enabled']))
     return ok(message=f'{symbol} updated')
 
 
@@ -1413,8 +1415,8 @@ def northbound_flow():
     summary_text = format_kamt_summary(kamt)
 
     # 近10日历史
-    from services.northbound import _load_north_history
-    history = _load_north_history()
+    from services.northbound import get_north_history
+    history = get_north_history()
     history_yi = {k: round(v / 1e8, 2) for k, v in history.items()}
 
     return ok(
@@ -1454,7 +1456,7 @@ def performance_summary():
     # 聚合三个计算函数的结果
     report = generate_monthly_report(year=year, month=month, include_chart=incl_chart)
 
-    svc = PortfolioService()
+    svc = get_svc()
     trades = svc.get_orders(status='filled', limit=500)
 
     # 只取当月交易
@@ -1555,7 +1557,120 @@ def market_status():
 # P1: Orders with Filters (订单过滤查询) — modifies existing
 # ============================================================
 
-@app.errorhandler(404)
+# ============================================================
+# P2: LLM Signal Review (独立信号审核)
+# ============================================================
+
+@app.route('/llm/analyze', methods=['POST'])
+@rate_limit(max_per_window=10, window_seconds=60)
+def llm_analyze():
+    """
+    POST /llm/analyze — LLM 独立信号审核
+
+    Body (required):
+        symbol, direction, signal, price, alert_reason
+    Body (optional):
+        entry_price, position_shares, position_pnl,
+        rsi_value, atr_ratio, market_regime, north_flow_yi,
+        cash, equity, other_positions, recent_trades, news_sentiment
+
+    返回: {approved, decision, reason, confidence, size_rec}
+    """
+    if (e := require_json()):
+        return e
+    body = request.json
+    required = ['symbol', 'direction', 'signal', 'price', 'alert_reason']
+    for f in required:
+        if f not in body:
+            return err(f'missing required field: {f}', 422)
+
+    # 尝试初始化 LLM provider
+    provider = None
+    try:
+        from services.llm.providers import MiniMaxProvider
+        provider = MiniMaxProvider()
+        provider.chat([{"role": "user", "content": "hi"}], max_tokens=5)
+    except Exception:
+        pass
+
+    from services.llm.service import signal_review
+    result = signal_review(
+        symbol=body['symbol'],
+        direction=body['direction'],
+        signal=body['signal'],
+        price=float(body['price']),
+        alert_reason=body['alert_reason'],
+        entry_price=body.get('entry_price'),
+        position_shares=int(body.get('position_shares', 0)),
+        position_pnl=float(body.get('position_pnl', 0)),
+        rsi_value=body.get('rsi_value'),
+        atr_ratio=body.get('atr_ratio'),
+        market_regime=body.get('market_regime', 'UNKNOWN'),
+        north_flow_yi=float(body.get('north_flow_yi', 0)),
+        cash=float(body.get('cash', 0)),
+        equity=float(body.get('equity', 0)),
+        other_positions=body.get('other_positions'),
+        recent_trades=body.get('recent_trades'),
+        news_sentiment=body.get('news_sentiment', ''),
+        provider=provider,
+    )
+    return ok(
+        approved=result.approved,
+        decision=result.decision,
+        reason=result.reason,
+        confidence=result.confidence,
+        size_rec=result.size_rec,
+        llm_available=(provider is not None),
+    )
+
+
+# ============================================================
+# P2: WFA History (WFA 历史查询)
+# ============================================================
+
+@app.route('/wfa/history', methods=['GET'])
+def wfa_history():
+    """
+    GET /wfa/history?symbol=600036.SH&strategy=RSI&limit=30
+
+    查询 WFA 运行历史记录。
+    """
+    symbol   = request.args.get('symbol')
+    strategy = request.args.get('strategy')
+    limit    = int(request.args.get('limit', 30))
+
+    from services.wfa_history import get_wfa_history
+    try:
+        records = get_wfa_history(symbol=symbol, strategy=strategy, limit=limit)
+        return ok(records=records, count=len(records))
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@app.route('/wfa/summary', methods=['GET'])
+def wfa_summary():
+    """
+    GET /wfa/summary?symbol=600036.SH
+
+    查询某标的最新 WFA 结果（regime ATR 两条策略的最新记录）。
+    """
+    symbol = request.args.get('symbol')
+    if not symbol:
+        return err('symbol is required', 422)
+
+    from services.wfa_history import get_latest_wfa
+    rsi_result = get_latest_wfa(symbol, 'RSI')
+    atr_result = get_latest_wfa(symbol, 'ATR')
+    return ok(
+        symbol=symbol,
+        rsi=rsi_result,
+        atr=atr_result,
+    )
+
+
+# ============================================================
+# Error handlers
+# ============================================================
 def not_found(e):
     return err('Not found: ' + str(e), 404)
 

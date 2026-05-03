@@ -210,6 +210,11 @@ def _load_north_history() -> dict:
     return {}
 
 
+def get_north_history() -> dict:
+    """公开接口，返回近10日北向资金历史。"""
+    return _load_north_history()
+
+
 def _save_north_history(history: dict) -> None:
     try:
         with open(NORTH_HISTORY_FILE, 'w', encoding='utf-8') as f:
