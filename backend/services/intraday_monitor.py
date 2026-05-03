@@ -29,8 +29,6 @@ BACKEND_DIR = THIS_DIR
 sys.path.insert(0, BACKEND_DIR)
 
 from .signals import (
-    check_portfolio_signals,
-    evaluate_signal,
     format_feishu_message,
     SignalAlert,
     confirm_signal_minute,
@@ -438,19 +436,15 @@ class IntradayMonitor:
         """
         检查动态选股列表中的标的，如有买入信号则自动建仓。
 
-        信号来源优先级：
-          1. StrategyRunner.last_scores（FactorPipeline 动态 IC 加权）
-          2. 降级到 evaluate_signal()（RSI/ATR 硬编码阈值）
+        唯一信号来源：StrategyRunner.last_scores（FactorPipeline 动态 IC 加权）。
+        evaluate_signal() 降级分支已删除（消除双信号并行架构隐患）。
         """
-        from services.signals import evaluate_signal, confirm_signal_minute, fetch_realtime
+        from services.signals import confirm_signal_minute, fetch_realtime
         watched = self._get_watched_symbols()
         if not watched:
             return
 
-        existing_positions = self._svc.get_positions()
-        check_time = now.strftime('%H:%M')
-
-        # 获取 pipeline scores（有 StrategyRunner 时）
+        # 获取 pipeline scores（无 StrategyRunner 时直接跳过，不降级到 RSI 硬编码）
         pipeline_scores: dict = {}
         if self._strategy_runner is not None:
             try:
@@ -458,50 +452,41 @@ class IntradayMonitor:
             except Exception:
                 pass
 
+        if not pipeline_scores:
+            logger.warning(
+                '_check_new_positions: no pipeline scores (runner=%s), skipping all symbols. '
+                'Check that StrategyRunner is running and FactorPipeline is producing output.',
+                self._strategy_runner is not None
+            )
+            return
+
         for sym in watched:
             # 冷却：每天每个标的只尝试一次（用 new_ 前缀区分）
             if not self._cooldown.can_fire(f'new_{sym}'):
                 continue
             try:
                 score = pipeline_scores.get(sym)
-                use_pipeline = score is not None and abs(score) > 0
+                if score is None or score <= 0:
+                    continue
 
-                if use_pipeline:
-                    # ── 分支：FactorPipeline 信号 ──────────────────
-                    threshold = getattr(self._strategy_runner.config, 'signal_threshold', 0.5) if self._strategy_runner else 0.5
-                    if score < threshold:
-                        continue
+                # ── FactorPipeline 信号 ──────────────────────────
+                threshold = getattr(self._strategy_runner.config, 'signal_threshold', 0.5)
+                if score <= threshold:
+                    continue
 
-                    # 获取实时价格
-                    try:
-                        rt = fetch_realtime(sym)
-                        price = float(rt.get('price', 0)) if rt else 0
-                    except Exception:
-                        price = 0
-                    if price <= 0:
-                        continue
+                # 获取实时价格
+                try:
+                    rt = fetch_realtime(sym)
+                    price = float(rt.get('price', 0)) if rt else 0
+                except Exception:
+                    price = 0
+                if price <= 0:
+                    continue
 
-                    signal_reason = f'Pipeline score={score:.3f} > threshold={threshold:.3f}'
-                    logger.info('Pipeline %s score=%.3f > threshold=%.3f', sym, score, threshold)
+                signal_reason = f'Pipeline score={score:.3f} > threshold={threshold:.3f}'
+                logger.info('Pipeline %s score=%.3f > threshold=%.3f', sym, score, threshold)
 
-                else:
-                    # ── 降级：evaluate_signal() 硬编码逻辑 ────────
-                    params = self._get_params(sym)
-                    alert = evaluate_signal(
-                        sym,
-                        rsi_buy=int(params.get('rsi_buy', 25)),
-                        rsi_sell=int(params.get('rsi_sell', 65)),
-                        atr_threshold=float(params.get('atr_threshold', 0.90)),
-                        positions=existing_positions,
-                    )
-                    if not alert:
-                        continue
-                    if alert.signal not in ('RSI_BUY', 'WATCH_BUY', 'HOLD', 'RSI_SELL', 'WATCH_SELL'):
-                        continue
-                    price = alert.price
-                    signal_reason = alert.reason
-
-                # ── 公共安全层（pipeline / fallback 共用）─────────
+                # ── 公共安全层 ────────────────────────────────
 
                 # 分钟确认
                 confirmed, m_rsi, reason = confirm_signal_minute(sym, 'BUY')
@@ -580,9 +565,9 @@ class IntradayMonitor:
                     shares=shares, price=price, price_type='market',
                 )
                 status_str = '✅ 成交' if result.status == 'filled' else f'❌ {result.status}'
-                source_tag = 'Pipeline' if use_pipeline else 'evaluate_signal'
+                source_tag = 'Pipeline'
                 self._deliver_alert(
-                    f'🆕[{sym}] 自动建仓（{source_tag}→分钟确认）\n'
+                    f'🆕[{sym}] 自动建仓（Pipeline→分钟确认）\n'
                     f'   {status_str} {shares}股 @ {result.avg_price:.2f}\n'
                     f'   原因: {signal_reason} | {reason}'
                 )
@@ -995,23 +980,50 @@ class IntradayMonitor:
         except Exception as e:
             logger.warning('Sector concentration check error: %s', e)
 
-        # 使用 WFA 优化参数逐个检查持仓信号(买入方向)
-        from services.signals import evaluate_signal, format_feishu_message
+        # ── 持仓追加买入：Pipeline combined_score 驱动 ────────────
+        #   旧 evaluate_signal 降级分支已删除（RSI 硬编码与 Pipeline 双信号并行有隐患）
+        #   信号来源：FactorPipeline scores（经 WFA 优化，动态 IC 加权）
+        #   触发阈值：combined_score > 0.30 视为买入积累信号
+        from services.signals import SignalAlert, format_feishu_message, fetch_realtime
+        from datetime import datetime as dt
+
+        pipeline_scores: dict = {}
+        if self._strategy_runner is not None:
+            try:
+                pipeline_scores = self._strategy_runner.last_scores
+            except Exception:
+                pass
+
+        BUY_THRESHOLD = 0.30   # combined_score > 此值视为持仓加仓信号
         alerts = []
         for pos in positions:
             sym = pos.get('symbol')
             if not sym:
                 continue
-            params = self._get_params(sym)
-            alert = evaluate_signal(
-                sym,
-                rsi_buy=int(params.get('rsi_buy', 25)),
-                rsi_sell=int(params.get('rsi_sell', 65)),
-                atr_threshold=float(params.get('atr_threshold', 0.90)),
-                positions=positions,
+            score = pipeline_scores.get(sym, 0.0)
+            if score <= BUY_THRESHOLD:
+                continue
+
+            # 获取实时行情补充 Alert 字段
+            quote = fetch_realtime(sym)
+            price = quote.get('close', 0) if quote else pos.get('current_price', 0)
+            pct = quote.get('pct', 0) if quote else 0.0
+            day_chg = quote.get('day_chg', 0) if quote else 0.0
+            reason = f'Pipeline score={score:.4f} > {BUY_THRESHOLD}，持仓加仓信号'
+
+            alert = SignalAlert(
+                symbol=sym,
+                signal='BUY',
+                price=price,
+                pct=pct,
+                prev_rsi=None,
+                volume_ratio=quote.get('volume_ratio') if quote else None,
+                day_chg=day_chg,
+                reason=reason,
+                emitted_at=dt.now().strftime('%H:%M:%S'),
             )
-            if alert:
-                alerts.append(alert)
+            alerts.append(alert)
+            logger.debug('Position add signal: %s score=%.4f', sym, score)
 
         # 过滤冷却期内标的
         actionable = [a for a in alerts if self._cooldown.can_fire(a.symbol)]
