@@ -405,10 +405,18 @@ def submit_order():
 
 @app.route('/orders/recent', methods=['GET'])
 def recent_orders():
-    """GET /orders/recent — recent filled orders."""
+    """
+    GET /orders/recent?symbol=600036.SH&status=filled&limit=50
+
+    查询订单记录，支持 symbol / status / limit 过滤。
+    status 可选: submitted / filled / cancelled / rejected
+    """
+    symbol = request.args.get('symbol')
+    status = request.args.get('status')
+    limit  = int(request.args.get('limit', 50))
     svc = get_svc()
-    trades = svc.get_trades(limit=50)
-    return ok(orders=trades, realized_pnl=svc.get_realized_pnl())
+    orders = svc.get_orders(symbol=symbol, status=status, limit=limit)
+    return ok(orders=orders, realized_pnl=svc.get_realized_pnl())
 
 
 @app.route('/orders/pending', methods=['GET'])
@@ -1378,7 +1386,173 @@ def metrics_endpoint():
 
 
 # ============================================================
-# Error handlers
+# P1: Northbound (北向资金)
+# ============================================================
+
+@app.route('/northbound/flow', methods=['GET'])
+def northbound_flow():
+    """
+    GET /northbound/flow?refresh=1
+
+    北向资金实时流量（沪深港通）。
+    refresh=1 强制跳过 60s cache 拉取最新数据。
+    """
+    refresh = request.args.get('refresh', '0') == '1'
+    from services.northbound import fetch_kamt, get_north_flow_direction
+    from services.data_cache import cached_kamt
+
+    kamt = cached_kamt(force_refresh=refresh) if refresh else fetch_kamt()
+    if not kamt:
+        return err('Failed to fetch northbound data', 502)
+
+    direction = get_north_flow_direction()
+    net_yi = kamt.get('net_north_cny', 0) / 1e8
+
+    # 格式化摘要
+    from services.northbound import format_kamt_summary
+    summary_text = format_kamt_summary(kamt)
+
+    # 近10日历史
+    from services.northbound import _load_north_history
+    history = _load_north_history()
+    history_yi = {k: round(v / 1e8, 2) for k, v in history.items()}
+
+    return ok(
+        summary=summary_text,
+        net_north_yi=round(net_yi, 2),
+        direction=direction.get('direction'),
+        strength=direction.get('strength'),
+        trend_yi=direction.get('trend_yi'),
+        reason=direction.get('reason'),
+        history=history_yi,
+        updated_at=kamt.get('timestamp', ''),
+    )
+
+
+# ============================================================
+# P1: Performance Summary (绩效聚合)
+# ============================================================
+
+@app.route('/performance/summary', methods=['GET'])
+def performance_summary():
+    """
+    GET /performance/summary?year=2026&month=4&include_chart=1
+
+    聚合三大绩效函数，统一返回账户表现。
+    """
+    year  = request.args.get('year', type=int) or date.today().year
+    month = request.args.get('month', type=int) or date.today().month
+    incl_chart = request.args.get('include_chart', '1') == '1'
+
+    from services.performance import (
+        generate_monthly_report,
+        compute_trade_stats,
+        compute_max_drawdown,
+    )
+    from services.portfolio import PortfolioService
+
+    # 聚合三个计算函数的结果
+    report = generate_monthly_report(year=year, month=month, include_chart=incl_chart)
+
+    svc = PortfolioService()
+    trades = svc.get_orders(status='filled', limit=500)
+
+    # 只取当月交易
+    month_str = f"{year}-{month:02d}"
+    month_trades = [t for t in trades if (t.get('filled_at') or '').startswith(month_str)]
+
+    trade_stats = compute_trade_stats(trades)         # 全量
+    trade_stats_month = compute_trade_stats(month_trades)  # 当月
+
+    equity_series = report.get('equity_series', [])
+    max_dd = compute_max_drawdown(equity_series) if equity_series else {
+        'max_drawdown_pct': 0.0, 'peak_equity': 0,
+        'trough_equity': 0, 'peak_date': '', 'trough_date': '',
+    }
+
+    return ok(
+        period=f"{year}年{month}月",
+        year=year,
+        month=month,
+        returns=report.get('returns', {}),
+        summary=report.get('summary', {}),
+        trade_stats=trade_stats,
+        trade_stats_month=trade_stats_month,
+        max_drawdown=max_dd,
+        equity_curve=equity_series[-30:],
+        benchmark_curve=report.get('benchmark_curve', [])[-30:],
+        chart_base64=report.get('chart_base64') if incl_chart else None,
+        generated_at=report.get('generated_at'),
+    )
+
+
+# ============================================================
+# P1: Fundamentals (基本面)
+# ============================================================
+
+@app.route('/fundamentals/<symbol>', methods=['GET'])
+def get_fundamentals(symbol):
+    """
+    GET /fundamentals/600036.SH
+
+    返回 PE、PB、股息率、总市值等基本面指标。
+    """
+    from services.fundamentals import fetch_fundamentals
+    data = fetch_fundamentals(symbol)
+    if data is None:
+        return err(f'Fundamentals unavailable for {symbol}', 404)
+    return ok(**data)
+
+
+# ============================================================
+# P1: Market Status (市场状态)
+# ============================================================
+
+@app.route('/market/status', methods=['GET'])
+def market_status():
+    """
+    GET /market/status
+
+    返回当前市场是否开盘、交易时段、下次开/收时间。
+    """
+    from services.intraday_monitor import is_market_open
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    open_now = is_market_open(now)
+
+    # 判断当前时段
+    from datetime import time as dtime
+    t = now.time()
+    if open_now:
+        if dtime(9, 30) <= t < dtime(11, 30):
+            session = 'morning'
+            next_change = now.replace(hour=11, minute=30, second=0, microsecond=0)
+        elif dtime(13, 0) <= t < dtime(15, 0):
+            session = 'afternoon'
+            next_change = now.replace(hour=15, minute=0, second=0, microsecond=0)
+        else:
+            session = 'closed'  # 盘后
+            next_change = None
+    else:
+        session = 'closed'
+        # 下一个工作日 9:15（集合竞价）
+        days_ahead = 1 if t >= dtime(15, 0) else 0
+        from datetime import date as ddate
+        next_open = (datetime.combine(ddate.today(), dtime(9, 15))
+                     + timedelta(days=days_ahead))
+        next_change = next_open.isoformat()
+
+    return ok(
+        is_open=open_now,
+        session=session,
+        next_change=next_change.isoformat() if next_change else None,
+        server_time=now.isoformat(),
+    )
+
+
+# ============================================================
+# P1: Orders with Filters (订单过滤查询) — modifies existing
 # ============================================================
 
 @app.errorhandler(404)
