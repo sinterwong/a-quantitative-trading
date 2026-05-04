@@ -97,6 +97,14 @@ class AlertEvent(Event):
     channel: str = 'log'   # 'feishu' | 'log'
 
 
+@dataclass
+class IPOAnalysedEvent(Event):
+    """IPO 分析完成事件"""
+    stock_code: str = ''
+    report: Any = None
+    overall_rating: str = ''
+
+
 # ─── Signal / Order / Fill ───────────────────────────────────────────────────
 
 @dataclass

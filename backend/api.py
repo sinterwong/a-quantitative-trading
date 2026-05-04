@@ -1669,6 +1669,180 @@ def wfa_summary():
 
 
 # ============================================================
+# IPO Analysis endpoints  (feature/ipo-stars)
+# ============================================================
+
+@app.route('/ipo/analyze', methods=['POST'])
+@rate_limit(max_per_window=10, window_seconds=60)
+def analyze_ipo():
+    """
+    POST /ipo/analyze?stock_code=01810
+
+    单只新股深度分析报告。
+    触发完整分析流程：多源数据获取 → 交叉验证 → 分析引擎 → 报告生成。
+
+    Query params:
+        stock_code  — 股票代码（港股如 01810，需包含前导零）
+
+    Returns:
+        IPOAnalysisReport JSON（见 core.ipo_report.IPOAnalysisReport.to_dict()）
+        404 if stock_code not found or analysis fails.
+    """
+    stock_code = request.args.get('stock_code', '').strip()
+    if not stock_code:
+        return err('stock_code is required', 422)
+
+    try:
+        from core.ipo_data_source import IPODataSource
+        from core.ipo_cross_validator import DataCrossValidator
+        from core.ipo_analyst_engine import IPOAnalystEngine
+
+        # Step 1: 多源数据获取
+        ds = IPODataSource()
+        ipo_info = ds.get_ipo_info(stock_code)
+        if ipo_info is None:
+            return err(f'IPO data not found for stock_code={stock_code}', 404)
+
+        multi_source = ds.get_all_sources(stock_code)
+
+        # Step 2: 交叉验证
+        validator = DataCrossValidator()
+        validated = validator.merge_with_confidence(multi_source)
+
+        # Step 3: 分析引擎
+        engine = IPOAnalystEngine()
+        report = engine.analyze(
+            stock_code=stock_code,
+            multi_source_data=multi_source,
+            validated_data=validated,
+            market_sentiment={},
+        )
+
+        # Step 4: 报告生成并持久化
+        try:
+            report_dict = report.to_dict()
+        except Exception:
+            # Fallback: manual dict conversion
+            report_dict = {
+                'stock_code': stock_code,
+                'report': str(report),
+            }
+
+        # 持久化到 outputs/ipo/
+        try:
+            out_dir = os.path.join(BACKEND_DIR, 'outputs', 'ipo')
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = os.path.join(out_dir, f'ipo_analysis_{stock_code}.json')
+            with open(out_path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'timestamp': datetime.now().isoformat(),
+                    'stock_code': stock_code,
+                    'report': report_dict,
+                }, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass  # 持久化失败不影响 API 响应
+
+        return ok(stock_code=stock_code, report=report_dict)
+
+    except Exception as e:
+        return err(f'IPO analysis failed: {e}\n{traceback.format_exc()}', 500)
+
+
+@app.route('/ipo/upcoming', methods=['GET'])
+def upcoming_ipos():
+    """
+    GET /ipo/upcoming
+
+    获取即将上市的港股新股列表（来自东方财富）。
+    数据经 IPODataSource 缓存，TTL 30s。
+
+    Returns:
+        List[IPOInfo]  — 每个元素包含 stock_code, stock_name,
+                         listing_date, issue_price, proceeds 等字段。
+    """
+    try:
+        from core.ipo_data_source import IPODataSource
+
+        ds = IPODataSource()
+        force_refresh = request.args.get('refresh', '0') == '1'
+        ipos = ds.get_upcoming_ipos(force_refresh=force_refresh)
+
+        # 转为 dict 列表
+        result = []
+        for ipo in ipos:
+            try:
+                result.append({
+                    'stock_code': ipo.stock_code,
+                    'stock_name': ipo.stock_name,
+                    'listing_date': ipo.listing_date,
+                    'issue_price': ipo.issue_price,
+                    'issue_price_high': ipo.issue_price_high,
+                    'issue_price_low': ipo.issue_price_low,
+                    'shares': ipo.shares,
+                    'proceeds': ipo.proceeds,
+                    'lot_size': ipo.lot_size,
+                    'application_ratio': ipo.application_ratio,
+                    'application_ratio_乙组': ipo.application_ratio_乙组,
+                    'application_deadline': ipo.application_deadline,
+                    'listing_board': ipo.listing_board,
+                    'industry': ipo.industry,
+                    'sponsor': ipo.sponsor,
+                    'cornerstone_investors': ipo.cornerstone_investors,
+                    'source': ipo.source,
+                    'fetched_at': ipo.fetched_at,
+                })
+            except Exception:
+                continue
+
+        return ok(ipos=result, count=len(result))
+    except Exception as e:
+        return err(f'Failed to fetch upcoming IPOs: {e}\n{traceback.format_exc()}', 500)
+
+
+@app.route('/ipo/history/<stock_code>', methods=['GET'])
+def ipo_history(stock_code):
+    """
+    GET /ipo/history/601888
+
+    从 IPOHistoryStore（A 股历史新股 Parquet 缓存）查询历史分析记录。
+    支持 A 股股票代码（如 601888、001270.SZ）。
+
+    Query params:
+        start  — 开始日期 YYYY-MM-DD（默认 2020-01-01）
+        end    — 结束日期 YYYY-MM-DD（默认今日）
+
+    Returns:
+        DataFrame records as dict list, with columns:
+        symbol / name / ipo_date / issue_price / shares /
+        pe_ratio / industry / market_type
+    """
+    try:
+        from core.ipo_store import IPOHistoryStore
+
+        start = request.args.get('start') or '2020-01-01'
+        end = request.args.get('end') or datetime.now().strftime('%Y-%m-%d')
+
+        store = IPOHistoryStore()
+        df = store.get_ipo_history(start=start, end=end, symbol=stock_code)
+
+        if df is None or df.empty:
+            return err(f'No IPO history found for stock_code={stock_code}', 404)
+
+        # DataFrame → list of dict
+        records = []
+        for idx, row in df.iterrows():
+            rec = {}
+            for col, val in row.items():
+                if val is not None and not (isinstance(val, float) and np.isnan(val)):
+                    rec[col] = val
+            records.append(rec)
+
+        return ok(stock_code=stock_code, records=records, count=len(records))
+    except Exception as e:
+        return err(f'Failed to fetch IPO history: {e}\n{traceback.format_exc()}', 500)
+
+
+# ============================================================
 # Error handlers
 # ============================================================
 @app.errorhandler(404)
