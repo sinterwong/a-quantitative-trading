@@ -64,11 +64,12 @@
   - 新增表：`ipo_subscription_snapshots`（code/timestamp/margin_multiple/public_offer_multiple）
   - 可视化：时间序列趋势图（供报告嵌入）
 
-- [ ] **[P1] 暗盘价预估接入**
-  - 文件：`backend/services/ipo_stars/fetcher.py` → 实现 `fetch_dark_pool_estimate()`
-  - 数据源：富途暗盘交易数据 / 券商暗盘聚合
-  - 用途：挂单价计算参考（保守型 = 暗盘均价 - 2%）
-  - 条件：部分数据仅在 T-1 日可用
+- [x] **[P1] 暗盘价预估模型** *(2026-05-06 完成)*
+  - 文件：`backend/services/ipo_stars/scorer.py` → `estimate_dark_price_range()`
+  - 方案：基于超购倍数/基石占比/综合评分/大盘情绪/回拨比例 五因子推算暗盘价区间 [low, mid, high]
+  - 不依赖券商暗盘实时数据，纯推算模型
+  - 输出：`DarkPriceEstimate` NamedTuple（含溢价率、置信度、推算依据）
+  - 集成：挂单价计算（`compute_pricing`）自动使用暗盘预估指导三档定价
 
 ### Sprint 3：大盘环境 & 估值锚点（1 周）
 

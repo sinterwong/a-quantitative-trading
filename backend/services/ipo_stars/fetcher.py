@@ -130,17 +130,3 @@ class IPODataFetcher:
         """
         raise NotImplementedError("待接入历史 IPO 数据")
 
-    def fetch_dark_pool_estimate(self, code: str) -> Dict:
-        """
-        获取暗盘交易预测数据。
-
-        Returns:
-            {
-                'estimated_dark_price': 12.5,    # 暗盘预估价
-                'estimated_volume': 1000000,     # 暗盘预估成交量
-                'source': 'broker_aggregate',
-            }
-
-        数据源候选：券商暗盘数据聚合
-        """
-        raise NotImplementedError("待接入暗盘数据源")

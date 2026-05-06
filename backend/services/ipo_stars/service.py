@@ -122,11 +122,14 @@ class IPOStarsService:
         scoring_results = self.scorer.score(candidate, market_ctx)
         total_score = sum(r.weighted_score for r in scoring_results)
 
-        # 4. 生成推荐与定价
+        # 4. 暗盘价预估 + 推荐与定价
         recommendation = self.scorer.recommend(total_score)
         heat = self.scorer.heat_level(candidate)
         control = self.scorer.control_level(candidate)
-        pricing = self.scorer.compute_pricing(candidate, total_score)
+        dark_estimate = self.scorer.estimate_dark_price_range(
+            candidate, total_score, market_ctx,
+        )
+        pricing = self.scorer.compute_pricing(candidate, total_score, dark_estimate)
 
         # 5. 风险提示
         risk_alerts = self._generate_risk_alerts(candidate, scoring_results)
@@ -145,6 +148,7 @@ class IPOStarsService:
             control_level=control,
             scoring_breakdown=list(scoring_results),
             pricing_strategies=list(pricing),
+            dark_price_estimate=dark_estimate,
             risk_alerts=risk_alerts,
             key_factors=key_factors,
             analyzed_at=now,
@@ -305,7 +309,7 @@ class IPOStarsService:
     @staticmethod
     def _report_to_dict(report: AnalysisReport) -> Dict:
         """AnalysisReport → 可 JSON 序列化的 dict。"""
-        return {
+        d = {
             'code': report.code,
             'name': report.name,
             'final_score': report.final_score,
@@ -314,7 +318,9 @@ class IPOStarsService:
             'control_level': report.control_level,
             'scoring_breakdown': [sr._asdict() for sr in report.scoring_breakdown],
             'pricing_strategies': [ps._asdict() for ps in report.pricing_strategies],
+            'dark_price_estimate': report.dark_price_estimate._asdict() if report.dark_price_estimate else None,
             'risk_alerts': report.risk_alerts,
             'key_factors': report.key_factors,
             'analyzed_at': report.analyzed_at,
         }
+        return d

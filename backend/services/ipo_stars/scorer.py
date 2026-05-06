@@ -12,7 +12,7 @@ scorer.py — IPO Stars 四维评分引擎
 import logging
 from typing import Dict, List, Optional
 
-from .models import IPOCandidate, ScoringResult, PricingStrategy
+from .models import IPOCandidate, ScoringResult, PricingStrategy, DarkPriceEstimate
 
 logger = logging.getLogger('ipo_stars.scorer')
 
@@ -351,23 +351,272 @@ class IPOScorer:
             return '中等'
         return '低'
 
+    # ─── 暗盘价预估 ─────────────────────────────────────────────
+
+    def estimate_dark_price_range(
+        self,
+        candidate: IPOCandidate,
+        total_score: float,
+        market_ctx: Optional[Dict] = None,
+    ) -> Optional[DarkPriceEstimate]:
+        """
+        暗盘价区间预估：LLM 决策 + 结构化数据。
+
+        流程：
+            1. 收集结构化信号（超购、基石、回拨、大盘等）
+            2. 将信号组装成 prompt 提交 LLM，由 LLM 综合判断给出区间
+            3. LLM 不可用时降级为纯规则估算
+
+        Returns:
+            DarkPriceEstimate 或 None（无定价信息时）
+        """
+        ref_price = candidate.offer_price_final or candidate.offer_price_high
+        if ref_price <= 0:
+            return None
+
+        # 收集结构化信号
+        signals = self._collect_dark_signals(candidate, total_score, market_ctx)
+
+        # 尝试 LLM 决策
+        if self.llm:
+            try:
+                return self._llm_dark_estimate(candidate, ref_price, signals)
+            except Exception as e:
+                logger.warning('LLM dark price estimate failed, fallback: %s', e)
+
+        # 降级：纯规则估算
+        return self._rule_dark_estimate(ref_price, signals)
+
+    @staticmethod
+    def _collect_dark_signals(
+        candidate: IPOCandidate,
+        total_score: float,
+        market_ctx: Optional[Dict] = None,
+    ) -> Dict:
+        """将候选标的 + 评分 + 大盘环境收集为结构化信号 dict。"""
+        ctx = market_ctx or {}
+        offer_mid = (candidate.offer_price_low + candidate.offer_price_high) / 2
+        pre_ipo_premium = (
+            round(offer_mid / candidate.pre_ipo_cost, 2)
+            if candidate.pre_ipo_cost > 0 and offer_mid > 0
+            else None
+        )
+        return {
+            'code': candidate.code,
+            'name': candidate.name,
+            'industry': candidate.industry,
+            'offer_price_final': candidate.offer_price_final,
+            'offer_price_range': f'{candidate.offer_price_low}-{candidate.offer_price_high}',
+            'public_offer_multiple': candidate.public_offer_multiple,
+            'margin_multiple': candidate.margin_multiple,
+            'cornerstone_pct': candidate.cornerstone_pct,
+            'cornerstone_names': candidate.cornerstone_names,
+            'clawback_pct': candidate.clawback_pct,
+            'stabilizer': candidate.stabilizer,
+            'pre_ipo_premium': pre_ipo_premium,
+            'total_score': round(total_score, 4),
+            'hstech_bias_5d': ctx.get('hstech_bias_5d'),
+            'hsi_vix': ctx.get('hsi_vix'),
+            'sector_ipo_avg_return': (
+                round(
+                    sum(p.get('first_day_return', 0)
+                        for p in ctx.get('sector_ipo_performance', []))
+                    / len(ctx['sector_ipo_performance']), 4
+                )
+                if ctx.get('sector_ipo_performance')
+                else None
+            ),
+        }
+
+    def _llm_dark_estimate(
+        self, candidate: IPOCandidate, ref_price: float, signals: Dict,
+    ) -> DarkPriceEstimate:
+        """调用 LLM 进行暗盘价判断。"""
+        import json as _json
+
+        # 组装 prompt
+        signal_text = '\n'.join(
+            f'  - {k}: {v}' for k, v in signals.items() if v is not None
+        )
+        prompt = (
+            f"以下是港股新股 {signals['name']}({signals['code']}) 的结构化数据：\n"
+            f"{signal_text}\n\n"
+            f"IPO 定价: {ref_price} 港元\n\n"
+            f"请基于以上数据，综合判断该新股暗盘交易的可能价格区间。"
+        )
+
+        system = (
+            "你是港股打新专家，擅长根据 IPO 结构化数据预判暗盘价走势。\n"
+            "你需要综合考虑：超购倍数、孖展融资倍数、基石投资者锁仓比例、"
+            "回拨机制、稳价人、大盘情绪、行业热度、Pre-IPO 溢价等因素，"
+            "给出暗盘价的 [下限, 中位, 上限] 三点估计。\n\n"
+            "你必须严格按以下 JSON 格式输出，不要添加任何其他内容：\n"
+            "{\n"
+            '  "low": 暗盘价下限（浮点数），\n'
+            '  "mid": 暗盘价中位预估（浮点数），\n'
+            '  "high": 暗盘价上限（浮点数），\n'
+            '  "confidence": "high" | "medium" | "low"，\n'
+            '  "reasoning": ["判断依据1", "判断依据2", ...]\n'
+            "}\n\n"
+            "注意事项：\n"
+            "- low/mid/high 必须是具体价格（港元），不是百分比\n"
+            "- 必须满足 low <= mid <= high\n"
+            "- reasoning 中每条依据要具体引用数据，不要泛泛而谈\n"
+            "- 超购倍数极高(>100x)时暗盘通常大幅高开；认购冷淡(<5x)有破发风险\n"
+            "- 基石锁仓 >50% 时流通筹码少，暗盘波动区间应收窄\n"
+            "- 回拨 >=50% 意味着散户拿到大量筹码，暗盘可能承压"
+        )
+
+        messages = [
+            {'role': 'system', 'content': system},
+            {'role': 'user', 'content': prompt},
+        ]
+
+        response = self.llm.provider.chat(messages, temperature=0.2, max_tokens=512)
+        raw = response.content.strip()
+
+        # 去除可能的 markdown 代码块包装
+        if raw.startswith('```'):
+            lines = raw.split('\n')
+            raw = '\n'.join(lines[1:-1]).strip()
+
+        parsed = _json.loads(raw)
+
+        low = float(parsed['low'])
+        mid = float(parsed['mid'])
+        high = float(parsed['high'])
+        confidence = parsed.get('confidence', 'medium')
+        reasoning = parsed.get('reasoning', [])
+
+        # 安全校验
+        if not (low <= mid <= high):
+            low, mid, high = sorted([low, mid, high])
+        if confidence not in ('high', 'medium', 'low'):
+            confidence = 'medium'
+
+        premium_pct = round((mid / ref_price - 1) * 100, 2)
+
+        return DarkPriceEstimate(
+            low=round(low, 2),
+            mid=round(mid, 2),
+            high=round(high, 2),
+            premium_pct=premium_pct,
+            confidence=confidence,
+            basis=reasoning if isinstance(reasoning, list) else [str(reasoning)],
+        )
+
+    @staticmethod
+    def _rule_dark_estimate(
+        ref_price: float, signals: Dict,
+    ) -> DarkPriceEstimate:
+        """LLM 不可用时的规则降级估算。"""
+        basis = []
+
+        # 超购倍数 → 基础溢价
+        mult = signals.get('public_offer_multiple', 0)
+        if mult >= 100:
+            base_premium = 0.12
+            basis.append(f'超购 {mult:.0f}x，认购火爆')
+        elif mult >= 50:
+            base_premium = 0.08
+            basis.append(f'超购 {mult:.0f}x，热度较高')
+        elif mult >= 15:
+            base_premium = 0.04
+            basis.append(f'超购 {mult:.0f}x，认购适中')
+        elif mult >= 5:
+            base_premium = 0.0
+            basis.append(f'超购 {mult:.0f}x，认购一般')
+        else:
+            base_premium = -0.05
+            basis.append(f'超购仅 {mult:.1f}x，认购冷淡')
+
+        # 基石 → 区间宽度
+        cs_pct = signals.get('cornerstone_pct', 0)
+        spread_factor = 0.6 if cs_pct >= 0.50 else (0.8 if cs_pct >= 0.30 else 1.0)
+        if cs_pct >= 0.50:
+            basis.append(f'基石锁仓 {cs_pct*100:.0f}%，波动收窄')
+
+        # 评分
+        score = signals.get('total_score', 0.5)
+        score_adj = 0.03 if score >= 0.70 else (-0.03 if score < 0.45 else 0.0)
+
+        # 大盘
+        bias = signals.get('hstech_bias_5d') or 0.0
+        market_adj = 0.02 if bias > 0.02 else (-0.02 if bias < -0.02 else 0.0)
+
+        # 回拨
+        clawback = signals.get('clawback_pct', 0)
+        clawback_adj = -0.03 if clawback >= 0.50 else 0.0
+        if clawback >= 0.50:
+            basis.append(f'回拨 {clawback*100:.0f}%，散户筹码多')
+
+        mid_premium = base_premium + score_adj + market_adj + clawback_adj
+        base_spread = 0.06 * spread_factor
+
+        basis.append('(规则降级估算，LLM 不可用)')
+
+        info_count = sum([mult > 0, cs_pct > 0, bias != 0,
+                          bool(signals.get('stabilizer'))])
+        confidence = 'high' if info_count >= 4 else ('medium' if info_count >= 2 else 'low')
+
+        return DarkPriceEstimate(
+            low=round(ref_price * (1 + mid_premium - base_spread), 2),
+            mid=round(ref_price * (1 + mid_premium), 2),
+            high=round(ref_price * (1 + mid_premium + base_spread), 2),
+            premium_pct=round(mid_premium * 100, 2),
+            confidence=confidence,
+            basis=basis,
+        )
+
     # ─── 挂单价计算 ───────────────────────────────────────────
 
     @staticmethod
     def compute_pricing(
         candidate: IPOCandidate,
         total_score: float,
+        dark_estimate: Optional[DarkPriceEstimate] = None,
     ) -> List[PricingStrategy]:
         """
-        基于最终定价 + 综合得分生成三档挂单价 + 止损价。
+        基于最终定价 + 综合得分 + 暗盘预估生成三档挂单价 + 止损价。
 
-        若最终定价未出，使用招股价上限作参考。
+        若有暗盘预估，保守型参考暗盘下限，中性型参考暗盘中位。
+        若无暗盘预估或定价未出，回退到纯定价比例法。
         """
         ref_price = candidate.offer_price_final or candidate.offer_price_high
         if ref_price <= 0:
             return []
 
-        # 根据得分调整幅度
+        stop_loss_pct = -0.05  # 破发 -5% 止损
+        stop_loss = round(ref_price * (1 + stop_loss_pct), 2)
+
+        # 有暗盘预估时，用暗盘区间指导挂单价
+        if dark_estimate and dark_estimate.mid > 0:
+            dk = dark_estimate
+            return [
+                PricingStrategy(
+                    style='conservative',
+                    label='保守型',
+                    price=round(dk.low * 0.98, 2),
+                    reference=f'暗盘预估下限 {dk.low} 再折 2%，确保成交不追高',
+                    stop_loss=stop_loss,
+                ),
+                PricingStrategy(
+                    style='neutral',
+                    label='中性型',
+                    price=round(dk.mid, 2),
+                    reference=f'暗盘预估中位 {dk.mid}（溢价 {dk.premium_pct:+.1f}%），博取开盘脉冲',
+                    stop_loss=stop_loss,
+                ),
+                PricingStrategy(
+                    style='aggressive',
+                    label='进取型',
+                    price=round(dk.high * 1.02, 2),
+                    reference=f'暗盘预估上限 {dk.high} 上浮 2%，适合高确定性标的',
+                    stop_loss=stop_loss,
+                ),
+            ]
+
+        # 无暗盘预估时，回退到定价比例法
         if total_score >= 0.70:
             conserv_adj, neutral_adj, aggress_adj = -0.02, 0.05, 0.10
         elif total_score >= 0.45:
@@ -375,28 +624,26 @@ class IPOScorer:
         else:
             conserv_adj, neutral_adj, aggress_adj = -0.05, -0.02, 0.01
 
-        stop_loss_pct = -0.05  # 破发 -5% 止损
-
         return [
             PricingStrategy(
                 style='conservative',
                 label='保守型',
                 price=round(ref_price * (1 + conserv_adj), 2),
                 reference=f'参考定价 {ref_price} 折让 {abs(conserv_adj)*100:.0f}%，确保成交不追高',
-                stop_loss=round(ref_price * (1 + stop_loss_pct), 2),
+                stop_loss=stop_loss,
             ),
             PricingStrategy(
                 style='neutral',
                 label='中性型',
                 price=round(ref_price * (1 + neutral_adj), 2),
                 reference=f'参考定价 + {neutral_adj*100:.0f}%，博取首日开盘脉冲',
-                stop_loss=round(ref_price * (1 + stop_loss_pct), 2),
+                stop_loss=stop_loss,
             ),
             PricingStrategy(
                 style='aggressive',
                 label='进取型',
                 price=round(ref_price * (1 + aggress_adj), 2),
                 reference=f'参考定价 + {aggress_adj*100:.0f}%，适合高确定性标的',
-                stop_loss=round(ref_price * (1 + stop_loss_pct), 2),
+                stop_loss=stop_loss,
             ),
         ]

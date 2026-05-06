@@ -66,6 +66,18 @@ class IPONotifier:
             sl = report.pricing_strategies[0].stop_loss
             pricing_lines.append(f"  止损参考: ${sl:.2f}")
 
+        # 暗盘预估
+        dark_lines = []
+        if report.dark_price_estimate:
+            dk = report.dark_price_estimate
+            dark_lines.append(
+                f"  预估区间: ${dk.low:.2f} ~ ${dk.high:.2f}（中位 ${dk.mid:.2f}，"
+                f"溢价 {dk.premium_pct:+.1f}%）"
+            )
+            dark_lines.append(f"  置信度: {dk.confidence}")
+            for b in dk.basis:
+                dark_lines.append(f"    - {b}")
+
         # 风险提示
         risk_lines = [f"  - {r}" for r in report.risk_alerts] if report.risk_alerts else ['  暂无']
 
@@ -83,13 +95,16 @@ class IPONotifier:
             f"二、评分明细\n"
             + '\n'.join(breakdown_lines) + '\n'
             f"\n"
-            f"三、挂单策略（建议限价单）\n"
+            f"三、暗盘价预估\n"
+            + ('\n'.join(dark_lines) if dark_lines else '  暂无足够信息') + '\n'
+            f"\n"
+            f"四、挂单策略（建议限价单）\n"
             + '\n'.join(pricing_lines) + '\n'
             f"\n"
-            f"四、关键影响因子\n"
+            f"五、关键影响因子\n"
             + '\n'.join(factor_lines) + '\n'
             f"\n"
-            f"五、风险提示\n"
+            f"六、风险提示\n"
             + '\n'.join(risk_lines) + '\n'
             f"\n"
             f"分析时间: {report.analyzed_at}"
