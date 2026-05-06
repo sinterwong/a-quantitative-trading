@@ -157,6 +157,19 @@ alerts:
   feishu_webhook: ""     # 飞书 Webhook URL（留空则禁用）
   log_only: true
 
+# ─── 港股打新分析 (IPO Stars) ─────────────────────────────
+ipo_stars:
+  enabled: false
+  webhook_url: ""          # 飞书/钉钉 Webhook URL
+  webhook_type: feishu     # feishu | dingtalk
+  scoring_weights:
+    market_sentiment: 0.45
+    chips_structure: 0.25
+    narrative: 0.20
+    valuation: 0.10
+  cache_ttl_prospectus: 14400    # 招股书缓存 4 小时
+  cache_ttl_subscription: 1800   # 认购数据缓存 30 分钟
+
 ---
 # 环境覆盖：live 覆盖 base 的字段
 _env_overrides:

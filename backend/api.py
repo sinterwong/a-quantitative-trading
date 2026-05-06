@@ -1669,6 +1669,101 @@ def wfa_summary():
 
 
 # ============================================================
+# IPO Stars (港股打新分析)
+# ============================================================
+
+@app.route('/ipo/candidates', methods=['GET'])
+def ipo_candidates():
+    """
+    GET /ipo/candidates?status=upcoming&limit=20
+
+    列出港股 IPO 候选标的。
+    status 可选: upcoming | subscripting | allotted | listed | closed
+    """
+    try:
+        from services.ipo_stars import IPOStarsService
+        status = request.args.get('status')
+        limit = int(request.args.get('limit', 20))
+        svc_ipo = IPOStarsService()
+        candidates = svc_ipo.get_candidates(status=status, limit=limit)
+        return ok(candidates=candidates, count=len(candidates))
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@app.route('/ipo/<code>/analysis', methods=['GET'])
+def ipo_get_analysis(code):
+    """
+    GET /ipo/09696/analysis
+
+    查询已有的分析结果（不触发重新分析）。
+    """
+    try:
+        from services.ipo_stars.db import get_analysis
+        analysis = get_analysis(code)
+        if not analysis:
+            return err(f'No analysis found for {code}', 404)
+        return ok(**analysis)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@app.route('/ipo/<code>/analyze', methods=['POST'])
+@rate_limit(max_per_window=5, window_seconds=60)
+def ipo_run_analysis(code):
+    """
+    POST /ipo/09696/analyze?push=1
+
+    触发单只 IPO 深度分析。push=1 推送报告到 webhook。
+    """
+    try:
+        from services.ipo_stars import IPOStarsService
+        push = request.args.get('push', '0') == '1'
+        svc_ipo = IPOStarsService()
+        report = svc_ipo.analyze(code, push=push)
+        return ok(**report)
+    except Exception as e:
+        import traceback
+        return err(str(e) + '\n' + traceback.format_exc(), 500)
+
+
+@app.route('/ipo/subscribe', methods=['POST'])
+def ipo_subscribe():
+    """
+    POST /ipo/subscribe
+    Body: {"code": "09696", "strategy": "neutral"}
+
+    订阅打新提醒。strategy: conservative | neutral | aggressive
+    """
+    if (e := require_json()):
+        return e
+    body = request.json or {}
+    code = body.get('code', '').strip()
+    strategy = body.get('strategy', 'neutral')
+    if not code:
+        return err('code is required', 422)
+    if strategy not in ('conservative', 'neutral', 'aggressive'):
+        return err('strategy must be one of: conservative, neutral, aggressive', 422)
+
+    from services.ipo_stars import IPOStarsService
+    svc_ipo = IPOStarsService()
+    svc_ipo.subscribe(code, strategy)
+    return ok(message=f'Subscribed to {code} with {strategy} strategy')
+
+
+@app.route('/ipo/subscriptions', methods=['GET'])
+def ipo_subscriptions():
+    """GET /ipo/subscriptions — 查看已订阅列表。"""
+    try:
+        from services.ipo_stars import IPOStarsService
+        svc_ipo = IPOStarsService()
+        subs = svc_ipo.get_subscriptions()
+        return ok(subscriptions=subs, count=len(subs))
+    except Exception as e:
+        return err(str(e), 500)
+
+
+# ============================================================
 # Error handlers
 # ============================================================
 @app.errorhandler(404)
