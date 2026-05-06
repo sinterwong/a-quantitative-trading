@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(PROJ_DIR, 'backend'))
 
 from backend.services.ipo_stars.models import (
     IPOCandidate, ScoringResult, PricingStrategy, AnalysisReport,
+    DarkPriceEstimate,
 )
 from backend.services.ipo_stars.scorer import IPOScorer, DEFAULT_WEIGHTS
 from backend.services.ipo_stars import db as ipo_db
@@ -222,6 +223,101 @@ class TestScorer:
         pricing = IPOScorer.compute_pricing(no_price, 0.5)
         assert pricing == []
 
+    # ─── 暗盘价预估 ──────────────────────────────────────────
+
+    def test_dark_estimate_hot_candidate(self, scorer, sample_candidate, market_ctx):
+        """热门标的暗盘预估应为正溢价（规则降级模式）。"""
+        est = scorer.estimate_dark_price_range(sample_candidate, 0.75, market_ctx)
+        assert est is not None
+        assert est.mid > sample_candidate.offer_price_final  # 正溢价
+        assert est.low <= est.mid <= est.high                # 区间有序
+        assert est.premium_pct > 0
+        assert est.confidence in ('high', 'medium', 'low')
+        assert len(est.basis) > 0
+
+    def test_dark_estimate_cold_candidate(self, scorer, cold_candidate):
+        """冷门标的暗盘预估应为负溢价或低溢价。"""
+        est = scorer.estimate_dark_price_range(cold_candidate, 0.30)
+        assert est is not None
+        offer_high = cold_candidate.offer_price_high
+        assert est.mid <= offer_high  # 冷门不应大幅溢价
+        assert est.premium_pct <= 0
+
+    def test_dark_estimate_no_price(self, scorer):
+        """无定价时应返回 None。"""
+        no_price = IPOCandidate(
+            code='00000', name='X', status='upcoming',
+            listing_date='', offer_price_low=0, offer_price_high=0,
+            offer_price_final=0, issue_size=0, sponsor='', stabilizer='',
+            cornerstone_names='', cornerstone_pct=0,
+            public_offer_multiple=0, clawback_pct=0, margin_multiple=0,
+            industry='', pre_ipo_cost=0,
+        )
+        assert scorer.estimate_dark_price_range(no_price, 0.5) is None
+
+    def test_dark_estimate_high_lockup_narrows_range(self, scorer, sample_candidate, market_ctx):
+        """高基石锁仓应收窄暗盘预估区间（规则降级模式）。"""
+        est = scorer.estimate_dark_price_range(sample_candidate, 0.6, market_ctx)
+        spread = est.high - est.low
+        low_lock = sample_candidate._replace(cornerstone_pct=0.10, cornerstone_names='')
+        est_low = scorer.estimate_dark_price_range(low_lock, 0.6, market_ctx)
+        spread_low = est_low.high - est_low.low
+        assert spread < spread_low  # 高锁仓区间更窄
+
+    def test_dark_estimate_clawback_pressure(self, scorer, sample_candidate, market_ctx):
+        """高回拨应压低暗盘预估。"""
+        normal = scorer.estimate_dark_price_range(sample_candidate, 0.6, market_ctx)
+        high_cb = sample_candidate._replace(clawback_pct=0.50)
+        pressed = scorer.estimate_dark_price_range(high_cb, 0.6, market_ctx)
+        assert pressed.mid < normal.mid  # 高回拨 → 暗盘承压
+
+    def test_dark_estimate_with_mock_llm(self, sample_candidate, market_ctx):
+        """LLM 可用时应调用 LLM 返回结果。"""
+        mock_response = MagicMock()
+        mock_response.content = '{"low": 12.0, "mid": 12.5, "high": 13.0, "confidence": "high", "reasoning": ["超购80x热度高", "基石55%锁仓"]}'
+        mock_provider = MagicMock()
+        mock_provider.chat.return_value = mock_response
+        mock_llm = MagicMock()
+        mock_llm.provider = mock_provider
+
+        scorer = IPOScorer(llm_service=mock_llm)
+        est = scorer.estimate_dark_price_range(sample_candidate, 0.75, market_ctx)
+        assert est is not None
+        assert est.low == 12.0
+        assert est.mid == 12.5
+        assert est.high == 13.0
+        assert est.confidence == 'high'
+        assert len(est.basis) == 2
+        mock_provider.chat.assert_called_once()
+
+    def test_dark_estimate_llm_fallback(self, sample_candidate, market_ctx):
+        """LLM 调用失败时应降级为规则估算。"""
+        mock_provider = MagicMock()
+        mock_provider.chat.side_effect = RuntimeError("LLM unavailable")
+        mock_llm = MagicMock()
+        mock_llm.provider = mock_provider
+
+        scorer = IPOScorer(llm_service=mock_llm)
+        est = scorer.estimate_dark_price_range(sample_candidate, 0.75, market_ctx)
+        assert est is not None
+        assert '规则降级' in ' '.join(est.basis)
+
+    def test_pricing_with_dark_estimate(self, scorer, sample_candidate, market_ctx):
+        """有暗盘预估时，挂单价应基于暗盘区间。"""
+        est = scorer.estimate_dark_price_range(sample_candidate, 0.75, market_ctx)
+        pricing = IPOScorer.compute_pricing(sample_candidate, 0.75, dark_estimate=est)
+        assert len(pricing) == 3
+        # 保守型价格应基于暗盘下限
+        assert pricing[0].price < est.mid
+        assert '暗盘预估' in pricing[0].reference
+        assert '暗盘预估' in pricing[1].reference
+
+    def test_pricing_without_dark_estimate(self, sample_candidate):
+        """无暗盘预估时应回退到定价比例法。"""
+        pricing = IPOScorer.compute_pricing(sample_candidate, 0.75, dark_estimate=None)
+        assert len(pricing) == 3
+        assert '参考定价' in pricing[0].reference
+
     def test_sentiment_scoring_without_market_ctx(self, scorer, sample_candidate):
         results = scorer.score(sample_candidate, market_ctx=None)
         assert len(results) == 4
@@ -397,6 +493,11 @@ class TestNotifier:
                 PricingStrategy('neutral', '中性型', 12.08, 'ref', 10.93),
                 PricingStrategy('aggressive', '进取型', 12.65, 'ref', 10.93),
             ],
+            dark_price_estimate=DarkPriceEstimate(
+                low=11.80, mid=12.30, high=12.80,
+                premium_pct=7.0, confidence='high',
+                basis=['超购 80x，散户追捧', '基石锁仓 55%'],
+            ),
             risk_alerts=['回拨风险', '无稳价人'],
             key_factors=['基石占比 55%', '稳价人：摩根士丹利'],
             analyzed_at='2026-05-10T14:30:00',
@@ -412,6 +513,8 @@ class TestNotifier:
         assert '测试科技' in text
         assert '重点参与' in text
         assert '保守型' in text
+        assert '暗盘价预估' in text
+        assert '11.80' in text  # dark low price
 
     def test_render_dingtalk(self):
         from backend.services.ipo_stars.notifier import IPONotifier

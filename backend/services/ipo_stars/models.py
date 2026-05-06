@@ -50,6 +50,18 @@ class PricingStrategy(NamedTuple):
     stop_loss: float                # 止损参考价
 
 
+# ─── 暗盘价预估 ───────────────────────────────────────────────
+
+class DarkPriceEstimate(NamedTuple):
+    """暗盘价预估区间（基于已知信息推算，非实际暗盘数据）"""
+    low: float                      # 预估下限
+    mid: float                      # 预估中位
+    high: float                     # 预估上限
+    premium_pct: float              # 相对定价的溢价中位百分比
+    confidence: str                 # high | medium | low
+    basis: List                     # 推算依据说明列表
+
+
 # ─── 分析报告 ─────────────────────────────────────────────────
 
 class AnalysisReport(NamedTuple):
@@ -62,6 +74,7 @@ class AnalysisReport(NamedTuple):
     control_level: str              # 极高 | 高 | 中等 | 低
     scoring_breakdown: List         # List[ScoringResult]
     pricing_strategies: List        # List[PricingStrategy]
+    dark_price_estimate: Optional['DarkPriceEstimate']  # 暗盘价预估区间
     risk_alerts: List               # List[str]
     key_factors: List               # List[str] 关键影响因子
     analyzed_at: str                # ISO datetime
