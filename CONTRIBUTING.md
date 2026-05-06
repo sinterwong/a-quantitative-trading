@@ -1,6 +1,8 @@
-# Contributing to A-Share Quantitative Trading System
+# 贡献指南
 
-感谢贡献！
+感谢参与本项目。
+
+---
 
 ## 开发环境
 
@@ -10,67 +12,79 @@ cd a-quantitative-trading
 pip install -r requirements.txt
 ```
 
-## 运行测试
+运行测试：
 
 ```bash
-# 纯标准库，无需 pytest
 python tests/run_tests.py
-
-# 或使用 pytest
-pip install pytest
-python -m pytest tests/ -v
+# 或
+pytest tests/ -v
 ```
 
-CI 会在 Linux / Windows / macOS 上同时运行语法检查和测试。
+---
+
+## 分支规范
+
+| 分支 | 用途 |
+|------|------|
+| `master` | 稳定版本，始终可部署 |
+| `feature/xxx` | 功能开发 |
+| `fix/xxx` | Bug 修复 |
+
+**协作流程：**
+
+```
+feature/xxx 分支 → Pull Request → review → 合并到 master
+```
+
+Sir 偏好全面 review 后直接在分支上修复再测，不接受只列问题不动手的 review。
+
+---
 
 ## 代码规范
 
 - Python 标准风格（PEP 8）
-- **避免重型外部依赖** — 标准库 + flask + requests 优先
+- 优先标准库 + 轻量依赖，重型依赖需说明
 - 所有新增函数须有 docstring
-- 建议添加类型注解（不做强制要求）
+- 建议添加类型注解（不强制）
 
-## 新增策略插件
+---
 
-1. 在 `strategies/` 目录创建 `xxx_strategy.py`
-2. 继承 `BaseStrategy`（`strategies/base.py`）
-3. 实现 `evaluate(self, data, i) -> dict`：
+## 新增因子
 
-   ```python
-   {
-       'signal':   'buy' | 'sell' | 'hold' | 'watch_buy' | 'watch_sell',
-       'strength':  0.0 ~ 1.0,
-       'reason':    str,
-       'meta':      dict (可选),
-   }
-   ```
-
-4. 在 `strategies/__init__.py` 的注册表中注册（参考 `RSI` / `MACD` / `BollingerBand`）
-5. 在 `params.json` 的 `strategies` 下添加默认参数
+1. 在 `core/factors/` 创建 `xxx_factor.py`
+2. 继承 `Factor` 基类
+3. 实现 `evaluate()` 方法
+4. 在 `core/factor_registry.py` 中注册
+5. 在 `params.json` 的 `factors` 下添加默认参数
 6. 添加测试到 `tests/`
 
-示例：`strategies/rsi_strategy.py`
+---
 
-## 新增信号类型（盘中信号引擎）
+## 新增策略
 
-在 `backend/services/signals.py` 中扩展 `SIGNAL_EMOJI` / `SIGNAL_LABEL` 字典，
-并在 `evaluate_signal()` / `check_limit_status()` 中添加对应判断逻辑。
+1. 在 `core/strategies/` 创建 `xxx_strategy.py`
+2. 继承 `BaseStrategy`
+3. 实现 `evaluate(self, data, i) -> dict`
+4. 在 `core/pipeline_factory.py` 中注册（可选）
+5. 添加测试
 
-## Pull Request 流程
+---
 
-1. Fork 仓库并创建分支：`git checkout -b feature/my-feature`
-2. 运行测试：`python tests/run_tests.py` — 必须全部通过
-3. 提交并写清 commit message：`git commit -m "feat: add X"`
+## Pull Request 规范
+
+1. 从 `master` 创建分支：`git checkout -b feature/my-feature`
+2. 完成开发，运行测试确保通过
+3. 提交并写清 commit message（推荐格式：`feat:` / `fix:` / `docs:` / `refactor:`）
 4. Push 并开 PR
 
-## Issue 模板
+---
 
-报告时请包含：
-- Python 版本（`python --version`）
-- 复现步骤
-- 预期 vs 实际行为
-- 相关日志输出
+## 提交信息格式
 
-## 行为准则
+```
+<type>: <简短描述>
 
-保持尊重。这是一个教育研究项目。
+<可选详细说明>
+```
+
+类型：`feat` / `fix` / `docs` / `refactor` / `test` / `chore`
