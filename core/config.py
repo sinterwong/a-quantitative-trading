@@ -128,6 +128,26 @@ class AlertsConfig:
 
 
 @dataclass
+class IPOStarsConfig:
+    """港股打新分析模块配置。"""
+    enabled: bool = False
+    webhook_url: str = ''
+    webhook_type: str = 'feishu'                    # feishu | dingtalk
+    scoring_weights: Dict[str, float] = field(default_factory=lambda: {
+        'market_sentiment': 0.45,
+        'chips_structure': 0.25,
+        'narrative': 0.20,
+        'valuation': 0.10,
+    })
+    cache_ttl_prospectus: int = 14400               # 4 小时
+    cache_ttl_subscription: int = 1800              # 30 分钟
+    cornerstone_whitelist: List[str] = field(default_factory=lambda: [
+        'GIC', 'Temasek', '红杉', '高瓴', 'Hillhouse', 'Sequoia',
+        'BlackRock', 'Fidelity', 'Capital Group',
+    ])
+
+
+@dataclass
 class TradingConfig:
     """
     顶层配置对象。
@@ -138,6 +158,7 @@ class TradingConfig:
     runner: RunnerConfig = field(default_factory=RunnerConfig)
     data: DataConfig = field(default_factory=DataConfig)
     alerts: AlertsConfig = field(default_factory=AlertsConfig)
+    ipo_stars: IPOStarsConfig = field(default_factory=IPOStarsConfig)
     strategies: Dict[str, StrategyConfig] = field(default_factory=dict)
     live_symbols: List[LiveSymbolConfig] = field(default_factory=list)
     env: str = 'dev'
@@ -211,6 +232,7 @@ def _parse(raw: Dict[str, Any], env: str) -> TradingConfig:
     runner = _parse_runner(raw.get('runner', {}))
     data = _parse_data(raw.get('data', {}))
     alerts = _parse_alerts(raw.get('alerts', {}))
+    ipo_stars = _parse_ipo_stars(raw.get('ipo_stars', {}))
     strategies = _parse_strategies(raw.get('strategies', {}))
     live_symbols = _parse_live_symbols(raw.get('live_symbols', []))
 
@@ -220,6 +242,7 @@ def _parse(raw: Dict[str, Any], env: str) -> TradingConfig:
         runner=runner,
         data=data,
         alerts=alerts,
+        ipo_stars=ipo_stars,
         strategies=strategies,
         live_symbols=live_symbols,
         env=env,
@@ -279,6 +302,23 @@ def _parse_alerts(d: Dict) -> AlertsConfig:
         feishu_webhook=str(d.get('feishu_webhook', '')),
         log_only=bool(d.get('log_only', True)),
     )
+
+
+def _parse_ipo_stars(d: Dict) -> IPOStarsConfig:
+    weights = d.get('scoring_weights', {})
+    whitelist = d.get('cornerstone_whitelist', [])
+    cfg = IPOStarsConfig(
+        enabled=bool(d.get('enabled', False)),
+        webhook_url=str(d.get('webhook_url', '')),
+        webhook_type=str(d.get('webhook_type', 'feishu')),
+        cache_ttl_prospectus=int(d.get('cache_ttl_prospectus', 14400)),
+        cache_ttl_subscription=int(d.get('cache_ttl_subscription', 1800)),
+    )
+    if weights:
+        cfg.scoring_weights = {k: float(v) for k, v in weights.items()}
+    if whitelist:
+        cfg.cornerstone_whitelist = list(whitelist)
+    return cfg
 
 
 def _parse_strategies(d: Dict) -> Dict[str, StrategyConfig]:
