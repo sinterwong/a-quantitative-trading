@@ -43,6 +43,7 @@ data/
 
 # Skills (OpenClaw-specific)
 skills/
+outputs/
 
 # Environment variables (API keys)
 .env
