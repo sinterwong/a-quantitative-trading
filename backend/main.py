@@ -228,11 +228,18 @@ class Scheduler:
                 self.logger.info('IPO Stars webhook not configured, skipping push')
 
             from services.ipo_stars.service import IPOStarsService
-            svc = IPOStarsService(config=cfg.ipo_stars)
-            result = svc.batch_analyze(push=True)
+            c = cfg.ipo_stars
+            svc = IPOStarsService(
+                weights=c.scoring_weights,
+                webhook_url=c.webhook_url,
+                webhook_type=c.webhook_type,
+                hot_keywords=c.hot_keywords,
+            )
+            results = svc.batch_analyze(push=True)
+            ok = sum(1 for r in results if 'error' not in r)
             self.logger.info(
-                'IPO batch analysis done — analyzed=%d pushed=%d',
-                result.get('analyzed', 0), result.get('pushed', 0),
+                'IPO batch analysis done — total=%d ok=%d',
+                len(results), ok,
             )
         except Exception as e:
             self.logger.error('IPO batch analysis failed: %s', e)

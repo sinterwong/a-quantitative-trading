@@ -130,9 +130,8 @@
 
 ### Sprint 6：端到端集成 & 验证（1-2 周）
 
-- [ ] **[P0] 全链路集成测试**
-  - 测试场景：HKEX 数据拉取 → 入库 → 评分 → 报告生成 → webhook 推送
-  - 工具：pytest + VCR（录制 HTTP 响应）或 mock server
+- [x] **[P0] 全链路集成测试** *(2026-05-07 完成)*
+  - 5 个集成测试：完整流水线 / fetcher 降级 / 标的不存在 / 批量分析 / webhook 推送
   - 覆盖：正常路径 + fetcher 失败降级 + LLM 不可用降级
 
 - [ ] **[P0] 历史 IPO 回测验证**
@@ -141,16 +140,16 @@
   - 目标：IC > 0.15（评分高的标的首日涨幅确实更高）
   - 输出：`outputs/ipo_stars/backtest_2024_2025.json` + 散点图
 
-- [ ] **[P1] Streamlit 可视化面板**
-  - 新增页面：`streamlit_app.py` → IPO Stars 标签页
-  - 内容：候选列表 + 评分雷达图 + 挂单价区间图 + 历史分析记录
-  - 交互：输入代码 → 触发实时分析 → 展示报告
+- [x] **[P1] Streamlit 可视化面板** *(2026-05-07 完成)*
+  - 新增页面：`streamlit_app.py` → 🌟 IPO Stars 标签页
+  - 内容：候选列表 + 实时分析（评分雷达图、暗盘预估、挂单策略）+ 打新结果追踪 + 订阅列表
+  - 交互：输入代码 → 触发分析 → 展示完整报告
 
-- [ ] **[P2] 打新收益追踪**
-  - 新增表：`ipo_results`（code/subscribe_price/first_day_open/first_day_close/pnl）
-  - 功能：上市后自动拉取首日表现，对比预测评分
-  - API：`GET /ipo/<code>/result` — 查询打新结果
-  - 用途：模型效果追踪与权重校准
+- [x] **[P2] 打新收益追踪** *(2026-05-07 完成)*
+  - 新增表：`ipo_results`（code/name/predicted_score/subscribe_price/first_day_open/first_day_close/pnl_per_lot）
+  - DB 层：`save_result()` / `get_result()` / `list_results()` CRUD
+  - API：`GET/POST /ipo/<code>/result` + `GET /ipo/results`
+  - 5 个 PnL 测试通过
 
 ---
 

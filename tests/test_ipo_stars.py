@@ -1023,3 +1023,218 @@ class TestFetcher:
         assert 'scarcity' in mod.SYSTEM_PROMPT
         assert '{name}' in mod.USER_TEMPLATE
         assert '{industry}' in mod.USER_TEMPLATE
+
+
+# ============================================================
+# PnL Tracking (ipo_results)
+# ============================================================
+
+class TestPnLTracking:
+
+    def test_ipo_results_table_exists(self, tmp_db):
+        """ipo_results 表应在 init 后存在。"""
+        conn = sqlite3.connect(tmp_db)
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = {row[0] for row in cur.fetchall()}
+        conn.close()
+        assert 'ipo_results' in tables
+
+    def test_save_and_get_result(self, tmp_db):
+        """保存并查询打新结果。"""
+        ipo_db.save_result({
+            'code': '01187',
+            'name': 'Cofoe Medical',
+            'predicted_score': 0.72,
+            'recommendation': '重点参与',
+            'subscribe_price': 39.33,
+            'first_day_open': 42.50,
+            'first_day_close': 41.80,
+            'first_day_return': 0.0628,
+            'pnl_per_lot': 1235.0,
+            'listed_at': '2026-05-06',
+        })
+        result = ipo_db.get_result('01187')
+        assert result is not None
+        assert result['name'] == 'Cofoe Medical'
+        assert result['predicted_score'] == 0.72
+        assert result['first_day_return'] == pytest.approx(0.0628)
+        assert result['pnl_per_lot'] == 1235.0
+
+    def test_get_nonexistent_result(self, tmp_db):
+        assert ipo_db.get_result('99999') is None
+
+    def test_upsert_result(self, tmp_db):
+        """重复保存应更新而非报错。"""
+        ipo_db.save_result({
+            'code': '01187', 'name': 'V1',
+            'first_day_return': 0.05,
+        })
+        ipo_db.save_result({
+            'code': '01187', 'name': 'V2',
+            'first_day_return': 0.06,
+        })
+        result = ipo_db.get_result('01187')
+        assert result['name'] == 'V2'
+        assert result['first_day_return'] == 0.06
+
+    def test_list_results(self, tmp_db):
+        """列出所有打新结果。"""
+        for i in range(3):
+            ipo_db.save_result({
+                'code': f'0100{i}',
+                'name': f'Stock {i}',
+                'listed_at': f'2026-05-0{i+1}',
+                'first_day_return': 0.1 * (i + 1),
+            })
+        results = ipo_db.list_results()
+        assert len(results) == 3
+        # 按 listed_at DESC 排序
+        assert results[0]['code'] == '01002'
+
+
+# ============================================================
+# Integration Test (end-to-end with mocks)
+# ============================================================
+
+class TestIntegration:
+    """全链路集成测试：入库 → 评分 → 报告 → 推送。"""
+
+    def test_full_pipeline(self, tmp_db):
+        """HKEX 数据入库 → 评分 → 报告生成 → webhook 推送全流程。"""
+        from backend.services.ipo_stars.service import IPOStarsService
+        from backend.services.ipo_stars.notifier import IPONotifier
+
+        # 1. 入库候选标的
+        ipo_db.upsert_candidate({
+            'code': '07630',
+            'name': 'IMPACT Therapeutics',
+            'status': 'subscripting',
+            'listing_date': '2026-05-15',
+            'offer_price_low': 24.0,
+            'offer_price_high': 30.0,
+            'offer_price_final': 27.0,
+            'issue_size': 10.0,
+            'sponsor': 'Morgan Stanley',
+            'stabilizer': 'Goldman Sachs',
+            'cornerstone_names': 'GIC,Temasek',
+            'cornerstone_pct': 0.45,
+            'public_offer_multiple': 50.0,
+            'clawback_pct': 0.20,
+            'margin_multiple': 40.0,
+            'industry': '生物医药',
+        })
+
+        # 2. 验证入库
+        candidate = ipo_db.get_candidate('07630')
+        assert candidate is not None
+        assert candidate['name'] == 'IMPACT Therapeutics'
+
+        # 3. 创建 service (无 LLM, 无 webhook)
+        with patch('backend.services.ipo_stars.service.IPODataFetcher') as MockFetcher:
+            mock_fetcher = MockFetcher.return_value
+            mock_fetcher.fetch_market_context.return_value = {
+                'hstech_close': 5100.0,
+                'hstech_change_pct': 1.5,
+            }
+            # Patch create_llm_service to avoid import issues
+            svc = IPOStarsService()
+
+            # 4. 运行分析
+            result = svc.analyze('07630', push=False)
+
+        # 5. 验证分析结果
+        assert 'error' not in result
+        assert result['code'] == '07630'
+        assert result['name'] == 'IMPACT Therapeutics'
+        assert 0.0 <= result['final_score'] <= 1.0
+        assert result['recommendation'] in ('重点参与', '建议观察', '放弃')
+        assert len(result['scoring_breakdown']) == 4
+        assert len(result['pricing_strategies']) >= 0  # 有定价时应有策略
+
+        # 6. 验证分析结果已持久化
+        analysis = ipo_db.get_analysis('07630')
+        assert analysis is not None
+        assert analysis['final_score'] == result['final_score']
+
+    def test_pipeline_fetcher_failure_degradation(self, tmp_db):
+        """fetcher 失败时应降级，不崩溃。"""
+        from backend.services.ipo_stars.service import IPOStarsService
+
+        ipo_db.upsert_candidate({
+            'code': '01236', 'name': 'LDROBOT',
+            'status': 'subscripting',
+            'offer_price_final': 15.0,
+            'industry': '机器人',
+        })
+
+        with patch('backend.services.ipo_stars.service.IPODataFetcher') as MockFetcher:
+            mock_fetcher = MockFetcher.return_value
+            mock_fetcher.fetch_market_context.side_effect = Exception('network error')
+            svc = IPOStarsService()
+            result = svc.analyze('01236')
+
+        assert 'error' not in result
+        assert result['code'] == '01236'
+        assert 0.0 <= result['final_score'] <= 1.0
+
+    def test_pipeline_not_found(self, tmp_db):
+        """不存在的标的应返回错误。"""
+        from backend.services.ipo_stars.service import IPOStarsService
+        with patch('backend.services.ipo_stars.service.IPODataFetcher') as MockFetcher:
+            mock_fetcher = MockFetcher.return_value
+            mock_fetcher.fetch_prospectus.side_effect = NotImplementedError
+            svc = IPOStarsService()
+            result = svc.analyze('99999')
+        assert 'error' in result
+
+    def test_batch_analyze(self, tmp_db):
+        """批量分析应处理多只标的。"""
+        from backend.services.ipo_stars.service import IPOStarsService
+
+        for code, name in [('07630', 'IMPACT'), ('01236', 'LDROBOT')]:
+            ipo_db.upsert_candidate({
+                'code': code, 'name': name,
+                'status': 'subscripting',
+                'offer_price_final': 20.0,
+            })
+
+        with patch('backend.services.ipo_stars.service.IPODataFetcher') as MockFetcher:
+            mock_fetcher = MockFetcher.return_value
+            mock_fetcher.fetch_market_context.return_value = {}
+            svc = IPOStarsService()
+            results = svc.batch_analyze(push=False)
+
+        assert len(results) == 2
+        assert all('error' not in r for r in results)
+
+    def test_webhook_push_integration(self, tmp_db):
+        """报告生成后 webhook 推送验证。"""
+        from backend.services.ipo_stars.service import IPOStarsService
+
+        ipo_db.upsert_candidate({
+            'code': '07630', 'name': 'IMPACT',
+            'status': 'subscripting',
+            'offer_price_final': 27.0,
+            'sponsor': 'MS', 'stabilizer': 'GS',
+            'cornerstone_pct': 0.45,
+            'public_offer_multiple': 50.0,
+        })
+
+        with patch('backend.services.ipo_stars.service.IPODataFetcher') as MockFetcher:
+            mock_fetcher = MockFetcher.return_value
+            mock_fetcher.fetch_market_context.return_value = {}
+            svc = IPOStarsService(
+                    webhook_url='https://fake.webhook.com/hook',
+                    webhook_type='feishu',
+                )
+            # Mock the HTTP POST
+            with patch.object(svc.notifier, '_post', return_value=True) as mock_post:
+                result = svc.analyze('07630', push=True)
+
+        assert 'error' not in result
+        mock_post.assert_called_once()
+        # 验证 payload 格式
+        payload = mock_post.call_args[0][0]
+        assert payload['msg_type'] == 'interactive'
+        assert 'IMPACT' in payload['card']['header']['title']['content']

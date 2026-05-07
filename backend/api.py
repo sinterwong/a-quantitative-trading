@@ -1795,6 +1795,44 @@ def ipo_subscriptions():
         return err(str(e), 500)
 
 
+@app.route('/ipo/<code>/result', methods=['GET'])
+def ipo_result(code):
+    """GET /ipo/<code>/result — 查询打新结果。"""
+    try:
+        from services.ipo_stars import db as ipo_db
+        result = ipo_db.get_result(code)
+        if not result:
+            return err(f'No result for {code}', 404)
+        return ok(**result)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@app.route('/ipo/<code>/result', methods=['POST'])
+def ipo_record_result(code):
+    """POST /ipo/<code>/result — 记录打新结果。"""
+    try:
+        from services.ipo_stars import db as ipo_db
+        data = request.get_json(force=True) or {}
+        data['code'] = code
+        ipo_db.save_result(data)
+        return ok(message=f'Result for {code} saved')
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@app.route('/ipo/results', methods=['GET'])
+def ipo_results():
+    """GET /ipo/results — 列出所有打新结果。"""
+    try:
+        from services.ipo_stars import db as ipo_db
+        limit = request.args.get('limit', 50, type=int)
+        results = ipo_db.list_results(limit=limit)
+        return ok(results=results, count=len(results))
+    except Exception as e:
+        return err(str(e), 500)
+
+
 # ============================================================
 # Error handlers
 # ============================================================

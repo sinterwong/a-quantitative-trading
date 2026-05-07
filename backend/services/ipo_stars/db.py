@@ -80,6 +80,22 @@ def init_ipo_tables():
             )
         ''')
 
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS ipo_results (
+                code                TEXT PRIMARY KEY,
+                name                TEXT NOT NULL DEFAULT '',
+                predicted_score     REAL DEFAULT 0,
+                recommendation      TEXT DEFAULT '',
+                subscribe_price     REAL DEFAULT 0,
+                first_day_open      REAL DEFAULT 0,
+                first_day_close     REAL DEFAULT 0,
+                first_day_return    REAL DEFAULT 0,
+                pnl_per_lot         REAL DEFAULT 0,
+                listed_at           TEXT DEFAULT '',
+                recorded_at         TEXT DEFAULT ''
+            )
+        ''')
+
     logger.info('IPO tables initialized')
 
 
@@ -295,3 +311,62 @@ def remove_subscription(code: str, strategy: str = 'neutral') -> bool:
             (code, strategy),
         )
         return cur.rowcount > 0
+
+
+# ─── Results CRUD (PnL Tracking) ────────────────────────────
+
+def save_result(data: Dict[str, Any]) -> None:
+    """保存打新结果（上市后首日表现）。"""
+    now = datetime.now().isoformat()
+    with get_cursor() as cur:
+        cur.execute('''
+            INSERT INTO ipo_results
+                (code, name, predicted_score, recommendation,
+                 subscribe_price, first_day_open, first_day_close,
+                 first_day_return, pnl_per_lot, listed_at, recorded_at)
+            VALUES
+                (:code, :name, :predicted_score, :recommendation,
+                 :subscribe_price, :first_day_open, :first_day_close,
+                 :first_day_return, :pnl_per_lot, :listed_at, :recorded_at)
+            ON CONFLICT(code) DO UPDATE SET
+                name = excluded.name,
+                predicted_score = excluded.predicted_score,
+                recommendation = excluded.recommendation,
+                subscribe_price = excluded.subscribe_price,
+                first_day_open = excluded.first_day_open,
+                first_day_close = excluded.first_day_close,
+                first_day_return = excluded.first_day_return,
+                pnl_per_lot = excluded.pnl_per_lot,
+                listed_at = excluded.listed_at,
+                recorded_at = excluded.recorded_at
+        ''', {
+            'code': data['code'],
+            'name': data.get('name', ''),
+            'predicted_score': float(data.get('predicted_score', 0)),
+            'recommendation': data.get('recommendation', ''),
+            'subscribe_price': float(data.get('subscribe_price', 0)),
+            'first_day_open': float(data.get('first_day_open', 0)),
+            'first_day_close': float(data.get('first_day_close', 0)),
+            'first_day_return': float(data.get('first_day_return', 0)),
+            'pnl_per_lot': float(data.get('pnl_per_lot', 0)),
+            'listed_at': data.get('listed_at', ''),
+            'recorded_at': now,
+        })
+
+
+def get_result(code: str) -> Optional[Dict]:
+    """查询单只 IPO 打新结果。"""
+    with get_cursor() as cur:
+        cur.execute('SELECT * FROM ipo_results WHERE code = ?', (code,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def list_results(limit: int = 50) -> List[Dict]:
+    """列出所有打新结果，按上市日期倒序。"""
+    with get_cursor() as cur:
+        cur.execute(
+            'SELECT * FROM ipo_results ORDER BY listed_at DESC LIMIT ?',
+            (limit,),
+        )
+        return [dict(row) for row in cur.fetchall()]

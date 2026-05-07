@@ -315,6 +315,7 @@ page = st.sidebar.radio(
         '📈 信号 & 执行',
         '📉 回测验证',
         '🏥 监控 & 告警',
+        '🌟 IPO Stars',
     ],
     index=0,
 )
@@ -1848,3 +1849,140 @@ elif page == '🏥 监控 & 告警':
                         st.warning('发送失败（检查 Webhook URL 是否正确）')
                 except Exception as e:
                     st.error(f'发送失败: {e}')
+
+# ============================================================
+# Page 8: IPO Stars
+# ============================================================
+
+elif page == '🌟 IPO Stars':
+    st.title('🌟 IPO Stars — 港股打新分析')
+
+    # ── 候选列表 ──────────────────────────────────────────────
+    st.subheader('候选标的')
+    try:
+        resp = api_get('/ipo/candidates')
+        candidates = resp.get('candidates', [])
+        if candidates:
+            df_cand = pd.DataFrame(candidates)
+            cols_show = ['code', 'name', 'status', 'listing_date',
+                         'offer_price_final', 'issue_size', 'sponsor',
+                         'public_offer_multiple', 'cornerstone_pct']
+            cols_avail = [c for c in cols_show if c in df_cand.columns]
+            st.dataframe(df_cand[cols_avail], use_container_width=True)
+        else:
+            st.info('暂无候选标的，请先通过 API 导入数据')
+    except Exception as e:
+        st.warning(f'无法加载候选列表: {e}')
+
+    st.markdown('---')
+
+    # ── 实时分析 ──────────────────────────────────────────────
+    st.subheader('实时分析')
+    col_input, col_btn = st.columns([3, 1])
+    with col_input:
+        analyze_code = st.text_input('输入港股代码', placeholder='例如 07630')
+    with col_btn:
+        st.write('')  # spacing
+        st.write('')
+        do_analyze = st.button('触发分析', type='primary')
+
+    if do_analyze and analyze_code:
+        with st.spinner(f'正在分析 {analyze_code}...'):
+            try:
+                result = api_post(f'/ipo/{analyze_code}/analyze', {}, timeout=30)
+                data = result.get('data', result)
+                if 'error' in data:
+                    st.error(data['error'])
+                else:
+                    # 综合评估
+                    rec = data.get('recommendation', '—')
+                    score = data.get('final_score', 0)
+                    color_map = {'重点参与': '🟢', '建议观察': '🟡', '放弃': '🔴'}
+                    st.markdown(f"### {color_map.get(rec, '⚪')} {data.get('name', '')} ({analyze_code}) — **{rec}**")
+
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric('综合得分', f'{score:.2f}')
+                    c2.metric('预测热度', data.get('heat_level', '—'))
+                    c3.metric('控盘程度', data.get('control_level', '—'))
+
+                    # 评分雷达图
+                    breakdown = data.get('scoring_breakdown', [])
+                    if breakdown:
+                        dim_labels = {
+                            'market_sentiment': '市场情绪',
+                            'chips_structure': '筹码结构',
+                            'narrative': '故事力',
+                            'valuation': '估值',
+                        }
+                        labels = [dim_labels.get(s['dimension'], s['dimension']) for s in breakdown]
+                        scores = [s['score'] for s in breakdown]
+                        # Close the radar
+                        labels_closed = labels + [labels[0]]
+                        scores_closed = scores + [scores[0]]
+
+                        fig_radar = go.Figure()
+                        fig_radar.add_trace(go.Scatterpolar(
+                            r=scores_closed, theta=labels_closed,
+                            fill='toself', name='评分',
+                            line=dict(color='#636EFA'),
+                        ))
+                        fig_radar.update_layout(
+                            polar=dict(radialaxis=dict(range=[0, 1])),
+                            height=350, margin=dict(t=30, b=30),
+                            title='四维评分雷达图',
+                        )
+                        st.plotly_chart(fig_radar, use_container_width=True)
+
+                    # 挂单策略
+                    pricing = data.get('pricing_strategies', [])
+                    if pricing:
+                        st.subheader('挂单策略')
+                        df_p = pd.DataFrame(pricing)
+                        st.dataframe(df_p, use_container_width=True)
+
+                    # 暗盘预估
+                    dark = data.get('dark_price_estimate')
+                    if dark:
+                        st.subheader('暗盘价预估')
+                        dc1, dc2, dc3 = st.columns(3)
+                        dc1.metric('下限', f'${dark["low"]:.2f}')
+                        dc2.metric('中位', f'${dark["mid"]:.2f}')
+                        dc3.metric('上限', f'${dark["high"]:.2f}')
+                        st.caption(f'溢价率: {dark["premium_pct"]:+.1f}% | 置信度: {dark["confidence"]}')
+
+                    # 风险提示
+                    risks = data.get('risk_alerts', [])
+                    if risks:
+                        st.subheader('风险提示')
+                        for r in risks:
+                            st.warning(r)
+
+            except Exception as e:
+                st.error(f'分析失败: {e}')
+
+    st.markdown('---')
+
+    # ── 历史分析记录 ──────────────────────────────────────────
+    st.subheader('打新结果追踪')
+    try:
+        resp = api_get('/ipo/results')
+        results = resp.get('results', [])
+        if results:
+            df_res = pd.DataFrame(results)
+            st.dataframe(df_res, use_container_width=True)
+        else:
+            st.info('暂无打新结果记录')
+    except Exception:
+        st.info('暂无打新结果记录')
+
+    # ── 已订阅列表 ────────────────────────────────────────────
+    st.subheader('已订阅提醒')
+    try:
+        resp = api_get('/ipo/subscriptions')
+        subs = resp.get('subscriptions', [])
+        if subs:
+            st.dataframe(pd.DataFrame(subs), use_container_width=True)
+        else:
+            st.info('暂无订阅')
+    except Exception:
+        st.info('暂无订阅')
