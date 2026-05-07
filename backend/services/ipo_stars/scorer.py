@@ -51,10 +51,16 @@ class IPOScorer:
         self,
         weights: Optional[Dict[str, float]] = None,
         cornerstone_whitelist: Optional[List[str]] = None,
+        hot_keywords: Optional[List[str]] = None,
         llm_service=None,
     ):
         self.weights = weights or DEFAULT_WEIGHTS.copy()
         self.cornerstone_whitelist = cornerstone_whitelist or DEFAULT_CORNERSTONE_WHITELIST
+        self.hot_keywords = hot_keywords or [
+            '人工智能', 'AI', '具身智能', '低空经济', '机器人',
+            '芯片', '半导体', '新能源', '自动驾驶', 'SaaS',
+            '大模型', 'AGI', '量子计算', '脑机接口',
+        ]
         self.llm = llm_service
 
     # ─── 主入口 ───────────────────────────────────────────────
@@ -215,41 +221,34 @@ class IPOScorer:
         故事力 / 稀缺性评分。
 
         子因子：
-            - LLM 热点匹配度（如有 LLM 可用）
-            - 行业稀缺性（是否港股该赛道首股）
+            - 关键词热度匹配（来自配置的 hot_keywords 列表）
+            - LLM 叙事强度分析（使用 ipo_narrative prompt）
 
-        无 LLM 时降级为基于行业关键词的简单匹配。
+        无 LLM 时降级为纯关键词匹配。
         """
         details = {}
 
-        # 热门行业关键词（硬编码基线，LLM 可增强）
-        hot_keywords = [
-            '人工智能', 'AI', '具身智能', '低空经济', '机器人',
-            '芯片', '半导体', '新能源', '自动驾驶', 'SaaS',
-            '大模型', 'AGI', '量子计算', '脑机接口',
-        ]
-
+        # 1) 关键词热度匹配
         industry = candidate.industry or ''
-        keyword_matches = sum(1 for kw in hot_keywords if kw.lower() in industry.lower())
+        keyword_matches = sum(
+            1 for kw in self.hot_keywords if kw.lower() in industry.lower()
+        )
         keyword_score = min(1.0, keyword_matches / 2)
         details['keyword_matches'] = keyword_matches
         details['keyword_score'] = keyword_score
 
-        # LLM 增强（如可用）
+        # 2) LLM 叙事强度分析
         llm_score = None
         if self.llm:
             try:
-                result = self.llm.analyze_news(
-                    f"港股新股行业: {industry}, 公司名: {candidate.name}"
-                )
-                llm_score = getattr(result, 'confidence', 0.5)
-                details['llm_sentiment'] = llm_score
+                llm_score = self._llm_narrative(candidate)
+                details['llm_narrative'] = llm_score
             except Exception as e:
                 logger.warning('LLM narrative analysis failed: %s', e)
 
         # 综合
         if llm_score is not None:
-            raw_score = keyword_score * 0.4 + llm_score * 0.6
+            raw_score = keyword_score * 0.3 + llm_score * 0.7
         else:
             raw_score = keyword_score
 
@@ -262,6 +261,47 @@ class IPOScorer:
             weighted_score=round(raw_score * weight, 4),
             details=details,
         )
+
+    def _llm_narrative(self, candidate: IPOCandidate) -> float:
+        """调用 LLM 进行故事力评估，返回 0~1 综合评分。"""
+        import json as _json
+        import importlib.util
+        import os
+
+        # 直接加载 prompt 文件，避免触发 llm/__init__.py 的 provider 导入链
+        prompt_file = os.path.join(
+            os.path.dirname(__file__), '..', 'llm', 'prompts', 'ipo_narrative.py',
+        )
+        spec = importlib.util.spec_from_file_location('ipo_narrative', prompt_file)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        SYSTEM_PROMPT = mod.SYSTEM_PROMPT
+        USER_TEMPLATE = mod.USER_TEMPLATE
+
+        user_msg = USER_TEMPLATE.format(
+            name=candidate.name,
+            industry=candidate.industry or '未知',
+            highlights='',
+            cornerstone_names=candidate.cornerstone_names or '无',
+            sponsor=candidate.sponsor or '未知',
+        )
+
+        messages = [
+            {'role': 'system', 'content': SYSTEM_PROMPT},
+            {'role': 'user', 'content': user_msg},
+        ]
+
+        response = self.llm.provider.chat(messages, temperature=0.2, max_tokens=512)
+        raw = response.content.strip()
+
+        # 去除可能的 markdown 代码块包装
+        if raw.startswith('```'):
+            lines = raw.split('\n')
+            raw = '\n'.join(lines[1:-1]).strip()
+
+        parsed = _json.loads(raw)
+        overall = float(parsed.get('overall', 0.5))
+        return max(0.0, min(1.0, overall))
 
     # ─── D. 基本面 / 估值 (10%) ──────────────────────────────
 

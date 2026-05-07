@@ -33,6 +33,7 @@ class IPOStarsService:
         webhook_url: str = '',
         webhook_type: str = 'feishu',
         cornerstone_whitelist: Optional[List[str]] = None,
+        hot_keywords: Optional[List[str]] = None,
     ):
         # 初始化子组件
         self.fetcher = IPODataFetcher()
@@ -48,6 +49,7 @@ class IPOStarsService:
         self.scorer = IPOScorer(
             weights=weights,
             cornerstone_whitelist=cornerstone_whitelist,
+            hot_keywords=hot_keywords,
             llm_service=llm,
         )
         self.notifier = IPONotifier(webhook_url, webhook_type) if webhook_url else None
@@ -115,8 +117,14 @@ class IPOStarsService:
         market_ctx = {}
         try:
             market_ctx = self.fetcher.fetch_market_context()
-        except NotImplementedError:
-            logger.info('Market context fetcher not implemented, using defaults')
+        except (NotImplementedError, Exception) as e:
+            logger.info('Market context fetch failed, using defaults: %s', e)
+
+        # 2b. 补充同行业新股首日表现（来自本地 DB）
+        if candidate.industry and 'sector_ipo_performance' not in market_ctx:
+            sector_perf = ipo_db.list_sector_performance(candidate.industry)
+            if sector_perf:
+                market_ctx['sector_ipo_performance'] = sector_perf
 
         # 3. 运行评分
         scoring_results = self.scorer.score(candidate, market_ctx)
@@ -239,6 +247,7 @@ class IPOStarsService:
             margin_multiple=float(d.get('margin_multiple', 0)),
             industry=d.get('industry', ''),
             pre_ipo_cost=float(d.get('pre_ipo_cost', 0)),
+            first_day_return=float(d.get('first_day_return') or 0),
         )
 
     @staticmethod

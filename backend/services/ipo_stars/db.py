@@ -37,10 +37,20 @@ def init_ipo_tables():
                 margin_multiple     REAL DEFAULT 0,
                 industry            TEXT DEFAULT '',
                 pre_ipo_cost        REAL DEFAULT 0,
+                first_day_return    REAL DEFAULT NULL,
                 created_at          TEXT DEFAULT '',
                 updated_at          TEXT DEFAULT ''
             )
         ''')
+
+        # 兼容旧数据库：添加 first_day_return 列（如不存在）
+        try:
+            cur.execute(
+                'ALTER TABLE ipo_candidates ADD COLUMN '
+                'first_day_return REAL DEFAULT NULL'
+            )
+        except Exception:
+            pass  # 列已存在
 
         cur.execute('''
             CREATE TABLE IF NOT EXISTS ipo_analyses (
@@ -86,14 +96,16 @@ def upsert_candidate(data: Dict[str, Any]) -> None:
                  issue_size, sponsor, stabilizer,
                  cornerstone_names, cornerstone_pct,
                  public_offer_multiple, clawback_pct, margin_multiple,
-                 industry, pre_ipo_cost, created_at, updated_at)
+                 industry, pre_ipo_cost, first_day_return,
+                 created_at, updated_at)
             VALUES
                 (:code, :name, :status, :listing_date,
                  :offer_price_low, :offer_price_high, :offer_price_final,
                  :issue_size, :sponsor, :stabilizer,
                  :cornerstone_names, :cornerstone_pct,
                  :public_offer_multiple, :clawback_pct, :margin_multiple,
-                 :industry, :pre_ipo_cost, :created_at, :updated_at)
+                 :industry, :pre_ipo_cost, :first_day_return,
+                 :created_at, :updated_at)
             ON CONFLICT(code) DO UPDATE SET
                 name = excluded.name,
                 status = excluded.status,
@@ -111,6 +123,7 @@ def upsert_candidate(data: Dict[str, Any]) -> None:
                 margin_multiple = excluded.margin_multiple,
                 industry = excluded.industry,
                 pre_ipo_cost = excluded.pre_ipo_cost,
+                first_day_return = excluded.first_day_return,
                 updated_at = excluded.updated_at
         ''', {
             'code': data['code'],
@@ -130,6 +143,11 @@ def upsert_candidate(data: Dict[str, Any]) -> None:
             'margin_multiple': float(data.get('margin_multiple', 0)),
             'industry': data.get('industry', ''),
             'pre_ipo_cost': float(data.get('pre_ipo_cost', 0)),
+            'first_day_return': (
+                float(data['first_day_return'])
+                if data.get('first_day_return') is not None
+                else None
+            ),
             'created_at': now,
             'updated_at': now,
         })
@@ -161,6 +179,31 @@ def list_candidates(
                 'ORDER BY listing_date DESC LIMIT ?',
                 (limit,),
             )
+        return [dict(row) for row in cur.fetchall()]
+
+
+def list_sector_performance(
+    industry: str,
+    limit: int = 3,
+) -> List[Dict]:
+    """查询同行业已上市标的的首日表现。
+
+    Args:
+        industry: 行业关键词
+        limit: 返回最近 N 只
+
+    Returns:
+        [{'code': '01236', 'name': 'LDROBOT', 'first_day_return': 0.15}, ...]
+    """
+    if not industry:
+        return []
+    with get_cursor() as cur:
+        cur.execute(
+            'SELECT code, name, first_day_return FROM ipo_candidates '
+            'WHERE industry = ? AND status = ? AND first_day_return IS NOT NULL '
+            'ORDER BY listing_date DESC LIMIT ?',
+            (industry, 'listed', limit),
+        )
         return [dict(row) for row in cur.fetchall()]
 
 

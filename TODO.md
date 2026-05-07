@@ -89,23 +89,23 @@
 
 ### Sprint 3：行业数据 & 评分增强（1 周）
 
-- [ ] **[P1] 同行业新股首日表现统计**
-  - 逻辑：按二级行业分类，查询近 3 只同行业 IPO 的首日涨跌幅
-  - 数据：来自 `ipo_candidates` 历史数据（已上市标的）
-  - 输出：填充 `market_ctx['sector_ipo_performance']`
+- [x] **[P1] 同行业新股首日表现统计** *(2026-05-07 完成)*
+  - 新增 `db.list_sector_performance()` 按行业查询已上市标的首日表现
+  - 新增 `ipo_candidates.first_day_return` 列（含旧表兼容 ALTER TABLE）
+  - `service.analyze()` 自动从 DB 填充 `market_ctx['sector_ipo_performance']`
 
 ### Sprint 4：LLM 故事力分析（1 周）
 
-- [ ] **[P0] IPO 专用 LLM Prompt 设计**
-  - 文件：`backend/services/llm/prompts/` → 新增 `ipo_narrative` prompt
-  - 输入：行业关键词 + 公司名 + 业务亮点摘要
-  - 输出：热点匹配度（0~1）、稀缺性判断（是否港股该赛道首股）、叙事强度评估
-  - 测试：3 个 mock case（热门AI股/传统制造/赛道首股）
+- [x] **[P0] IPO 专用 LLM Prompt 设计** *(2026-05-07 完成)*
+  - 新增 `backend/services/llm/prompts/ipo_narrative.py`
+  - 三维输出：hotness / scarcity / narrative_strength / overall（0~1）
+  - `scorer._llm_narrative()` 使用专用 prompt，降级为纯关键词匹配
+  - 已注册到 `SYSTEM_PROMPTS['ipo_narrative']`
 
-- [ ] **[P1] 热点关键词库动态更新**
-  - 当前：硬编码在 `scorer.py` 的 `hot_keywords` 列表
-  - 升级：迁移到 `config/trading.yaml ipo_stars.hot_keywords` 或独立 JSON 文件
-  - 可选：通过 LLM 自动从近期财经新闻中提取热点词
+- [x] **[P1] 热点关键词库动态更新** *(2026-05-07 完成)*
+  - 迁移到 `core/config.py IPOStarsConfig.hot_keywords` 列表
+  - YAML 可配置：`config/trading.yaml ipo_stars.hot_keywords`
+  - `IPOScorer.__init__` 接受 `hot_keywords` 参数
 
 - [ ] **[P2] 稀缺性评分增强**
   - 查询 `ipo_candidates` 历史数据判断是否"港股同赛道首股"

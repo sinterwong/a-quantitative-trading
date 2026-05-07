@@ -145,6 +145,11 @@ class IPOStarsConfig:
         'GIC', 'Temasek', '红杉', '高瓴', 'Hillhouse', 'Sequoia',
         'BlackRock', 'Fidelity', 'Capital Group',
     ])
+    hot_keywords: List[str] = field(default_factory=lambda: [
+        '人工智能', 'AI', '具身智能', '低空经济', '机器人',
+        '芯片', '半导体', '新能源', '自动驾驶', 'SaaS',
+        '大模型', 'AGI', '量子计算', '脑机接口',
+    ])
 
 
 @dataclass
@@ -318,6 +323,9 @@ def _parse_ipo_stars(d: Dict) -> IPOStarsConfig:
         cfg.scoring_weights = {k: float(v) for k, v in weights.items()}
     if whitelist:
         cfg.cornerstone_whitelist = list(whitelist)
+    hot_keywords = d.get('hot_keywords', [])
+    if hot_keywords:
+        cfg.hot_keywords = list(hot_keywords)
     return cfg
 
 

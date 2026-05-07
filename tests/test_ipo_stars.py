@@ -892,3 +892,123 @@ class TestFetcher:
         assert result['pre_ipo_cost'] == 15.0
         assert result['industry'] == '机器人'
         assert result['name'] == 'LDROBOT'  # 未更新的字段保持不变
+
+    # ─── 行业首日表现统计 ────────────────────────────────────
+
+    def test_list_sector_performance(self, tmp_db):
+        """同行业已上市标的首日表现查询。"""
+        # 插入几个已上市标的
+        for i, ret in enumerate([0.15, -0.03, 0.08]):
+            ipo_db.upsert_candidate({
+                'code': f'0100{i}',
+                'name': f'AI Stock {i}',
+                'status': 'listed',
+                'industry': '人工智能',
+                'first_day_return': ret,
+            })
+        # 插入一个不同行业的
+        ipo_db.upsert_candidate({
+            'code': '02000',
+            'name': 'Mfg Stock',
+            'status': 'listed',
+            'industry': '传统制造',
+            'first_day_return': -0.10,
+        })
+
+        results = ipo_db.list_sector_performance('人工智能')
+        assert len(results) == 3
+        assert all(r['first_day_return'] is not None for r in results)
+
+        # 不同行业不应出现
+        mfg = ipo_db.list_sector_performance('传统制造')
+        assert len(mfg) == 1
+        assert mfg[0]['first_day_return'] == -0.10
+
+    def test_list_sector_performance_empty(self, tmp_db):
+        assert ipo_db.list_sector_performance('') == []
+        assert ipo_db.list_sector_performance('不存在的行业') == []
+
+    # ─── LLM Narrative Scoring ───────────────────────────────
+
+    def test_narrative_with_mock_llm(self, sample_candidate):
+        """LLM 可用时应使用 ipo_narrative prompt。"""
+        mock_response = MagicMock()
+        mock_response.content = json.dumps({
+            'hotness': 0.9,
+            'scarcity': 0.7,
+            'narrative_strength': 0.8,
+            'overall': 0.82,
+            'reasoning': ['AI赛道热门', '港股稀缺'],
+        })
+        mock_provider = MagicMock()
+        mock_provider.chat.return_value = mock_response
+        mock_llm = MagicMock()
+        mock_llm.provider = mock_provider
+
+        scorer = IPOScorer(llm_service=mock_llm)
+        results = scorer.score(sample_candidate)
+        narrative = [r for r in results if r.dimension == 'narrative'][0]
+        # LLM overall=0.82, keyword_score=0.5 (only '人工智能' matches, 'AI' not in '人工智能')
+        # combined = 0.5 * 0.3 + 0.82 * 0.7 = 0.724
+        assert narrative.score == pytest.approx(0.724, abs=0.01)
+        assert 'llm_narrative' in narrative.details
+        mock_provider.chat.assert_called_once()
+
+    def test_narrative_llm_fallback(self, sample_candidate):
+        """LLM 失败时应降级为纯关键词评分。"""
+        mock_provider = MagicMock()
+        mock_provider.chat.side_effect = RuntimeError("LLM down")
+        mock_llm = MagicMock()
+        mock_llm.provider = mock_provider
+
+        scorer = IPOScorer(llm_service=mock_llm)
+        results = scorer.score(sample_candidate)
+        narrative = [r for r in results if r.dimension == 'narrative'][0]
+        # 应该只有关键词评分，无 LLM
+        assert 'llm_narrative' not in narrative.details
+        assert narrative.score > 0  # '人工智能' 应匹配
+
+    def test_narrative_custom_hot_keywords(self, sample_candidate):
+        """自定义热点关键词应生效。"""
+        # 默认关键词包含 '人工智能'，sample industry='人工智能'
+        scorer_default = IPOScorer()
+        r1 = scorer_default.score(sample_candidate)
+        n1 = [r for r in r1 if r.dimension == 'narrative'][0]
+
+        # 自定义关键词不包含 '人工智能'
+        scorer_custom = IPOScorer(hot_keywords=['区块链', '元宇宙'])
+        r2 = scorer_custom.score(sample_candidate)
+        n2 = [r for r in r2 if r.dimension == 'narrative'][0]
+
+        assert n1.score > n2.score  # 默认匹配到 AI，自定义不匹配
+
+    def test_config_hot_keywords(self):
+        """IPOStarsConfig 应包含 hot_keywords 字段。"""
+        from core.config import IPOStarsConfig
+        cfg = IPOStarsConfig()
+        assert isinstance(cfg.hot_keywords, list)
+        assert 'AI' in cfg.hot_keywords
+
+    def test_parse_ipo_stars_hot_keywords(self):
+        """_parse_ipo_stars 应解析 hot_keywords。"""
+        from core.config import _parse_ipo_stars
+        raw = {
+            'enabled': True,
+            'hot_keywords': ['区块链', '元宇宙', 'Web3'],
+        }
+        cfg = _parse_ipo_stars(raw)
+        assert cfg.hot_keywords == ['区块链', '元宇宙', 'Web3']
+
+    def test_ipo_narrative_prompt_exists(self):
+        """ipo_narrative prompt 模块应存在且包含必要字段。"""
+        import importlib.util
+        prompt_file = os.path.join(
+            PROJ_DIR, 'backend', 'services', 'llm', 'prompts', 'ipo_narrative.py',
+        )
+        spec = importlib.util.spec_from_file_location('ipo_narrative', prompt_file)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        assert 'hotness' in mod.SYSTEM_PROMPT
+        assert 'scarcity' in mod.SYSTEM_PROMPT
+        assert '{name}' in mod.USER_TEMPLATE
+        assert '{industry}' in mod.USER_TEMPLATE
