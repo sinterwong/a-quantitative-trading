@@ -6,6 +6,7 @@ import os
 import sys
 import json
 import sqlite3
+import textwrap
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -20,6 +21,9 @@ from backend.services.ipo_stars.models import (
 )
 from backend.services.ipo_stars.scorer import IPOScorer, DEFAULT_WEIGHTS
 from backend.services.ipo_stars import db as ipo_db
+from backend.services.ipo_stars.fetcher import (
+    IPODataFetcher, _HKEXTableParser, _parse_prospectus_pdf,
+)
 
 
 # ─── Fixtures ─────────────────────────────────────────────────
@@ -572,3 +576,228 @@ class TestService:
         assert isinstance(c, IPOCandidate)
         assert c.code == '09696'
         assert c.cornerstone_pct == 0.5
+
+
+# ============================================================
+# Fetcher
+# ============================================================
+
+# ─── Mock HTML（模拟 HKEX New Listings 页面结构）────────────────
+
+MOCK_HKEX_HTML = textwrap.dedent('''\
+<html><body>
+<table class="table table-scroll">
+    <thead>
+        <tr>
+            <th>Stock Code</th>
+            <th>Stock Name</th>
+            <th>NEW LISTING ANNOUNCEMENTS</th>
+            <th>PROSPECTUSES</th>
+            <th>ALLOTMENT RESULTS</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td>7630</td>
+            <td>IMPACT Therapeutics, Inc - B</td>
+            <td><a href="https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0505/ann.pdf">Download</a></td>
+            <td><a href="https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0505/prospectus_7630.pdf">Download</a></td>
+            <td>&nbsp;</td>
+        </tr>
+        <tr>
+            <td>1236</td>
+            <td>SHENZHEN LDROBOT CO., LTD</td>
+            <td><a href="https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0430/ann.pdf">Download</a></td>
+            <td><a href="https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0430/prospectus_1236.pdf">Download</a></td>
+            <td><a href="https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0430/allotment_1236.pdf">Download</a></td>
+        </tr>
+        <tr>
+            <td>2667</td>
+            <td>Beijing Tong Ren Tang Healthcare Investment Co., Ltd.</td>
+            <td>&nbsp;</td>
+            <td>&nbsp;</td>
+            <td>&nbsp;</td>
+        </tr>
+    </tbody>
+</table>
+</body></html>
+''')
+
+
+class TestFetcher:
+
+    # ─── HKEX HTML 解析 ──────────────────────────────────────
+
+    def test_hkex_table_parser_extracts_rows(self):
+        parser = _HKEXTableParser()
+        parser.feed(MOCK_HKEX_HTML)
+        assert len(parser.rows) == 3
+
+    def test_hkex_table_parser_code_and_name(self):
+        parser = _HKEXTableParser()
+        parser.feed(MOCK_HKEX_HTML)
+        assert parser.rows[0]['code'] == '7630'
+        assert 'IMPACT' in parser.rows[0]['name']
+        assert parser.rows[1]['code'] == '1236'
+        assert 'LDROBOT' in parser.rows[1]['name']
+        assert parser.rows[2]['code'] == '2667'
+
+    def test_hkex_table_parser_pdf_links(self):
+        parser = _HKEXTableParser()
+        parser.feed(MOCK_HKEX_HTML)
+        # Row 0: has prospectus, no allotment
+        assert 'prospectus_7630.pdf' in parser.rows[0].get('prospectus_url', '')
+        assert 'allotment_url' not in parser.rows[0]
+        # Row 1: has both
+        assert 'prospectus_1236.pdf' in parser.rows[1].get('prospectus_url', '')
+        assert 'allotment_1236.pdf' in parser.rows[1].get('allotment_url', '')
+        # Row 2: no links
+        assert 'prospectus_url' not in parser.rows[2]
+
+    def test_fetch_upcoming_ipos_with_mock_html(self):
+        """fetch_upcoming_ipos 应返回正确解析的候选列表。"""
+        fetcher = IPODataFetcher()
+        with patch.object(fetcher, '_fetch_html', return_value=MOCK_HKEX_HTML):
+            results = fetcher.fetch_upcoming_ipos()
+
+        assert len(results) == 3
+        # 代码应补齐为 5 位
+        assert results[0]['code'] == '07630'
+        assert results[1]['code'] == '01236'
+        assert results[2]['code'] == '02667'
+        # 状态判断
+        assert results[0]['status'] == 'subscripting'   # 有 prospectus 无 allotment
+        assert results[1]['status'] == 'allotted'       # 有 allotment
+        assert results[2]['status'] == 'upcoming'       # 都没有
+
+    def test_fetch_upcoming_ipos_empty_page(self):
+        """空页面应返回空列表。"""
+        fetcher = IPODataFetcher()
+        empty_html = '<html><body><table><thead></thead><tbody></tbody></table></body></html>'
+        with patch.object(fetcher, '_fetch_html', return_value=empty_html):
+            results = fetcher.fetch_upcoming_ipos()
+        assert results == []
+
+    # ─── 招股书 PDF 解析 ─────────────────────────────────────
+
+    def test_fetch_prospectus_requires_url(self):
+        """无 URL 时应抛出 ValueError。"""
+        fetcher = IPODataFetcher()
+        with pytest.raises(ValueError, match='No prospectus URL'):
+            fetcher.fetch_prospectus('01236')
+
+    def test_parse_prospectus_pdf_mock(self):
+        """用最小 PDF 验证解析框架不崩溃。"""
+        import fitz
+        # 创建一个包含关键字段的最小 PDF
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 100), "Offer Price: HK$24.00 to HK$30.00")
+        page.insert_text((72, 130), "33,333,400 H Shares")
+        page.insert_text((72, 160),
+            "Dealing in the H Shares is expected to commence on "
+            "Monday, May 11, 2026")
+        pdf_bytes = doc.tobytes()
+        doc.close()
+
+        result = _parse_prospectus_pdf(pdf_bytes)
+        assert result.get('offer_price_low') == 24.0
+        assert result.get('offer_price_high') == 30.0
+        assert result.get('listing_date') == '2026-05-11'
+        assert result.get('issue_shares') == 33333400
+        # issue_size = 33333400 * 27.0 / 1e8 ≈ 9.0
+        assert result.get('issue_size') == pytest.approx(9.0, abs=0.1)
+
+    def test_parse_prospectus_pdf_stabilizer(self):
+        """验证稳价人提取。"""
+        import fitz
+        doc = fitz.open()
+        # 页面 0: 基本信息
+        p0 = doc.new_page()
+        p0.insert_text((72, 100), "Cover page")
+        # 页面 1: 稳价人
+        p1 = doc.new_page()
+        p1.insert_text((72, 100), "Stabilizing Manager\nHaitong International Securities Company Limited")
+        pdf_bytes = doc.tobytes()
+        doc.close()
+
+        result = _parse_prospectus_pdf(pdf_bytes)
+        assert 'Haitong' in result.get('stabilizer', '')
+
+    def test_parse_prospectus_pdf_cornerstone(self):
+        """验证基石投资者占比提取。"""
+        import fitz
+        doc = fitz.open()
+        p = doc.new_page()
+        p.insert_text((72, 100),
+            "Cornerstone Investor agreements\n"
+            "representing approximately 34.62% of the total Offer Shares")
+        pdf_bytes = doc.tobytes()
+        doc.close()
+
+        result = _parse_prospectus_pdf(pdf_bytes)
+        assert result.get('cornerstone_pct') == pytest.approx(0.3462, abs=0.001)
+
+    def test_parse_prospectus_pdf_empty(self):
+        """空 PDF 不应崩溃。"""
+        import fitz
+        doc = fitz.open()
+        doc.new_page()
+        pdf_bytes = doc.tobytes()
+        doc.close()
+
+        result = _parse_prospectus_pdf(pdf_bytes)
+        assert isinstance(result, dict)
+        assert 'offer_price_low' not in result
+
+    # ─── 市场环境 ────────────────────────────────────────────
+
+    def test_fetch_market_context_mock(self):
+        """mock 新浪接口响应，验证解析逻辑。"""
+        mock_response = (
+            'var hq_str_rt_hkHSTECH="HSTECH,恒生科技指数,'
+            '5089.110,4969.200,5105.720,5070.300,5094.100,'
+            '124.900,2.510,0.000,0.000,13993596.949,228450580,'
+            '0.000,0.000,6715.460,4619.670,2026/05/07,09:39:26,,,,,,";'
+        )
+        fetcher = IPODataFetcher()
+        with patch('urllib.request.urlopen') as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = mock_response.encode('gbk')
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+
+            ctx = fetcher.fetch_market_context()
+
+        assert ctx['hstech_close'] == pytest.approx(5089.11)
+        assert ctx['hstech_prev_close'] == pytest.approx(4969.20)
+        assert ctx['hstech_change_pct'] == pytest.approx(2.51)
+        assert ctx['hstech_bias_5d'] is None  # 暂未实现
+        assert ctx['hsi_vix'] is None
+
+    def test_fetch_market_context_bad_response(self):
+        """异常响应应返回空 dict。"""
+        fetcher = IPODataFetcher()
+        with patch('urllib.request.urlopen') as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = b'invalid data'
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+
+            ctx = fetcher.fetch_market_context()
+
+        assert ctx == {}
+
+    # ─── 未实现接口 ──────────────────────────────────────────
+
+    def test_subscription_data_not_implemented(self):
+        fetcher = IPODataFetcher()
+        with pytest.raises(NotImplementedError, match='富途'):
+            fetcher.fetch_subscription_data('01236')
+
+    def test_stabilizer_history_not_implemented(self):
+        fetcher = IPODataFetcher()
+        with pytest.raises(NotImplementedError):
+            fetcher.fetch_stabilizer_history('test')

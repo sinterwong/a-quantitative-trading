@@ -1,7 +1,7 @@
 # TODO — A 股量化交易系统开发路线图
 
-> 更新日期：2026-05-06  
-> 下一目标：IPO Stars 数据源接入
+> 更新日期：2026-05-07  
+> 下一目标：IPO Stars Sprint 1 数据源实现
 
 ---
 
@@ -12,7 +12,7 @@
 | IPO Stars 数据模型 | `backend/services/ipo_stars/models.py` | IPOCandidate / ScoringResult / PricingStrategy / AnalysisReport 四个 NamedTuple |
 | IPO Stars 评分引擎 | `backend/services/ipo_stars/scorer.py` | 四维评分（情绪45%/筹码25%/故事力20%/估值10%）+ 三档挂单价 + 推荐等级 |
 | IPO Stars 数据库 | `backend/services/ipo_stars/db.py` | 3 张表（candidates/analyses/subscriptions）+ 完整 CRUD |
-| IPO Stars 数据获取层 | `backend/services/ipo_stars/fetcher.py` | 6 个数据获取接口（抽象层，待接入具体数据源） |
+| IPO Stars 数据获取层 | `backend/services/ipo_stars/fetcher.py` | 5 个数据获取接口（抽象层，待接入具体数据源） |
 | IPO Stars 推送通知 | `backend/services/ipo_stars/notifier.py` | 飞书卡片 + 钉钉 Markdown 双格式 webhook 推送 |
 | IPO Stars 主服务 | `backend/services/ipo_stars/service.py` | 编排获取→评分→报告→推送全流程 |
 | IPO Stars API | `backend/api.py` | 5 个 `/ipo/*` 端点（candidates/analysis/analyze/subscribe/subscriptions） |
@@ -27,67 +27,72 @@
 > **核心原则**：数据源逐个接入验证，每个 Sprint 交付可测试的增量功能  
 > **依赖**：Phase 6-A 港股 Futu 接入完成后可加速
 
-### Sprint 1：HKEX 数据源接入（1-2 周）
+### Sprint 1：HKEX 数据源接入 + 大盘环境（1-2 周）
+
+> **数据源调研结论（2026-05-06）**：
+> - AkShare 对港股 IPO 数据**零覆盖**，`hk_ipo_em()` 不存在，东方财富接口 `RemoteDisconnected`
+> - HKEX 官网 IPO 日历 ✅ HTTP 200 可直接解析，招股书 PDF ✅ 可下载 + PyMuPDF 解析
+> - 新浪恒生科技指数 `hq.sinajs.cn` ✅ HTTP 200，从 Sprint 3 前置到此处
 
 - [ ] **[P0] HKEX IPO 日历爬取**
   - 文件：`backend/services/ipo_stars/fetcher.py` → 实现 `fetch_upcoming_ipos()`
-  - 数据源：HKEX 官网 IPO 日历页面（HTML 解析 / AKShare `hk_ipo_em()`）
+  - 数据源：`https://www2.hkexnews.hk/New-Listings/New-Listing-Information/Main-Board?sc_lang=en`
+  - 解析：`HTMLParser` 提取股票代码/名称/PDF 下载链接
   - 输出：自动入库 `ipo_candidates` 表，包含代码/名称/招股日期/状态
   - 调度：每日 09:00 自动拉取（接入 `backend/main.py Scheduler`）
   - 测试：mock HTML 响应 + 解析验证
 
 - [ ] **[P0] 招股书关键数据提取**
   - 文件：`backend/services/ipo_stars/fetcher.py` → 实现 `fetch_prospectus()`
-  - 数据：发行规模、招股价区间、保荐人、稳价人、基石名单
-  - 数据源候选：HKEX 招股书 PDF 结构化解析 / 东方财富港股新股页
+  - 数据：发行规模、招股价区间、保荐人、稳价人、基石名单、上市日期
+  - 数据源：HKEX 招股书 PDF（`urllib` 下载 + `PyMuPDF` 结构化解析）
   - 输出：填充 `IPOCandidate` 全部字段（sponsor/stabilizer/cornerstone_names/cornerstone_pct）
+  - 已验证字段：发行价(P2)/保荐人(P1)/稳价人(P34)/基石(P214-218)/上市日期(P6)
 
-- [ ] **[P1] 稳价人历史战绩数据库**
-  - 文件：`backend/services/ipo_stars/fetcher.py` → 实现 `fetch_stabilizer_history()`
-  - 方案：爬取近 2 年 HKEX 已上市 IPO 数据，按稳价人聚合首日涨跌
-  - 新增表：`ipo_stabilizer_records`（稳价人/代码/上市日期/首日涨跌幅/是否护盘）
-  - 输出：胜率/历史项目列表/护盘风格判断
-  - 测试：数据完整性校验 + 聚合逻辑单测
+- [ ] **[P0] 恒生科技指数 Bias 接入**（从 Sprint 3 前置）
+  - 文件：`backend/services/ipo_stars/fetcher.py` → 实现 `fetch_market_context()`
+  - 数据源：新浪 `hq.sinajs.cn/list=rt_hkHSTECH`（已验证 ✅ HTTP 200）
+  - 输出：`market_ctx` dict（`hstech_close` / `hstech_bias_5d`）供评分引擎使用
+  - 注意：HSI VIX 数据源待定，暂不接入
 
-### Sprint 2：实时认购数据接入（1-2 周）
+- [ ] **[P1] 稳价人：当只提取 + 手动录入**
+  - 从招股书 PDF 自动提取当只 IPO 的稳价人名称（`fetch_prospectus()` 已覆盖）
+  - 新增 API：`POST /ipo/<code>/update` — 手动补充稳价人历史数据
+  - ⚠️ 批量历史回填降级到 Backlog（NLR Excel 无稳价人列，K 线数据源不稳定）
 
-- [ ] **[P0] 券商孖展倍数实时采集**
-  - 文件：`backend/services/ipo_stars/fetcher.py` → 实现 `fetch_subscription_data()`
-  - 数据源：富途牛牛 / 耀才 / 辉立 公开页面或 API
-  - 采集：各券商融资倍数、综合超购倍数、回拨比例
-  - 缓存 TTL：30 分钟（`config/trading.yaml ipo_stars.cache_ttl_subscription`）
-  - 输出：更新 `ipo_candidates` 表的 `margin_multiple` / `public_offer_multiple` / `clawback_pct`
+### Sprint 2：认购数据 & 估值锚点（1-2 周）
 
-- [ ] **[P1] 认购热度加速度计算**
-  - 文件：`backend/services/ipo_stars/scorer.py` → 增强 `_score_sentiment()`
-  - 逻辑：记录孖展倍数时间序列，计算招股期内增速（加速 → 加分）
-  - 新增表：`ipo_subscription_snapshots`（code/timestamp/margin_multiple/public_offer_multiple）
-  - 可视化：时间序列趋势图（供报告嵌入）
+> **数据源调研结论（2026-05-06）**：
+> - 券商公开孖展数据**全部不可用**（DNS/超时/404），根因：地域限制（香港 IP 才能访问）
+> - 替代方案：上市后 HKEX 分配结果 PDF（可拿到实际超购/分配数据）
+
+- [ ] **[P0] 分配结果 PDF 解析**（替代原券商孖展采集）
+  - 数据源：HKEXnews `ALLOTMENT RESULTS` PDF（同一域名，已验证可下载）
+  - 数据：实际超购倍数、公开发售/国际发售分配比例、最终定价
+  - 用途：回填历史数据做回测 + 校准评分模型
+  - 输出：更新 `ipo_candidates` 的 `public_offer_multiple` / `clawback_pct` / `offer_price_final`
+
+- [ ] **[P1] 富途 Open API 接入**（异步推进）
+  - 申请富途开发者账号，接入 IPO 认购数据 API
+  - 数据：各券商融资倍数、综合超购倍数、实时暗盘
+  - 不阻塞主线开发
 
 - [x] **[P1] 暗盘价预估模型** *(2026-05-06 完成)*
   - 文件：`backend/services/ipo_stars/scorer.py` → `estimate_dark_price_range()`
-  - 方案：基于超购倍数/基石占比/综合评分/大盘情绪/回拨比例 五因子推算暗盘价区间 [low, mid, high]
-  - 不依赖券商暗盘实时数据，纯推算模型
+  - 方案：LLM 决策 + 结构化数据信号，降级为规则估算
   - 输出：`DarkPriceEstimate` NamedTuple（含溢价率、置信度、推算依据）
   - 集成：挂单价计算（`compute_pricing`）自动使用暗盘预估指导三档定价
-
-### Sprint 3：大盘环境 & 估值锚点（1 周）
-
-- [ ] **[P0] 恒生科技 Bias + VIX 接入**
-  - 文件：`backend/services/ipo_stars/fetcher.py` → 实现 `fetch_market_context()`
-  - 数据：HSTECH 近 5 日收盘价 → 计算乖离率；HSI VIX
-  - 数据源：AKShare `index_zh_a_hist()` 或 Tencent Finance
-  - 输出：`market_ctx` dict 供评分引擎使用
-
-- [ ] **[P1] 同行业新股首日表现统计**
-  - 逻辑：按二级行业分类，查询近 3 只同行业 IPO 的首日涨跌幅
-  - 数据：来自 `ipo_stabilizer_records` 表（Sprint 1 已建）
-  - 输出：填充 `market_ctx['sector_ipo_performance']`
 
 - [ ] **[P1] Pre-IPO 溢价率自动计算**
   - 增强 `fetch_prospectus()` 返回 `pre_ipo_cost` 字段
   - 数据源：招股书"历史融资"章节解析（或手动录入后端接口）
-  - 新增 API：`POST /ipo/<code>/update` — 手动补充 Pre-IPO 成本等字段
+
+### Sprint 3：行业数据 & 评分增强（1 周）
+
+- [ ] **[P1] 同行业新股首日表现统计**
+  - 逻辑：按二级行业分类，查询近 3 只同行业 IPO 的首日涨跌幅
+  - 数据：来自 `ipo_candidates` 历史数据（已上市标的）
+  - 输出：填充 `market_ctx['sector_ipo_performance']`
 
 ### Sprint 4：LLM 故事力分析（1 周）
 
@@ -152,6 +157,17 @@
 ---
 
 ## Backlog（无固定时间表）
+
+### IPO Stars 延后项
+
+- [ ] **稳价人历史战绩批量回填**
+  - 原 Sprint 1 P1，降级原因：NLR Excel 无稳价人列，需逐个下载招股书提取，K 线数据源不稳定
+  - 方案：待富途 API 接入后批量获取历史首日涨跌幅
+
+- [ ] **认购热度加速度计算**
+  - 原 Sprint 2 P1，降级原因：孖展时间序列依赖实时券商数据，数据源全部不可用
+  - 前提：富途 Open API 或其他实时数据源可用后再实现
+
 ### 策略研究
 
 - [ ] **强化学习策略框架**
