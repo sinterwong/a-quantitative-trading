@@ -7,11 +7,19 @@ notifier.py — IPO Stars 报告推送
 """
 
 import json
-import ssl
 import logging
-import urllib.request
 import os
+import ssl
+import urllib.error
+import urllib.request
+from pathlib import Path
 from typing import Optional
+
+# 强制从项目根目录 reload .env（避免 Python 进程缓存旧的 shell 环境变量）
+_dotenv_path = Path(__file__).resolve().parents[3] / ".env"
+if _dotenv_path.exists():
+    from dotenv import load_dotenv
+    load_dotenv(_dotenv_path, override=True)
 
 from .models import AnalysisReport, PricingStrategy
 
@@ -23,7 +31,7 @@ _SSL_CTX.verify_mode = ssl.CERT_NONE
 
 _FEISHU_BOT_API = "https://open.feishu.cn/open-apis"
 _FEISHU_BOT_OPEN_ID = os.getenv(
-    # Sinter 在小秘(bot B)下的 open_id（来自 /second-bot/logs 的 sender 字段）
+    # Bot B 下的用户 open_id（来自 second-bot/gateway.log sender 字段）
     "IPO_STARS_FEISHU_OPEN_ID", "ou_8064645777b8d84fbbd7cd54d0d5e3d2"
 )
 

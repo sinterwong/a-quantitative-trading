@@ -52,7 +52,7 @@ class IPOStarsService:
             hot_keywords=hot_keywords,
             llm_service=llm,
         )
-        self.notifier = IPONotifier(webhook_url, webhook_type) if webhook_url else None
+        self.notifier = IPONotifier(webhook_url, webhook_type)  # Bot API 模式不依赖 webhook_url，credentials 来自 env
 
         # 确保表存在
         ipo_db.init_ipo_tables()
