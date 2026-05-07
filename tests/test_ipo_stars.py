@@ -537,10 +537,18 @@ class TestNotifier:
         notifier = IPONotifier('https://fake.hook', 'dingtalk')
         report = self._make_report()
         payload = notifier._render_dingtalk(report)
-        assert payload['msgtype'] == 'markdown'
-        text = payload['markdown']['text']
-        assert '测试科技' in text
+        # ActionCard 格式
+        assert payload['msgtype'] == 'actionCard'
+        card = payload['actionCard']
+        assert '测试科技' in card['title']
+        text = card['text']
         assert '重点参与' in text
+        assert '保守型' in text
+        assert '暗盘价预估' in text
+        assert '风险提示' in text
+        # 按钮
+        assert len(card['btns']) >= 1
+        assert '查看详情' in card['btns'][0]['title']
 
     def test_send_report_no_url(self):
         from backend.services.ipo_stars.notifier import IPONotifier
@@ -959,10 +967,11 @@ class TestFetcher:
         scorer = IPOScorer(llm_service=mock_llm)
         results = scorer.score(sample_candidate)
         narrative = [r for r in results if r.dimension == 'narrative'][0]
-        # LLM overall=0.82, keyword_score=0.5 (only '人工智能' matches, 'AI' not in '人工智能')
-        # combined = 0.5 * 0.3 + 0.82 * 0.7 = 0.724
-        assert narrative.score == pytest.approx(0.724, abs=0.01)
+        # LLM overall=0.82, keyword_score=0.5, scarcity_bonus=0.0 (no DB)
+        # combined = 0.5 * 0.25 + 0.82 * 0.6 + 0.0 * 0.15 = 0.617
+        assert narrative.score == pytest.approx(0.617, abs=0.01)
         assert 'llm_narrative' in narrative.details
+        assert 'scarcity_bonus' in narrative.details
         mock_provider.chat.assert_called_once()
 
     def test_narrative_llm_fallback(self, sample_candidate):
@@ -992,6 +1001,26 @@ class TestFetcher:
         n2 = [r for r in r2 if r.dimension == 'narrative'][0]
 
         assert n1.score > n2.score  # 默认匹配到 AI，自定义不匹配
+
+    def test_scarcity_bonus_first_in_sector(self, tmp_db, sample_candidate):
+        """行业首股应获得稀缺性加分。"""
+        from backend.services.ipo_stars.scorer import IPOScorer
+        # DB 中无同行业标的 → scarcity_bonus = 1.0
+        bonus = IPOScorer._compute_scarcity_bonus('人工智能')
+        assert bonus == 1.0
+
+    def test_scarcity_bonus_crowded_sector(self, tmp_db, sample_candidate):
+        """行业已有多只新股时无加分。"""
+        from backend.services.ipo_stars.scorer import IPOScorer
+        # 插入 3 只同行业已上市标的
+        for i in range(3):
+            ipo_db.upsert_candidate({
+                'code': f'0200{i}', 'name': f'AI {i}',
+                'status': 'listed', 'industry': '人工智能',
+                'first_day_return': 0.1,
+            })
+        bonus = IPOScorer._compute_scarcity_bonus('人工智能')
+        assert bonus == 0.0
 
     def test_config_hot_keywords(self):
         """IPOStarsConfig 应包含 hot_keywords 字段。"""
@@ -1096,6 +1125,58 @@ class TestPnLTracking:
 # ============================================================
 # Integration Test (end-to-end with mocks)
 # ============================================================
+
+# ============================================================
+# Backtest
+# ============================================================
+
+class TestBacktest:
+
+    def test_run_backtest_default_data(self):
+        """用内置样本数据运行回测应返回结果。"""
+        from backend.services.ipo_stars.backtest import run_backtest
+        result = run_backtest()
+        assert result['n_samples'] >= 5
+        assert -1.0 <= result['spearman_ic'] <= 1.0
+        assert 0.0 <= result['hit_rate'] <= 1.0
+        assert len(result['records']) == result['n_samples']
+        # 每条记录有必要字段
+        for r in result['records']:
+            assert 'predicted_score' in r
+            assert 'actual_return' in r
+            assert 'correct_direction' in r
+
+    def test_backtest_scoring_direction(self):
+        """热门标的评分应高于冷门标的。"""
+        from backend.services.ipo_stars.backtest import run_backtest, HISTORICAL_IPOS
+        result = run_backtest()
+        records = result['records']
+        # MIXUE (超购5269x) 评分应高于 TCTM (超购1.2x)
+        mixue = next(r for r in records if r['code'] == '02160')
+        tctm = next(r for r in records if r['code'] == '01070')
+        assert mixue['predicted_score'] > tctm['predicted_score']
+
+    def test_backtest_save_output(self, tmp_path):
+        """回测结果应能保存到 JSON 文件。"""
+        from backend.services.ipo_stars.backtest import run_backtest
+        output = str(tmp_path / 'backtest.json')
+        result = run_backtest(output_path=output)
+        assert os.path.exists(output)
+        with open(output, 'r') as f:
+            loaded = json.load(f)
+        assert loaded['n_samples'] == result['n_samples']
+        assert loaded['spearman_ic'] == result['spearman_ic']
+
+    def test_spearman_ic(self):
+        """验证 Spearman IC 计算。"""
+        from backend.services.ipo_stars.backtest import _spearman_ic
+        # 完美正相关
+        assert _spearman_ic([1, 2, 3, 4, 5], [1, 2, 3, 4, 5]) == pytest.approx(1.0)
+        # 完美负相关
+        assert _spearman_ic([1, 2, 3, 4, 5], [5, 4, 3, 2, 1]) == pytest.approx(-1.0)
+        # 不足 3 个样本
+        assert _spearman_ic([1, 2], [2, 1]) == 0.0
+
 
 class TestIntegration:
     """全链路集成测试：入库 → 评分 → 报告 → 推送。"""

@@ -157,36 +157,76 @@ class IPONotifier:
     # ─── 钉钉 Markdown ───────────────────────────────────────
 
     def _render_dingtalk(self, report: AnalysisReport) -> dict:
-        """按钉钉 Markdown 格式渲染。"""
+        """按钉钉 ActionCard 格式渲染。"""
+        emoji_map = {'重点参与': '🟢', '建议观察': '🟡', '放弃': '🔴'}
+        emoji = emoji_map.get(report.recommendation, '⚪')
+
         lines = [
-            f"# IPO Stars: {report.name} ({report.code})",
+            f"## {emoji} {report.name} ({report.code})",
             f"",
-            f"## 综合评估：**{report.recommendation}**",
+            f"### 综合评估：**{report.recommendation}**",
             f"- 综合得分: **{report.final_score:.2f}**",
             f"- 预测热度: {report.heat_level}",
             f"- 控盘程度: {report.control_level}",
             f"",
-            f"## 挂单策略",
         ]
 
-        for ps in report.pricing_strategies:
-            lines.append(f"- **{ps.label}**: ${ps.price:.2f} ({ps.reference})")
+        # 评分明细
+        if report.scoring_breakdown:
+            lines.append("### 评分明细")
+            for sr in report.scoring_breakdown:
+                dim_label = {
+                    'market_sentiment': '市场情绪',
+                    'chips_structure': '筹码结构',
+                    'narrative': '主题/稀缺性',
+                    'valuation': '基本面/估值',
+                }.get(sr.dimension, sr.dimension)
+                bar = self._score_bar(sr.score, 8)
+                lines.append(
+                    f"- {dim_label}({sr.weight*100:.0f}%): "
+                    f"{bar} {sr.score:.2f}"
+                )
+            lines.append("")
 
+        # 暗盘价预估
+        if report.dark_price_estimate:
+            dk = report.dark_price_estimate
+            lines.append("### 暗盘价预估")
+            lines.append(
+                f"- 区间: **${dk.low:.2f}** ~ **${dk.high:.2f}**"
+                f"（中位 ${dk.mid:.2f}，溢价 {dk.premium_pct:+.1f}%）"
+            )
+            lines.append(f"- 置信度: {dk.confidence}")
+            lines.append("")
+
+        # 挂单策略
         if report.pricing_strategies:
+            lines.append("### 挂单策略")
+            for ps in report.pricing_strategies:
+                lines.append(f"- **{ps.label}**: ${ps.price:.2f} ({ps.reference})")
             lines.append(f"- 止损: ${report.pricing_strategies[0].stop_loss:.2f}")
+            lines.append("")
 
-        lines.append("")
-        lines.append("## 风险提示")
-        for r in report.risk_alerts:
-            lines.append(f"- {r}")
+        # 风险提示
+        if report.risk_alerts:
+            lines.append("### 风险提示")
+            for r in report.risk_alerts:
+                lines.append(f"- {r}")
 
         lines.append(f"\n> 分析时间: {report.analyzed_at}")
 
         return {
-            "msgtype": "markdown",
-            "markdown": {
-                "title": f"IPO Stars: {report.name}",
+            "msgtype": "actionCard",
+            "actionCard": {
+                "title": f"IPO Stars: {report.name} ({report.code})",
                 "text": '\n'.join(lines),
+                "btnOrientation": "1",
+                "btns": [
+                    {
+                        "title": "查看详情",
+                        "actionURL": f"https://www1.hkexnews.hk/search/titlesearch.xhtml?search={report.code}",
+                    },
+                ],
             },
         }
 

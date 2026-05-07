@@ -223,6 +223,7 @@ class IPOScorer:
         子因子：
             - 关键词热度匹配（来自配置的 hot_keywords 列表）
             - LLM 叙事强度分析（使用 ipo_narrative prompt）
+            - 稀缺性加分（同行业港股新股数量越少越稀缺）
 
         无 LLM 时降级为纯关键词匹配。
         """
@@ -246,12 +247,19 @@ class IPOScorer:
             except Exception as e:
                 logger.warning('LLM narrative analysis failed: %s', e)
 
+        # 3) 稀缺性加分：查询同行业历史 IPO 数量
+        scarcity_bonus = 0.0
+        if industry:
+            scarcity_bonus = self._compute_scarcity_bonus(industry)
+        details['scarcity_bonus'] = scarcity_bonus
+
         # 综合
         if llm_score is not None:
-            raw_score = keyword_score * 0.3 + llm_score * 0.7
+            raw_score = keyword_score * 0.25 + llm_score * 0.6 + scarcity_bonus * 0.15
         else:
-            raw_score = keyword_score
+            raw_score = keyword_score * 0.85 + scarcity_bonus * 0.15
 
+        raw_score = min(1.0, raw_score)
         weight = self.weights['narrative']
 
         return ScoringResult(
@@ -261,6 +269,28 @@ class IPOScorer:
             weighted_score=round(raw_score * weight, 4),
             details=details,
         )
+
+    @staticmethod
+    def _compute_scarcity_bonus(industry: str) -> float:
+        """计算行业稀缺性加分。
+
+        同赛道港股 IPO 越少，稀缺性越高：
+          - 0 只（首股）→ 1.0
+          - 1~2 只 → 0.5
+          - 3+ 只 → 0.0
+        """
+        try:
+            from . import db as ipo_db
+            peers = ipo_db.list_sector_performance(industry, limit=10)
+            count = len(peers)
+        except Exception:
+            return 0.0
+
+        if count == 0:
+            return 1.0
+        elif count <= 2:
+            return 0.5
+        return 0.0
 
     def _llm_narrative(self, candidate: IPOCandidate) -> float:
         """调用 LLM 进行故事力评估，返回 0~1 综合评分。"""

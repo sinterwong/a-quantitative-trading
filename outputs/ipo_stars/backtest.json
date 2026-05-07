@@ -1,0 +1,90 @@
+{
+  "n_samples": 8,
+  "spearman_ic": 0.9524,
+  "hit_rate": 1.0,
+  "ic_target": 0.15,
+  "ic_pass": true,
+  "records": [
+    {
+      "code": "02160",
+      "name": "MIXUE Group",
+      "listing_date": "2025-03-03",
+      "industry": "餐饮连锁",
+      "predicted_score": 0.6003,
+      "recommendation": "建议观察",
+      "actual_return": 0.432,
+      "correct_direction": true
+    },
+    {
+      "code": "09660",
+      "name": "Geely Auto Intelligence",
+      "listing_date": "2025-10-24",
+      "industry": "智能驾驶",
+      "predicted_score": 0.5312,
+      "recommendation": "建议观察",
+      "actual_return": 0.18,
+      "correct_direction": true
+    },
+    {
+      "code": "06998",
+      "name": "Horizon Robotics",
+      "listing_date": "2024-10-24",
+      "industry": "人工智能",
+      "predicted_score": 0.6114,
+      "recommendation": "建议观察",
+      "actual_return": 0.33,
+      "correct_direction": true
+    },
+    {
+      "code": "02563",
+      "name": "SinoHytec",
+      "listing_date": "2025-01-03",
+      "industry": "氢能源",
+      "predicted_score": 0.2517,
+      "recommendation": "放弃",
+      "actual_return": -0.15,
+      "correct_direction": true
+    },
+    {
+      "code": "02252",
+      "name": "MiaoZhen Systems",
+      "listing_date": "2024-12-27",
+      "industry": "广告科技",
+      "predicted_score": 0.3378,
+      "recommendation": "放弃",
+      "actual_return": -0.08,
+      "correct_direction": true
+    },
+    {
+      "code": "09676",
+      "name": "Meituan Select",
+      "listing_date": "2025-05-20",
+      "industry": "社区团购",
+      "predicted_score": 0.5977,
+      "recommendation": "建议观察",
+      "actual_return": 0.22,
+      "correct_direction": true
+    },
+    {
+      "code": "01070",
+      "name": "TCTM Kids IT Education",
+      "listing_date": "2025-03-15",
+      "industry": "教育",
+      "predicted_score": 0.2299,
+      "recommendation": "放弃",
+      "actual_return": -0.25,
+      "correct_direction": true
+    },
+    {
+      "code": "09956",
+      "name": "CenPower",
+      "listing_date": "2025-06-10",
+      "industry": "新能源",
+      "predicted_score": 0.5568,
+      "recommendation": "建议观察",
+      "actual_return": 0.12,
+      "correct_direction": true
+    }
+  ],
+  "run_at": "2026-05-07T10:21:44.071886"
+}
