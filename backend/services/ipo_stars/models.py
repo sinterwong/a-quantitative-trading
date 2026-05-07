@@ -27,6 +27,7 @@ class IPOCandidate(NamedTuple):
     industry: str                   # 二级行业分类
     pre_ipo_cost: float             # Pre-IPO 最后一轮融资单价（0 表示未知）
     first_day_return: float = 0.0   # 首日涨跌幅（上市后回填，0 表示未知）
+    lot_size: int = 0               # 每手股数（招股书 board lot，0 表示未知）
 
 
 # ─── 评分结果 ─────────────────────────────────────────────────

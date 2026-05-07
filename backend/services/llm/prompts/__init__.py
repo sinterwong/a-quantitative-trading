@@ -4,6 +4,7 @@ prompts/__init__.py — Prompt 模板导出
 
 from backend.services.llm.prompts import (
     news_sentiment, policy_analysis, market_narrative, ipo_narrative,
+    ipo_prospectus,
 )
 
 SYSTEM_PROMPTS = {
@@ -11,6 +12,7 @@ SYSTEM_PROMPTS = {
     'policy_analysis': policy_analysis.SYSTEM_PROMPT,
     'market_narrative': market_narrative.SYSTEM_PROMPT,
     'ipo_narrative': ipo_narrative.SYSTEM_PROMPT,
+    'ipo_prospectus': ipo_prospectus.SYSTEM_PROMPT,
 }
 
 USER_TEMPLATES = {
@@ -18,6 +20,7 @@ USER_TEMPLATES = {
     'policy_analysis': policy_analysis.USER_TEMPLATE,
     'market_narrative': market_narrative.USER_TEMPLATE,
     'ipo_narrative': ipo_narrative.USER_TEMPLATE,
+    'ipo_prospectus': ipo_prospectus.USER_TEMPLATE,
 }
 
 __all__ = ['SYSTEM_PROMPTS', 'USER_TEMPLATES']

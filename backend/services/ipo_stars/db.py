@@ -38,19 +38,21 @@ def init_ipo_tables():
                 industry            TEXT DEFAULT '',
                 pre_ipo_cost        REAL DEFAULT 0,
                 first_day_return    REAL DEFAULT NULL,
+                lot_size            INTEGER DEFAULT 0,
                 created_at          TEXT DEFAULT '',
                 updated_at          TEXT DEFAULT ''
             )
         ''')
 
-        # 兼容旧数据库：添加 first_day_return 列（如不存在）
-        try:
-            cur.execute(
-                'ALTER TABLE ipo_candidates ADD COLUMN '
-                'first_day_return REAL DEFAULT NULL'
-            )
-        except Exception:
-            pass  # 列已存在
+        # 兼容旧数据库：添加新列（如不存在）
+        for ddl in (
+            'ALTER TABLE ipo_candidates ADD COLUMN first_day_return REAL DEFAULT NULL',
+            'ALTER TABLE ipo_candidates ADD COLUMN lot_size INTEGER DEFAULT 0',
+        ):
+            try:
+                cur.execute(ddl)
+            except Exception:
+                pass  # 列已存在
 
         cur.execute('''
             CREATE TABLE IF NOT EXISTS ipo_analyses (
@@ -112,7 +114,7 @@ def upsert_candidate(data: Dict[str, Any]) -> None:
                  issue_size, sponsor, stabilizer,
                  cornerstone_names, cornerstone_pct,
                  public_offer_multiple, clawback_pct, margin_multiple,
-                 industry, pre_ipo_cost, first_day_return,
+                 industry, pre_ipo_cost, first_day_return, lot_size,
                  created_at, updated_at)
             VALUES
                 (:code, :name, :status, :listing_date,
@@ -120,7 +122,7 @@ def upsert_candidate(data: Dict[str, Any]) -> None:
                  :issue_size, :sponsor, :stabilizer,
                  :cornerstone_names, :cornerstone_pct,
                  :public_offer_multiple, :clawback_pct, :margin_multiple,
-                 :industry, :pre_ipo_cost, :first_day_return,
+                 :industry, :pre_ipo_cost, :first_day_return, :lot_size,
                  :created_at, :updated_at)
             ON CONFLICT(code) DO UPDATE SET
                 name = excluded.name,
@@ -140,6 +142,7 @@ def upsert_candidate(data: Dict[str, Any]) -> None:
                 industry = excluded.industry,
                 pre_ipo_cost = excluded.pre_ipo_cost,
                 first_day_return = excluded.first_day_return,
+                lot_size = excluded.lot_size,
                 updated_at = excluded.updated_at
         ''', {
             'code': data['code'],
@@ -164,6 +167,7 @@ def upsert_candidate(data: Dict[str, Any]) -> None:
                 if data.get('first_day_return') is not None
                 else None
             ),
+            'lot_size': int(data.get('lot_size') or 0),
             'created_at': now,
             'updated_at': now,
         })

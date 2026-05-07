@@ -118,6 +118,158 @@ def _download_pdf(url: str) -> bytes:
         return resp.read()
 
 
+def _llm_extract_prospectus_fields(
+    pdf_bytes: bytes,
+    existing: Dict,
+    llm_service=None,
+    timeout: int = 30,
+) -> Dict:
+    """
+    用 LLM 从招股书 PDF 中抽取正则未拿到的字段（stabilizer / sponsor / cornerstone / industry）。
+
+    策略：
+        1. 用关键词在 PDF 中定位关键页（避免把整本招股书丢给 LLM）
+        2. 提取每个关键词附近的 1500 字符上下文
+        3. 拼成 prompt content，调用 ipo_prospectus 任务
+        4. 把缺失字段合并回 existing
+
+    Args:
+        pdf_bytes: 招股书 PDF 字节
+        existing: 正则已抽取的字段 dict
+        llm_service: 可选 LLMService 实例。若为 None 则从 factory 创建
+        timeout: LLM 单次调用超时（秒）
+
+    Returns:
+        增量字段 dict（仅包含 LLM 新抽取的非空字段）
+    """
+    import fitz
+    import json
+
+    # 仅当某些关键字段缺失时才动用 LLM（节省成本）
+    needs = []
+    if not existing.get('stabilizer'):
+        needs.append('stabilizer')
+    if not existing.get('sponsor') or _is_garbage_sponsor(existing.get('sponsor', '')):
+        needs.append('sponsor')
+    if not existing.get('cornerstone_pct') or not existing.get('cornerstone_names'):
+        needs.append('cornerstone')
+    if not existing.get('listing_date'):
+        needs.append('listing_date')
+
+    if not needs:
+        logger.info('All key fields extracted by regex, skipping LLM fallback')
+        return {}
+
+    # 拿 LLM service
+    if llm_service is None:
+        try:
+            from backend.services.llm.factory import create_llm_service
+            llm_service = create_llm_service()
+        except Exception as e:
+            logger.warning('LLM service unavailable, skipping LLM extraction: %s', e)
+            return {}
+
+    if not getattr(llm_service, 'is_available', False):
+        logger.info('LLM provider not available, skipping LLM extraction')
+        return {}
+
+    # 选关键页（每个关键词只取第一处 + 上下文 1500 字符）
+    doc = fitz.open(stream=pdf_bytes, filetype='pdf')
+    keywords = [
+        'Stabilizing Manager', 'Stabilization Manager',
+        'Sole Sponsor', 'Joint Sponsors',
+        'Cornerstone Investors', 'cornerstone investor',
+        'Dealings in', 'commence on',
+        'Industry Overview', 'INDUSTRY OVERVIEW',
+    ]
+    snippets: List[str] = []
+    seen_keys = set()
+    max_pages = min(len(doc), 300)
+
+    for kw in keywords:
+        kw_lower = kw.lower()
+        if kw_lower in seen_keys:
+            continue
+        for i in range(max_pages):
+            text = doc[i].get_text()
+            idx = text.lower().find(kw_lower)
+            if idx >= 0:
+                start = max(0, idx - 200)
+                end = min(len(text), idx + 1500)
+                snippet = text[start:end].strip()
+                if snippet and len(snippet) > 50:
+                    snippets.append(f'[Page {i+1}, keyword: {kw}]\n{snippet}')
+                    seen_keys.add(kw_lower)
+                break
+        if len(snippets) >= 8:
+            break
+
+    doc.close()
+
+    if not snippets:
+        logger.info('No useful snippets found for LLM extraction')
+        return {}
+
+    content = '\n\n---\n\n'.join(snippets)
+    # 限制 token 用量（粗略估计 1 字符 ≈ 0.5 token）
+    if len(content) > 12000:
+        content = content[:12000]
+
+    logger.info(
+        'Calling LLM for prospectus extraction: needs=%s, content=%d chars',
+        needs, len(content),
+    )
+
+    try:
+        raw = llm_service._call_llm(
+            task='ipo_prospectus',
+            content=content,
+            timeout=timeout,
+        )
+        parsed = llm_service._parse_json(raw)
+    except Exception as e:
+        logger.warning('LLM extraction failed: %s', e)
+        return {}
+
+    # 把 LLM 返回的非 null 字段合并回 result（不覆盖正则已拿到的非空值）
+    increments: Dict = {}
+    for key in ('stabilizer', 'sponsor', 'cornerstone_names', 'industry', 'listing_date'):
+        val = parsed.get(key)
+        if val and isinstance(val, str) and val.strip():
+            existing_val = existing.get(key)
+            if not existing_val or _is_garbage_sponsor(str(existing_val)):
+                increments[key] = val.strip()
+
+    cs_pct = parsed.get('cornerstone_pct')
+    if cs_pct is not None and not existing.get('cornerstone_pct'):
+        try:
+            cs_pct_f = float(cs_pct)
+            if 0 < cs_pct_f <= 1.0:
+                increments['cornerstone_pct'] = cs_pct_f
+        except (ValueError, TypeError):
+            pass
+
+    logger.info('LLM extracted %d new fields: %s', len(increments), list(increments.keys()))
+    return increments
+
+
+def _is_garbage_sponsor(s: str) -> bool:
+    """判断正则抽到的 sponsor 是否是噪音（标题文本而非公司名）。"""
+    if not s:
+        return True
+    s_lower = s.lower()
+    if any(bad in s_lower for bad in [
+        'overall coordinators', 'joint global coordinators',
+        'joint sponsors\n', 'sole sponsor\n',
+    ]):
+        return True
+    # 必须包含至少一个公司后缀
+    return not any(suf in s_lower for suf in [
+        'limited', 'ltd', 'securities', 'capital', 'inc', 'corp',
+        'corporation', 'holdings', 'group',
+    ])
+
+
 def _parse_prospectus_pdf(pdf_bytes: bytes) -> Dict:
     """用 PyMuPDF 从招股书 PDF 中提取关键字段。
 
@@ -158,10 +310,11 @@ def _parse_prospectus_pdf(pdf_bytes: bytes) -> Dict:
                 return text
         return None
 
-    # 1) 发行价区间 — 通常在前 5 页
-    for i in range(min(5, max_pages)):
+    # 1) 发行价 — 优先识别区间（HK$X to HK$Y），其次单价（HK$X per H Share）
+    #    搜索范围扩到前 30 页（招股书摘要页有时不在前 5 页）
+    for i in range(min(30, max_pages)):
         text = get_text(i)
-        # 模式1: HK$24.00 to HK$30.00
+        # 模式1: HK$24.00 to HK$30.00（区间）
         m = re.search(
             r'HK\$\s*([\d,.]+)\s*(?:to|至)\s*HK\$\s*([\d,.]+)',
             text, re.IGNORECASE,
@@ -170,7 +323,7 @@ def _parse_prospectus_pdf(pdf_bytes: bytes) -> Dict:
             result['offer_price_low'] = float(m.group(1).replace(',', ''))
             result['offer_price_high'] = float(m.group(2).replace(',', ''))
             break
-        # 模式2: 招股价介乎每股 X 港元至 Y 港元
+        # 模式2: 招股价介乎每股 X 港元至 Y 港元（中文区间）
         m = re.search(
             r'(?:每股|每股H股)\s*([\d,.]+)\s*港元\s*至\s*([\d,.]+)\s*港元',
             text,
@@ -179,13 +332,27 @@ def _parse_prospectus_pdf(pdf_bytes: bytes) -> Dict:
             result['offer_price_low'] = float(m.group(1).replace(',', ''))
             result['offer_price_high'] = float(m.group(2).replace(',', ''))
             break
+        # 模式3: 单价定价（"Offer Price\nHK$10.50 per H Share"）
+        # 必须紧跟 "Offer Price" 上下文，避免误抓其他金额
+        m = re.search(
+            r'Offer\s+Price[^\n]*\n\s*HK\$\s*([\d,.]+)\s*(?:per\s+(?:H\s+)?Share)?',
+            text, re.IGNORECASE,
+        )
+        if m:
+            price = float(m.group(1).replace(',', ''))
+            if 0.5 <= price <= 10000:  # 港股招股价合理区间
+                result['offer_price_low'] = price
+                result['offer_price_high'] = price
+                break
 
-    # 2) 上市日期 — 通常在前 10 页
-    for i in range(min(10, max_pages)):
+    # 2) 上市日期 — 搜索范围扩到前 100 页（DEALING IN 章节常在 80~90 页）
+    for i in range(min(100, max_pages)):
         text = get_text(i)
         # "Dealing in ... to commence on Wednesday, May 11, 2026"
         m = re.search(
-            r'(?:commence|expected)\s+(?:on\s+)?'
+            r'(?:commence|expected)\s+(?:to\s+commence\s+)?'
+            r'(?:at\s+\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.)?\s+)?'
+            r'(?:on\s+)?'
             r'(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)'
             r',?\s+(\w+\s+\d{1,2},?\s+\d{4})',
             text, re.IGNORECASE,
@@ -224,22 +391,38 @@ def _parse_prospectus_pdf(pdf_bytes: bytes) -> Dict:
             result['sponsor'] = ', '.join(sponsor_lines[:5])
             break
 
-    # 4) 稳价人 — 通常在前 50 页
-    text = search_pages('Stabilizing Manager', 0, 60)
-    if text is None:
-        text = search_pages('stabiliz', 0, 60)
-    if text:
-        # "Stabilizing Manager ... XXX Securities Company Limited"
+    # 4) 稳价人 — 通常在 Definitions 章节（30~50 页）或 Underwriting 章节（260+ 页）
+    #    Definitions 章节常见格式（跨多行）：
+    #        "Stabilizing Manager"
+    #        CLSA Limited
+    for i in range(min(150, max_pages)):
+        text = get_text(i)
+        # 模式1: 引号包裹的术语定义（"Stabilizing Manager"\nXXX Limited）
         m = re.search(
-            r'Stabiliz(?:ing|ation)\s+Manager[:\s]*\n?\s*(.+)',
+            r'["""]Stabili[sz](?:ing|ation)\s+Manager["""]\s*\n+\s*([^\n]+)',
             text, re.IGNORECASE,
         )
         if m:
-            stabilizer = m.group(1).strip().split('\n')[0].strip()
-            # 去除可能的尾部标点
-            stabilizer = re.sub(r'[,;.]$', '', stabilizer).strip()
-            if len(stabilizer) > 3:
+            stabilizer = m.group(1).strip()
+            stabilizer = re.sub(r'[,;.]+$', '', stabilizer).strip()
+            # 必须像公司名（含 Limited/Securities/Capital 等）
+            if 3 < len(stabilizer) < 100 and re.search(
+                r'(Limited|Ltd|Securities|Capital|Inc|Corp|Group|Holdings|證券|有限)',
+                stabilizer, re.IGNORECASE,
+            ):
                 result['stabilizer'] = stabilizer
+                break
+        # 模式2: 紧跟冒号或换行（Stabilizing Manager: XXX Limited）
+        m = re.search(
+            r'Stabili[sz](?:ing|ation)\s+Manager[\s:]*\n*\s*([A-Z][A-Za-z &.,\-]+(?:Limited|Ltd|Securities|Capital))',
+            text, re.IGNORECASE,
+        )
+        if m:
+            stabilizer = m.group(1).strip()
+            stabilizer = re.sub(r'[,;.]+$', '', stabilizer).strip()
+            if 3 < len(stabilizer) < 100:
+                result['stabilizer'] = stabilizer
+                break
 
     # 5) 基石投资者 — 通常在 150~250 页
     for start in range(0, max_pages, 50):
@@ -272,6 +455,21 @@ def _parse_prospectus_pdf(pdf_bytes: bytes) -> Dict:
                         unique_names.append(clean)
                 result['cornerstone_names'] = ','.join(unique_names[:10])
 
+    # 5b) 每手股数 — 通常在 "DEALING IN H SHARES" 章节
+    #     格式："Shares will be traded in board lots of 500 Shares each"
+    for i in range(min(150, max_pages)):
+        text = get_text(i)
+        m = re.search(
+            r'(?:in\s+)?board\s+lots?\s+of\s+([\d,]+)\s+(?:H\s+)?Shares?',
+            text, re.IGNORECASE,
+        )
+        if m:
+            try:
+                result['lot_size'] = int(m.group(1).replace(',', ''))
+                break
+            except ValueError:
+                pass
+
     # 6) 发行股数 → 推算发行规模
     for i in range(min(10, max_pages)):
         text = get_text(i)
@@ -299,6 +497,21 @@ def _parse_prospectus_pdf(pdf_bytes: bytes) -> Dict:
                 pass
 
     doc.close()
+
+    # 清洗：sponsor 抓到标题文本时直接丢弃，留空给 LLM 兜底
+    if _is_garbage_sponsor(result.get('sponsor', '')):
+        result.pop('sponsor', None)
+
+    # 清洗：cornerstone_names 必须像投资机构名（含 Limited/Capital/Fund 等且不含明显标点段落）
+    cs_names = result.get('cornerstone_names', '')
+    if cs_names:
+        bad_keywords = [
+            'underwriting agreement', 'cornerstone investment',
+            'agreement', 'as defined', '\n',
+        ]
+        if any(bk in cs_names.lower() for bk in bad_keywords) or len(cs_names) > 200:
+            result.pop('cornerstone_names', None)
+
     return result
 
 
@@ -431,6 +644,10 @@ class IPODataFetcher:
         - fetch_stabilizer_history()  → 需历史数据积累
     """
 
+    def __init__(self, llm_service=None):
+        # LLM 兜底：构造时不强制创建，按需在 fetch_prospectus 内 lazy 创建
+        self._llm_service = llm_service
+
     def fetch_upcoming_ipos(self) -> List[Dict]:
         """
         从 HKEX 官网获取最新 IPO 列表。
@@ -485,13 +702,20 @@ class IPODataFetcher:
         logger.info('Fetched %d IPO candidates from HKEX', len(results))
         return results
 
-    def fetch_prospectus(self, code: str, prospectus_url: str = '') -> Dict:
+    def fetch_prospectus(
+        self,
+        code: str,
+        prospectus_url: str = '',
+        use_llm: bool = True,
+    ) -> Dict:
         """
         下载并解析招股书 PDF，提取关键数据。
+        正则提取后，若关键字段缺失，自动用 LLM 兜底（可关闭）。
 
         Args:
             code: 港股代码（如 '01236'）
             prospectus_url: 招股书 PDF URL（如未提供，需先调用 fetch_upcoming_ipos 获取）
+            use_llm: 是否启用 LLM 兜底抽取（默认 True）
 
         Returns:
             {
@@ -504,6 +728,7 @@ class IPODataFetcher:
                 'cornerstone_names': 'GIC,Temasek',
                 'cornerstone_pct': 0.35,
                 'issue_size': 9.0,
+                'lot_size': 500,
             }
         """
         if not prospectus_url:
@@ -519,13 +744,29 @@ class IPODataFetcher:
         result = _parse_prospectus_pdf(pdf_bytes)
         result['code'] = code
 
+        # LLM 兜底（仅当关键字段缺失时）
+        if use_llm:
+            try:
+                increments = _llm_extract_prospectus_fields(
+                    pdf_bytes, result, llm_service=self._llm_service,
+                )
+                if increments:
+                    result.update(increments)
+                    logger.info(
+                        'LLM filled fields for %s: %s',
+                        code, list(increments.keys()),
+                    )
+            except Exception as e:
+                logger.warning('LLM fallback skipped for %s: %s', code, e)
+
         logger.info(
-            'Parsed prospectus for %s: price=%.2f~%.2f, date=%s, sponsor=%s',
+            'Parsed prospectus for %s: price=%.2f~%.2f, date=%s, sponsor=%s, stab=%s',
             code,
             result.get('offer_price_low', 0),
             result.get('offer_price_high', 0),
             result.get('listing_date', 'N/A'),
-            result.get('sponsor', 'N/A')[:30],
+            (result.get('sponsor') or 'N/A')[:30],
+            (result.get('stabilizer') or 'N/A')[:30],
         )
         return result
 

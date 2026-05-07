@@ -1310,8 +1310,12 @@ class TestIntegration:
                     webhook_url='https://fake.webhook.com/hook',
                     webhook_type='feishu',
                 )
-            # Mock the HTTP POST
-            with patch.object(svc.notifier, '_post', return_value=True) as mock_post:
+            # Bot API 重构后，env 中有 FEISHU_APP_ID 时会走 _send_via_bot；
+            # 这里强制清空让 send_report 走 webhook 路径，方便测试 payload
+            svc.notifier.feishu_app_id = ''
+            svc.notifier.feishu_app_secret = ''
+            # Mock the HTTP POST（Bot API 重构后实际方法名为 _post_webhook）
+            with patch.object(svc.notifier, '_post_webhook', return_value=True) as mock_post:
                 result = svc.analyze('07630', push=True)
 
         assert 'error' not in result

@@ -110,16 +110,25 @@ class IPOStarsService:
         """
         overrides = overrides or {}
 
-        # 1. 获取标的数据
+        # 1. 获取标的数据 — 若 DB 缺失或关键字段为空，自动从 HKEX 拉取
         candidate_data = ipo_db.get_candidate(code)
-        if not candidate_data:
-            # 尝试从数据源拉取
-            try:
-                prospectus = self.fetcher.fetch_prospectus(code)
-                ipo_db.upsert_candidate(prospectus)
+        needs_fetch = (
+            not candidate_data
+            or not candidate_data.get('offer_price_low')
+            or not candidate_data.get('listing_date')
+        )
+        if needs_fetch:
+            fetched = self._auto_fetch(code)
+            # 至少要拿到 name 才算找到（否则可能是 HKEX 没收录或网络失败）
+            if fetched and fetched.get('name'):
+                # 已有数据 + 新抓数据合并（DB 字段优先于网络抓取，避免覆盖手动录入）
+                merged = {**fetched, **(candidate_data or {})}
+                # 但允许 fetched 填补 DB 中为空的字段
+                for key, val in fetched.items():
+                    if val and not merged.get(key):
+                        merged[key] = val
+                ipo_db.upsert_candidate(merged)
                 candidate_data = ipo_db.get_candidate(code)
-            except NotImplementedError:
-                pass
 
         if not candidate_data:
             return {'error': f'IPO candidate {code} not found'}
@@ -240,6 +249,66 @@ class IPOStarsService:
 
     # ─── 内部方法 ─────────────────────────────────────────────
 
+    def _auto_fetch(self, code: str) -> Dict:
+        """
+        从 HKEX 自动拉取该 code 的元数据：
+            1. fetch_upcoming_ipos() → 找到对应行，拿到 prospectus_url / allotment_url
+            2. 若有 allotment_url（已分配）→ fetch_allotment_results() 拿最终定价 + 超购倍数
+            3. 若有 prospectus_url → fetch_prospectus()（含 LLM 兜底）
+
+        所有异常都吞掉，返回尽可能多的字段（包括空 dict）。
+        """
+        merged: Dict = {'code': code}
+        try:
+            ipos = self.fetcher.fetch_upcoming_ipos()
+        except Exception as e:
+            logger.info('fetch_upcoming_ipos failed: %s', e)
+            return {}
+
+        # 找到对应 code 的行（4 位 / 5 位 都兼容）
+        norm_code = code.zfill(5)
+        try:
+            target = next(
+                (x for x in ipos if isinstance(x, dict) and (
+                    x.get('code') == norm_code
+                    or x.get('code', '').lstrip('0') == code.lstrip('0')
+                )),
+                None,
+            )
+        except (TypeError, AttributeError):
+            target = None
+        if not target:
+            logger.info('Code %s not found in HKEX New Listings', code)
+            return {}
+
+        merged['name'] = target.get('name', '')
+        merged['status'] = target.get('status', 'upcoming')
+
+        # 若已分配，先解析 allotment（拿最终定价/超购倍数最准）
+        if target.get('allotment_url'):
+            try:
+                allot = self.fetcher.fetch_allotment_results(
+                    code, target['allotment_url'],
+                )
+                merged.update({k: v for k, v in allot.items() if v})
+            except Exception as e:
+                logger.info('fetch_allotment_results failed for %s: %s', code, e)
+
+        # 解析招股书（含 LLM 兜底）
+        if target.get('prospectus_url'):
+            try:
+                prospectus = self.fetcher.fetch_prospectus(
+                    code, target['prospectus_url'],
+                )
+                # 招股书字段不覆盖 allotment 已拿到的（如最终定价）
+                for k, v in prospectus.items():
+                    if v and not merged.get(k):
+                        merged[k] = v
+            except Exception as e:
+                logger.info('fetch_prospectus failed for %s: %s', code, e)
+
+        return merged
+
     @staticmethod
     def _dict_to_candidate(d: Dict) -> IPOCandidate:
         """dict → IPOCandidate NamedTuple。"""
@@ -262,6 +331,7 @@ class IPOStarsService:
             industry=d.get('industry', ''),
             pre_ipo_cost=float(d.get('pre_ipo_cost', 0)),
             first_day_return=float(d.get('first_day_return') or 0),
+            lot_size=int(d.get('lot_size') or 0),
         )
 
     @staticmethod

@@ -149,6 +149,7 @@ def _dict_to_candidate(d: Dict) -> IPOCandidate:
         industry=d.get('industry', ''),
         pre_ipo_cost=float(d.get('pre_ipo_cost', 0)),
         first_day_return=float(d.get('first_day_return') or 0),
+        lot_size=int(d.get('lot_size') or 0),
     )
 
 
