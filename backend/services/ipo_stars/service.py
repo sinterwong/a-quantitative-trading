@@ -6,7 +6,7 @@ service.py — IPO Stars 主服务
 
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .models import IPOCandidate, AnalysisReport
 from .scorer import IPOScorer
@@ -86,17 +86,30 @@ class IPOStarsService:
 
     # ─── 深度分析 ─────────────────────────────────────────────
 
-    def analyze(self, code: str, push: bool = False) -> Dict:
+    def analyze(
+        self,
+        code: str,
+        push: bool = False,
+        overrides: Optional[Dict[str, Any]] = None,
+    ) -> Dict:
         """
         对单只 IPO 进行四维深度分析。
 
         Args:
             code: 港股代码（如 '09696'）
             push: 是否推送报告到 webhook
+            overrides: 字段覆盖字典，用于补充/覆盖数据库中的字段
+                       支持的字段：
+                       - public_offer_multiple (float): 公开发售认购倍数
+                       - industry (str): 所属行业板块
+                       - pre_ipo_cost (float): pre-IPO 估值
+                       - name (str): 公司名称（覆盖显示名）
 
         Returns:
             完整分析报告 dict
         """
+        overrides = overrides or {}
+
         # 1. 获取标的数据
         candidate_data = ipo_db.get_candidate(code)
         if not candidate_data:
@@ -111,7 +124,8 @@ class IPOStarsService:
         if not candidate_data:
             return {'error': f'IPO candidate {code} not found'}
 
-        candidate = self._dict_to_candidate(candidate_data)
+        # 应用字段覆盖
+        candidate = self._dict_to_candidate({**candidate_data, **overrides})
 
         # 2. 获取市场环境
         market_ctx = {}

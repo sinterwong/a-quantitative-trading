@@ -9,12 +9,70 @@ scorer.py — IPO Stars 四维评分引擎
     基本面/估值  10%  —  PS/PE 相对行业折价、Pre-IPO 成本安全垫
 """
 
+import json as _json
 import logging
+import re
 from typing import Dict, List, Optional
 
 from .models import IPOCandidate, ScoringResult, PricingStrategy, DarkPriceEstimate
 
 logger = logging.getLogger('ipo_stars.scorer')
+
+
+def _json_parse(raw: str) -> dict:
+    """
+    解析 LLM 返回的 JSON 字符串，容忍常见格式问题。
+
+    处理：markdown 代码块包裹、单引号、尾随逗号、未转义换行符、token 截断。
+    """
+    text = raw.strip()
+    # 去除 markdown 代码块
+    if text.startswith('```'):
+        lines = text.split('\n')
+        text = '\n'.join(lines[1:-1]).strip()
+
+    # 策略 1：标准解析
+    try:
+        return _json.loads(text)
+    except _json.JSONDecodeError:
+        pass
+
+    # 策略 2：单引号 + 尾随逗号容错
+    text = re.sub(r"(?<!\\)'", '"', text)
+    text = re.sub(r',(\s*[}\]])', r'\1', text)
+    try:
+        return _json.loads(text)
+    except _json.JSONDecodeError:
+        pass
+
+    # 策略 3：找 { ... } 范围后解析
+    try:
+        first_brace = text.index('{')
+        scan = text.rstrip()
+        last_brace = None
+        for i in range(len(scan) - 1, first_brace - 1, -1):
+            if scan[i] == '}':
+                last_brace = i
+                break
+        if last_brace is None:
+            raise ValueError('no closing brace')
+        candidate = text[first_brace:last_brace + 1]
+        return _json.loads(candidate)
+    except (_json.JSONDecodeError, ValueError):
+        pass
+
+    # 策略 4：正则捞取关键数值字段（终极容错）
+    result = {}
+    for key in ('hotness', 'scarcity', 'narrative_strength', 'overall',
+                'low', 'mid', 'high', 'confidence'):
+        m = re.search(rf'"{key}"\s*:\s*([0-9.]+)', text)
+        if m:
+            result[key] = float(m.group(1))
+    if result:
+        logger.warning('JSON parse failed, used regex fallback: %s', list(result.keys()))
+        return result
+
+    raise ValueError(f'JSON 解析失败，原始内容：{raw[:300]}')
 
 # ─── 默认权重 ─────────────────────────────────────────────────
 
@@ -329,7 +387,7 @@ class IPOScorer:
             lines = raw.split('\n')
             raw = '\n'.join(lines[1:-1]).strip()
 
-        parsed = _json.loads(raw)
+        parsed = _json_parse(raw)
         overall = float(parsed.get('overall', 0.5))
         return max(0.0, min(1.0, overall))
 
@@ -550,7 +608,7 @@ class IPOScorer:
             lines = raw.split('\n')
             raw = '\n'.join(lines[1:-1]).strip()
 
-        parsed = _json.loads(raw)
+        parsed = _json_parse(raw)
 
         low = float(parsed['low'])
         mid = float(parsed['mid'])

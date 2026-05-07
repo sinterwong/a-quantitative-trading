@@ -6,7 +6,18 @@ factory.py — Provider 工厂
 
 import os
 import logging
+from pathlib import Path
 from typing import Optional
+
+# 确保项目根目录的 .env 被加载（Provider 直接读取 os.environ）
+_dotenv_path = Path(__file__).resolve().parents[3] / '.env'
+if _dotenv_path.exists():
+    with open(_dotenv_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith('#') and '=' in _line:
+                _key, _val = _line.split('=', 1)
+                os.environ.setdefault(_key.strip(), _val.strip())
 
 from backend.services.llm.providers.base import LLMProvider
 from backend.services.llm.providers.deepseek import DeepSeekProvider
