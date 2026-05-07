@@ -4,6 +4,7 @@ fetcher.py — IPO Stars 数据获取层
 已接入数据源：
     - HKEX 官网 IPO 日历（HTML 解析）→ fetch_upcoming_ipos()
     - HKEX 招股书 PDF（PyMuPDF 解析）→ fetch_prospectus()
+    - HKEX 分配结果 PDF（PyMuPDF 解析）→ fetch_allotment_results()
     - 新浪恒生科技指数（hq.sinajs.cn）→ fetch_market_context()
 
 待接入：
@@ -301,6 +302,118 @@ def _parse_prospectus_pdf(pdf_bytes: bytes) -> Dict:
     return result
 
 
+def _parse_allotment_pdf(pdf_bytes: bytes) -> Dict:
+    """从分配结果 PDF 提取关键数据。
+
+    分配结果 PDF 结构（基于 HKEX 标准格式）：
+        - Page 1-2: Final Offer Price, Number of Offer Shares, Stock code
+        - Page 3-4: Subscription level (超购倍数), Claw-back, 公开/国际发售分配比例
+        - Page 5+:  Cornerstone investors 明细
+    """
+    import fitz
+
+    doc = fitz.open(stream=pdf_bytes, filetype='pdf')
+    result: Dict = {}
+    max_pages = min(len(doc), 30)
+
+    # 合并前 15 页文本供搜索
+    all_text = ''
+    for i in range(min(15, max_pages)):
+        all_text += doc[i].get_text() + '\n'
+
+    # 1) 最终定价
+    m = re.search(
+        r'Final\s+Offer\s+Price\s*[:\s]*HK\$\s*([\d,.]+)',
+        all_text, re.IGNORECASE,
+    )
+    if m:
+        result['offer_price_final'] = float(m.group(1).replace(',', ''))
+
+    # 2) 股票代码
+    m = re.search(r'Stock\s+code\s*[:\s]*(\d{4,5})', all_text, re.IGNORECASE)
+    if m:
+        result['code'] = m.group(1).zfill(5)
+
+    # 3) 上市日期
+    m = re.search(
+        r'(?:Dealings?\s+commencement\s+date|Listing\s+Date)\s*[:\s]*'
+        r'(\w+\s+\d{1,2},?\s+\d{4})',
+        all_text, re.IGNORECASE,
+    )
+    if m:
+        raw_date = m.group(1).replace(',', '')
+        try:
+            from datetime import datetime as _dt
+            dt = _dt.strptime(raw_date, '%B %d %Y')
+            result['listing_date'] = dt.strftime('%Y-%m-%d')
+        except ValueError:
+            result['listing_date'] = raw_date
+
+    # 4) 公开发售超购倍数 — "Subscription level  399.08 times"
+    m = re.search(
+        r'(?:HONG\s+KONG\s+PUBLIC\s+OFFERING.*?)?'
+        r'Subscription\s+level\s*[:\s]*([\d,.]+)\s*times',
+        all_text, re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        result['public_offer_multiple'] = float(m.group(1).replace(',', ''))
+
+    # 5) 回拨 — "Claw-back triggered  Yes / N/A"
+    m = re.search(
+        r'Claw-?back\s+triggered\s*[:\s]*(Yes|No|N/A)',
+        all_text, re.IGNORECASE,
+    )
+    if m:
+        result['clawback_triggered'] = m.group(1).upper() not in ('NO', 'N/A')
+
+    # 6) 公开发售占比 — "% of Offer Shares under the Hong Kong Public Offering
+    #    to the Global Offering  10.00%"
+    m = re.search(
+        r'%\s+of\s+Offer\s+Shares\s+under\s+the\s+Hong\s+Kong\s+'
+        r'Public\s+Offering.*?\n\s*([\d.]+)%',
+        all_text, re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        result['hk_public_offering_pct'] = float(m.group(1)) / 100.0
+
+    # 7) 基石投资者总占比 — 在 Cornerstone Investors 表中找 "Total" 或 "Sub-total"
+    m = re.search(
+        r'(?:Sub-?total|Total)\s+[\d,]+\s+[\d,]+\s+([\d.]+)%',
+        all_text, re.IGNORECASE,
+    )
+    if m:
+        result['cornerstone_pct'] = float(m.group(1)) / 100.0
+
+    # 8) 发行股数
+    m = re.search(
+        r'Number\s+of\s+Offer\s+Shares\s*[:\s]*([\d,]+)',
+        all_text, re.IGNORECASE,
+    )
+    if m:
+        shares_str = m.group(1).replace(',', '')
+        try:
+            result['offer_shares'] = int(shares_str)
+        except ValueError:
+            pass
+
+    # 9) 净募资额
+    m = re.search(
+        r'(?:Net\s+proceeds|Gross\s+proceeds)\s*.*?HK\$\s*([\d,.]+)\s*(million|billion)',
+        all_text, re.IGNORECASE,
+    )
+    if m:
+        amount = float(m.group(1).replace(',', ''))
+        unit = m.group(2).lower()
+        if unit == 'billion':
+            amount *= 10  # 十亿 → 亿
+        else:
+            amount /= 100  # 百万 → 亿
+        result['issue_size'] = round(amount, 2)
+
+    doc.close()
+    return result
+
+
 # ─── IPODataFetcher ──────────────────────────────────────────────
 
 class IPODataFetcher:
@@ -308,9 +421,10 @@ class IPODataFetcher:
     港股 IPO 数据获取器。
 
     已实现：
-        - fetch_upcoming_ipos()  → HKEX 官网 HTML
-        - fetch_prospectus()     → HKEX 招股书 PDF + PyMuPDF
-        - fetch_market_context() → 新浪恒生科技指数
+        - fetch_upcoming_ipos()      → HKEX 官网 HTML
+        - fetch_prospectus()         → HKEX 招股书 PDF + PyMuPDF
+        - fetch_allotment_results()  → HKEX 分配结果 PDF + PyMuPDF
+        - fetch_market_context()     → 新浪恒生科技指数
 
     待实现：
         - fetch_subscription_data()   → 需富途 Open API
@@ -412,6 +526,47 @@ class IPODataFetcher:
             result.get('offer_price_high', 0),
             result.get('listing_date', 'N/A'),
             result.get('sponsor', 'N/A')[:30],
+        )
+        return result
+
+    def fetch_allotment_results(self, code: str, allotment_url: str = '') -> Dict:
+        """
+        下载并解析分配结果 PDF，提取实际认购数据。
+
+        Args:
+            code: 港股代码
+            allotment_url: 分配结果 PDF URL（来自 fetch_upcoming_ipos）
+
+        Returns:
+            {
+                'code': '01187',
+                'offer_price_final': 39.33,
+                'public_offer_multiple': 399.08,
+                'clawback_triggered': False,
+                'hk_public_offering_pct': 0.10,
+                'cornerstone_pct': 0.3576,
+                'listing_date': '2026-05-06',
+                'issue_size': 10.62,
+            }
+        """
+        if not allotment_url:
+            raise ValueError(
+                f'No allotment URL for {code}. '
+                f'Call fetch_upcoming_ipos() first to get the URL.'
+            )
+
+        logger.info('Downloading allotment results PDF for %s ...', code)
+        pdf_bytes = _download_pdf(allotment_url)
+        logger.info('Downloaded %d bytes, parsing ...', len(pdf_bytes))
+
+        result = _parse_allotment_pdf(pdf_bytes)
+        result['code'] = code
+
+        logger.info(
+            'Parsed allotment for %s: price=%.2f, subscription=%.1fx',
+            code,
+            result.get('offer_price_final', 0),
+            result.get('public_offer_multiple', 0),
         )
         return result
 

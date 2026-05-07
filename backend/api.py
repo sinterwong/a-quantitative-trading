@@ -1751,6 +1751,38 @@ def ipo_subscribe():
     return ok(message=f'Subscribed to {code} with {strategy} strategy')
 
 
+@app.route('/ipo/<code>/update', methods=['POST'])
+def ipo_update_candidate(code):
+    """
+    POST /ipo/01236/update — 手动更新 IPO 标的字段。
+
+    JSON body 可包含任意 ipo_candidates 表字段，如：
+        {"stabilizer": "摩根士丹利", "pre_ipo_cost": 8.0, "industry": "机器人"}
+    """
+    try:
+        body = request.get_json(force=True) or {}
+        if not body:
+            return err('Request body is empty')
+
+        from services.ipo_stars import db as ipo_db
+
+        # 检查标的是否存在
+        existing = ipo_db.get_candidate(code)
+        if not existing:
+            return err(f'IPO candidate {code} not found', 404)
+
+        # 合并更新
+        update_data = dict(existing)
+        update_data.update(body)
+        update_data['code'] = code  # 确保 code 不被覆盖
+        ipo_db.upsert_candidate(update_data)
+
+        updated = ipo_db.get_candidate(code)
+        return ok(candidate=updated, message=f'Updated {code}')
+    except Exception as e:
+        return err(str(e), 500)
+
+
 @app.route('/ipo/subscriptions', methods=['GET'])
 def ipo_subscriptions():
     """GET /ipo/subscriptions — 查看已订阅列表。"""

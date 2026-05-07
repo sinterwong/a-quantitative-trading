@@ -23,6 +23,7 @@ from backend.services.ipo_stars.scorer import IPOScorer, DEFAULT_WEIGHTS
 from backend.services.ipo_stars import db as ipo_db
 from backend.services.ipo_stars.fetcher import (
     IPODataFetcher, _HKEXTableParser, _parse_prospectus_pdf,
+    _parse_allotment_pdf,
 )
 
 
@@ -801,3 +802,93 @@ class TestFetcher:
         fetcher = IPODataFetcher()
         with pytest.raises(NotImplementedError):
             fetcher.fetch_stabilizer_history('test')
+
+    # ─── 分配结果 PDF 解析 ───────────────────────────────────
+
+    def test_parse_allotment_pdf_basic(self):
+        """验证分配结果 PDF 基本字段提取。"""
+        import fitz
+        doc = fitz.open()
+        # Page 0: disclaimer (skip)
+        doc.new_page()
+        # Page 1: summary
+        p1 = doc.new_page()
+        p1.insert_text((72, 80), "GLOBAL OFFERING")
+        p1.insert_text((72, 100), "Final Offer Price : HK$39.33 per H Share")
+        p1.insert_text((72, 120), "Stock code : 1187")
+        # Page 2: allotment details
+        p2 = doc.new_page()
+        p2.insert_text((72, 80), "HONG KONG PUBLIC OFFERING")
+        p2.insert_text((72, 100), "Subscription level  399.08 times")
+        p2.insert_text((72, 120), "Claw-back triggered  N/A")
+        p2.insert_text((72, 140),
+            "% of Offer Shares under the Hong Kong Public Offering to\n"
+            " the Global Offering\n"
+            "10.00%")
+        p2.insert_text((72, 200), "Number of Offer Shares : 27,000,000")
+        p2.insert_text((72, 220), "Gross proceeds  HK$1,062.0 million")
+        # Page 3: cornerstone
+        p3 = doc.new_page()
+        p3.insert_text((72, 80), "Cornerstone Investors")
+        p3.insert_text((72, 100), "Sub-total 9,654,300 9,654,300 35.76%")
+        # Page 4: listing date
+        p4 = doc.new_page()
+        p4.insert_text((72, 80), "Dealings commencement date May 6, 2026")
+        pdf_bytes = doc.tobytes()
+        doc.close()
+
+        result = _parse_allotment_pdf(pdf_bytes)
+        assert result.get('offer_price_final') == 39.33
+        assert result.get('code') == '01187'
+        assert result.get('public_offer_multiple') == pytest.approx(399.08)
+        assert result.get('clawback_triggered') is False
+        assert result.get('hk_public_offering_pct') == pytest.approx(0.10)
+        assert result.get('cornerstone_pct') == pytest.approx(0.3576)
+        assert result.get('offer_shares') == 27_000_000
+        assert result.get('issue_size') == pytest.approx(10.62)
+        assert result.get('listing_date') == '2026-05-06'
+
+    def test_parse_allotment_pdf_empty(self):
+        """空 PDF 不应崩溃。"""
+        import fitz
+        doc = fitz.open()
+        doc.new_page()
+        pdf_bytes = doc.tobytes()
+        doc.close()
+
+        result = _parse_allotment_pdf(pdf_bytes)
+        assert isinstance(result, dict)
+        assert 'offer_price_final' not in result
+
+    def test_fetch_allotment_results_requires_url(self):
+        fetcher = IPODataFetcher()
+        with pytest.raises(ValueError, match='No allotment URL'):
+            fetcher.fetch_allotment_results('01187')
+
+    # ─── Update API ──────────────────────────────────────────
+
+    def test_ipo_update_api(self, tmp_db):
+        """POST /ipo/<code>/update 应更新指定字段。"""
+        # 先插入一个候选标的
+        ipo_db.upsert_candidate({
+            'code': '01236', 'name': 'LDROBOT', 'status': 'upcoming',
+        })
+        # 验证手动更新
+        updated = ipo_db.get_candidate('01236')
+        assert updated['stabilizer'] == ''
+
+        # 模拟 update 逻辑（直接测试 db 层）
+        existing = ipo_db.get_candidate('01236')
+        existing_data = dict(existing)
+        existing_data.update({
+            'stabilizer': 'Haitong International',
+            'pre_ipo_cost': 15.0,
+            'industry': '机器人',
+        })
+        ipo_db.upsert_candidate(existing_data)
+
+        result = ipo_db.get_candidate('01236')
+        assert result['stabilizer'] == 'Haitong International'
+        assert result['pre_ipo_cost'] == 15.0
+        assert result['industry'] == '机器人'
+        assert result['name'] == 'LDROBOT'  # 未更新的字段保持不变
