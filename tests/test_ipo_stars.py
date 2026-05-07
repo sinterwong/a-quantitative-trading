@@ -965,9 +965,10 @@ class TestFetcher:
         mock_llm.provider = mock_provider
 
         scorer = IPOScorer(llm_service=mock_llm)
-        results = scorer.score(sample_candidate)
+        with patch.object(IPOScorer, '_compute_scarcity_bonus', return_value=0.0):
+            results = scorer.score(sample_candidate)
         narrative = [r for r in results if r.dimension == 'narrative'][0]
-        # LLM overall=0.82, keyword_score=0.5, scarcity_bonus=0.0 (no DB)
+        # LLM overall=0.82, keyword_score=0.5, scarcity_bonus=0.0
         # combined = 0.5 * 0.25 + 0.82 * 0.6 + 0.0 * 0.15 = 0.617
         assert narrative.score == pytest.approx(0.617, abs=0.01)
         assert 'llm_narrative' in narrative.details

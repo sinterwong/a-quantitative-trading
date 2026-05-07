@@ -122,7 +122,7 @@ class IPOScorer:
         sub_scores.append(s * 0.6)  # 超购占情绪维度 60%
 
         # 2) 大盘 Bias
-        bias = market_ctx.get('hstech_bias_5d', 0.0)
+        bias = market_ctx.get('hstech_bias_5d') or 0.0
         bias_score = max(0.0, min(1.0, 0.5 + bias * 10))  # bias=0 → 0.5
         details['hstech_bias'] = {'bias_5d': bias, 'sub_score': bias_score}
         sub_scores.append(bias_score * 0.2)
