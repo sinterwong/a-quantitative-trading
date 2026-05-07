@@ -215,6 +215,28 @@ class Scheduler:
         except ImportError as e:
             self.logger.error('Fundamental refresh import failed: %s', e)
 
+    def _trigger_ipo_batch_analysis(self):
+        """每日 18:00 批量分析已订阅的 IPO 标的并推送报告。"""
+        try:
+            sys.path.insert(0, PROJ_DIR)
+            from core.config import TradingConfig
+            cfg = TradingConfig()
+            if not cfg.ipo_stars.enabled:
+                self.logger.info('IPO Stars disabled, skipping batch analysis')
+                return
+            if not cfg.ipo_stars.webhook_url:
+                self.logger.info('IPO Stars webhook not configured, skipping push')
+
+            from services.ipo_stars.service import IPOStarsService
+            svc = IPOStarsService(config=cfg.ipo_stars)
+            result = svc.batch_analyze(push=True)
+            self.logger.info(
+                'IPO batch analysis done — analyzed=%d pushed=%d',
+                result.get('analyzed', 0), result.get('pushed', 0),
+            )
+        except Exception as e:
+            self.logger.error('IPO batch analysis failed: %s', e)
+
     def _trigger_daily_ops_report(self):
         """每日 16:00 生成运营报告并推送告警。"""
         try:
@@ -268,6 +290,16 @@ class Scheduler:
                 if not self._stop.is_set():
                     self.logger.info('16:00 — generating daily ops report')
                     self._trigger_daily_ops_report()
+                # 等待至 18:00 触发 IPO 批量分析
+                ipo_wait = wait_until_next(18, 0)
+                ipo_waited = 0
+                while ipo_waited < ipo_wait and not self._stop.is_set():
+                    chunk = min(60, ipo_wait - ipo_waited)
+                    time.sleep(chunk)
+                    ipo_waited += chunk
+                if not self._stop.is_set():
+                    self.logger.info('18:00 — triggering IPO batch analysis')
+                    self._trigger_ipo_batch_analysis()
             else:
                 self.logger.info('Non-trading day — skipping')
 

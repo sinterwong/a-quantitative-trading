@@ -43,9 +43,24 @@ class IPONotifier:
     # ─── 飞书卡片 ─────────────────────────────────────────────
 
     def _render_feishu(self, report: AnalysisReport) -> dict:
-        """按飞书 Webhook 富文本格式渲染。"""
-        # 评分明细
-        breakdown_lines = []
+        """按飞书交互卡片（interactive）格式渲染。"""
+        # 推荐等级颜色
+        color_map = {'重点参与': 'green', '建议观察': 'orange', '放弃': 'red'}
+        header_color = color_map.get(report.recommendation, 'blue')
+
+        elements = []
+
+        # ── 综合评估 ──
+        elements.append(self._feishu_section(
+            f"**综合评估：{report.recommendation}**\n"
+            f"综合得分: **{report.final_score:.2f}**  |  "
+            f"预测热度: {report.heat_level}  |  "
+            f"控盘程度: {report.control_level}"
+        ))
+        elements.append({"tag": "hr"})
+
+        # ── 评分明细 ──
+        breakdown_text = ""
         for sr in report.scoring_breakdown:
             dim_label = {
                 'market_sentiment': '市场情绪',
@@ -53,67 +68,91 @@ class IPONotifier:
                 'narrative': '主题/稀缺性',
                 'valuation': '基本面/估值',
             }.get(sr.dimension, sr.dimension)
-            breakdown_lines.append(
-                f"  {dim_label}({sr.weight*100:.0f}%): "
-                f"{sr.score:.2f} → 加权 {sr.weighted_score:.4f}"
+            bar = self._score_bar(sr.score)
+            breakdown_text += (
+                f"{dim_label}({sr.weight*100:.0f}%): "
+                f"{bar} {sr.score:.2f}\n"
             )
+        elements.append(self._feishu_section(
+            f"**评分明细**\n{breakdown_text}"
+        ))
 
-        # 挂单策略
-        pricing_lines = []
-        for ps in report.pricing_strategies:
-            pricing_lines.append(f"  【{ps.label}】${ps.price:.2f} — {ps.reference}")
-        if report.pricing_strategies:
-            sl = report.pricing_strategies[0].stop_loss
-            pricing_lines.append(f"  止损参考: ${sl:.2f}")
-
-        # 暗盘预估
-        dark_lines = []
+        # ── 暗盘价预估 ──
         if report.dark_price_estimate:
             dk = report.dark_price_estimate
-            dark_lines.append(
-                f"  预估区间: ${dk.low:.2f} ~ ${dk.high:.2f}（中位 ${dk.mid:.2f}，"
-                f"溢价 {dk.premium_pct:+.1f}%）"
+            dark_text = (
+                f"预估区间: **${dk.low:.2f}** ~ **${dk.high:.2f}**"
+                f"（中位 ${dk.mid:.2f}，溢价 {dk.premium_pct:+.1f}%）\n"
+                f"置信度: {dk.confidence}\n"
             )
-            dark_lines.append(f"  置信度: {dk.confidence}")
             for b in dk.basis:
-                dark_lines.append(f"    - {b}")
+                dark_text += f"- {b}\n"
+            elements.append(self._feishu_section(
+                f"**暗盘价预估**\n{dark_text}"
+            ))
 
-        # 风险提示
-        risk_lines = [f"  - {r}" for r in report.risk_alerts] if report.risk_alerts else ['  暂无']
+        # ── 挂单策略 ──
+        if report.pricing_strategies:
+            pricing_text = ""
+            for ps in report.pricing_strategies:
+                pricing_text += f"**{ps.label}**: ${ps.price:.2f} — {ps.reference}\n"
+            sl = report.pricing_strategies[0].stop_loss
+            pricing_text += f"止损参考: ${sl:.2f}\n"
+            elements.append({"tag": "hr"})
+            elements.append(self._feishu_section(
+                f"**挂单策略（限价单）**\n{pricing_text}"
+            ))
 
-        # 关键因子
-        factor_lines = [f"  {i+1}. {f}" for i, f in enumerate(report.key_factors)]
+        # ── 关键因子 ──
+        if report.key_factors:
+            factor_text = '\n'.join(
+                f"{i+1}. {f}" for i, f in enumerate(report.key_factors)
+            )
+            elements.append(self._feishu_section(
+                f"**关键影响因子**\n{factor_text}"
+            ))
 
-        text = (
-            f"IPO Stars 深度报告：{report.name} ({report.code})\n"
-            f"\n"
-            f"一、综合评估：【{report.recommendation}】\n"
-            f"  综合得分: {report.final_score:.2f}\n"
-            f"  预测热度: {report.heat_level}\n"
-            f"  控盘程度: {report.control_level}\n"
-            f"\n"
-            f"二、评分明细\n"
-            + '\n'.join(breakdown_lines) + '\n'
-            f"\n"
-            f"三、暗盘价预估\n"
-            + ('\n'.join(dark_lines) if dark_lines else '  暂无足够信息') + '\n'
-            f"\n"
-            f"四、挂单策略（建议限价单）\n"
-            + '\n'.join(pricing_lines) + '\n'
-            f"\n"
-            f"五、关键影响因子\n"
-            + '\n'.join(factor_lines) + '\n'
-            f"\n"
-            f"六、风险提示\n"
-            + '\n'.join(risk_lines) + '\n'
-            f"\n"
+        # ── 风险提示 ──
+        if report.risk_alerts:
+            risk_text = '\n'.join(f"- {r}" for r in report.risk_alerts)
+            elements.append({"tag": "hr"})
+            elements.append(self._feishu_section(
+                f"**风险提示**\n{risk_text}"
+            ))
+
+        # ── 时间 ──
+        elements.append({"tag": "hr"})
+        elements.append(self._feishu_section(
             f"分析时间: {report.analyzed_at}"
-        )
+        ))
 
         return {
-            "msg_type": "text",
-            "content": {"text": text},
+            "msg_type": "interactive",
+            "card": {
+                "header": {
+                    "title": {
+                        "tag": "plain_text",
+                        "content": f"IPO Stars: {report.name} ({report.code})",
+                    },
+                    "template": header_color,
+                },
+                "elements": elements,
+            },
         }
+
+    @staticmethod
+    def _feishu_section(text: str) -> dict:
+        """构造飞书卡片的 Markdown section 元素。"""
+        return {
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": text},
+        }
+
+    @staticmethod
+    def _score_bar(score: float, length: int = 10) -> str:
+        """生成分数条形图。"""
+        filled = round(score * length)
+        return '█' * filled + '░' * (length - filled)
 
     # ─── 钉钉 Markdown ───────────────────────────────────────
 

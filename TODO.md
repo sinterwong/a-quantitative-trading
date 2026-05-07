@@ -114,16 +114,14 @@
 
 ### Sprint 5：报告模板 & 推送增强（1 周）
 
-- [ ] **[P0] 飞书富文本卡片升级**
-  - 当前：纯文本 `msg_type: text`
-  - 升级：飞书交互卡片（`msg_type: interactive`），支持折叠/展开、评分仪表盘
-  - 模板：严格对齐 `IPO-stars.md` 第 4 节报告模版
-  - 包含：综合评估 emoji、挂单价表格、风险标红
+- [x] **[P0] 飞书富文本卡片升级** *(2026-05-07 完成)*
+  - 升级：飞书交互卡片（`msg_type: interactive`），彩色 header + lark_md sections + hr 分割线
+  - 包含：推荐等级颜色映射、评分条形图（█░）、暗盘预估、挂单策略、风险提示
+  - 新增 `_feishu_section()` / `_score_bar()` 静态方法
 
-- [ ] **[P1] 定时批量分析 + 自动推送**
-  - 文件：`backend/main.py` → 注册 Scheduler 任务
+- [x] **[P1] 定时批量分析 + 自动推送** *(2026-05-07 完成)*
+  - `backend/main.py` Scheduler 新增 `_trigger_ipo_batch_analysis()`
   - 调度：每日 18:00 自动运行 `batch_analyze(push=True)`
-  - 范围：所有 `status=subscripting` 的标的
   - 条件：`ipo_stars.enabled=true` 且 `webhook_url` 非空
 
 - [ ] **[P2] 钉钉 ActionCard 模板**

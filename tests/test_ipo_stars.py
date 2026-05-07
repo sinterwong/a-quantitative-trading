@@ -513,13 +513,24 @@ class TestNotifier:
         notifier = IPONotifier('https://fake.hook', 'feishu')
         report = self._make_report()
         payload = notifier._render_feishu(report)
-        assert payload['msg_type'] == 'text'
-        text = payload['content']['text']
-        assert '测试科技' in text
-        assert '重点参与' in text
-        assert '保守型' in text
-        assert '暗盘价预估' in text
-        assert '11.80' in text  # dark low price
+        # 交互卡片格式
+        assert payload['msg_type'] == 'interactive'
+        card = payload['card']
+        # 标题包含股票信息
+        assert '测试科技' in card['header']['title']['content']
+        assert '09696' in card['header']['title']['content']
+        # 重点参与 → 绿色
+        assert card['header']['template'] == 'green'
+        # 卡片元素包含评分、暗盘、挂单、风险等内容
+        elements_text = json.dumps(card['elements'], ensure_ascii=False)
+        assert '重点参与' in elements_text
+        assert '保守型' in elements_text
+        assert '暗盘价预估' in elements_text
+        assert '11.80' in elements_text
+        assert '回拨风险' in elements_text
+        assert '基石占比' in elements_text
+        # 包含评分条形图
+        assert '█' in elements_text
 
     def test_render_dingtalk(self):
         from backend.services.ipo_stars.notifier import IPONotifier
