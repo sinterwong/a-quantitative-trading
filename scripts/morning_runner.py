@@ -82,9 +82,10 @@ def api_delete(path: str) -> dict:
 
 # ─── 飞书推送 ──────────────────────────────────────────────────────────────
 
-def feishu_push(text: str, to_user: str = 'user:ou_b8add658ac094464606af32933a02d0b'):
+def feishu_push(text: str, to_user: str = None):
     app_id     = os.environ.get('FEISHU_APP_ID', '')
     app_secret = os.environ.get('FEISHU_APP_SECRET', '')
+    feishu_uid = to_user or os.environ.get('FEISHU_USER_OPEN_ID', '')
     if not app_id or not app_secret:
         _log.debug('Feishu not configured, skipping push')
         return
@@ -106,7 +107,7 @@ def feishu_push(text: str, to_user: str = 'user:ou_b8add658ac094464606af32933a02
         # 发送消息
         msg_url = 'https://open.feishu.cn/open-apis/im/v1/messages'
         msg_body = {
-            'receive_id': to_user.replace('user:', ''),
+            'receive_id': feishu_uid,
             'msg_type': 'text',
             'content': json.dumps({'text': text})
         }
@@ -542,7 +543,7 @@ def build_and_push_morning_report(candidates: list, buy_results: list,
         token = token_result.get('tenant_access_token', '')
         msg_url = 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id'
         msg_body = {
-            'receive_id': 'ou_b8add658ac094464606af32933a02d0b',
+            'receive_id': os.environ.get('FEISHU_USER_OPEN_ID', ''),
             'msg_type': 'text',
             'content': json.dumps({'text': report})
         }

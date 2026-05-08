@@ -281,7 +281,7 @@ def feishu_push(text: str):
 
         msg_url = 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id'
         msg_body = {
-            'receive_id': 'ou_b8add658ac094464606af32933a02d0b',
+            'receive_id': os.environ.get('FEISHU_USER_OPEN_ID', ''),
             'msg_type': 'text',
             'content': json.dumps({'text': text})
         }

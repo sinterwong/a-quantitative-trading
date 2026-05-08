@@ -2,13 +2,17 @@
 main.py — Backend service entry point
 =====================================
 Starts the HTTP API server as a persistent background process.
-Runs the Scheduler for automated daily analysis (15:10 CST).
-Runs the IntradayMonitor for intraday signal detection (every 5 min during trading hours).
+Runs the unified Scheduler for full-day automation:
+  08:30  morning_runner    — 选股→watchlist→RSI信号→下单→早报飞书
+  09:31  IntradayMonitor   — 盘中信号扫描（每5分钟 RSI 金叉/死叉）
+  15:00  afternoon_report  — 收盘晚报→飞书推送
+  15:10  /analysis/run     — 日终 DynamicStockSelectorV2 选股分析
+  16:00  DailyOpsReporter  — 每日运营报告推送
 
 Usage:
-    python main.py                    # start API server
-    python main.py --mode scheduler   # start scheduler only
-    python main.py --mode both       # API + scheduler + intraday monitor
+    python main.py                    # API server only
+    python main.py --mode scheduler   # scheduler only
+    python main.py --mode both        # API + scheduler + intraday monitor
 """
 
 import os
@@ -18,6 +22,7 @@ import logging
 import threading
 import time
 import signal
+from datetime import datetime
 
 # Load .env before accessing environment variables
 _dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
@@ -134,28 +139,113 @@ def wait_until_next(target_hour=15, target_min=10):
 
 class Scheduler:
     """
-    Background thread that triggers /analysis/run at 15:10 CST daily.
+    统一调度器 — 交易日自动化核心引擎。
+    每日定时任务（北京时间）：
+      08:30  — 早盘自动化（选股→watchlist→RSI信号→下单→早报飞书）
+      09:31  — 盘中信号监控开启（IntradayMonitor，每5分钟扫 RSI 金叉/死叉）
+      15:00  — 收盘晚报（持仓快照→日收益→飞书推送）
+      15:10  — 日终选股分析（DynamicStockSelectorV2 → 写入 analysis_*.json）
+      16:00  — 每日运营报告（告警推送）
+
+    非交易日（周末/节假日）全部跳过。
     """
+
+    # 每日定时任务表：key = (hour, minute), value = 方法名
+    DAILY_TASKS = [
+        (8,  30, '_trigger_morning_runner'),   # 早盘自动化
+        (9,  31, '_trigger_intraday_monitor'), # 盘中信号监控（仅交易时段）
+        (15,  0, '_trigger_afternoon_report'),  # 收盘晚报
+        (15, 10, '_trigger_analysis'),          # 日终选股分析
+        (16,  0, '_trigger_daily_ops_report'),  # 每日运营报告
+    ]
 
     def __init__(self, api_port: int = 5555):
         self.api_port = api_port
         self.logger = logging.getLogger('backend.scheduler')
         self._stop = threading.Event()
 
+    # ── 任务触发方法 ────────────────────────────────────────────────
+
+    def _trigger_morning_runner(self):
+        """08:30 — 调用 morning_runner.run() 完整早盘流程。"""
+        self.logger.info('[Scheduler] 08:30 — triggering morning_runner')
+        try:
+            import importlib.util, sys as _sys, os as _os
+            scripts_dir = os.path.join(PROJ_DIR, 'scripts')
+            _sys.path.insert(0, scripts_dir)
+            # 直接加载脚本模块并调用 run()
+            spec = importlib.util.spec_from_file_location(
+                'morning_runner', os.path.join(scripts_dir, 'morning_runner.py'))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            mod.run()
+            self.logger.info('[Scheduler] morning_runner completed')
+        except Exception as e:
+            self.logger.error('[Scheduler] morning_runner failed: %s', e)
+
+    def _trigger_intraday_monitor(self):
+        """09:31 — 通知 IntradayMonitor 启动盘中信号扫描（每5分钟一次）。"""
+        self.logger.info('[Scheduler] 09:31 — triggering intraday monitor')
+        # 注意：不能在 Scheduler 实例方法里导入 backend.main（循环引用），
+        # 所以直接引用 backend.main 模块级别定义的 _monitor 变量
+        import sys as _sys
+        _sys.path.insert(0, os.path.join(PROJ_DIR, 'backend'))
+        try:
+            import backend.main as _bm
+            monitor = getattr(_bm, '_monitor', None)
+            if monitor is not None:
+                monitor.start()
+                self.logger.info('[Scheduler] IntradayMonitor started')
+            else:
+                self.logger.warning('[Scheduler] IntradayMonitor not yet initialized')
+        except Exception as e:
+            self.logger.error('[Scheduler] IntradayMonitor start failed: %s', e)
+
+    def _trigger_afternoon_report(self):
+        """15:00 — 调用 afternoon_report.run() 收盘晚报。"""
+        self.logger.info('[Scheduler] 15:00 — triggering afternoon_report')
+        try:
+            import importlib.util, sys as _sys
+            scripts_dir = os.path.join(PROJ_DIR, 'scripts')
+            _sys.path.insert(0, scripts_dir)
+            spec = importlib.util.spec_from_file_location(
+                'afternoon_report', os.path.join(scripts_dir, 'afternoon_report.py'))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            mod.run()
+            self.logger.info('[Scheduler] afternoon_report completed')
+        except Exception as e:
+            self.logger.error('[Scheduler] afternoon_report failed: %s', e)
+
     def _trigger_analysis(self):
-        """HTTP POST to /analysis/run on the local API."""
+        """15:10 — HTTP POST 到 /analysis/run（已有逻辑）。"""
+        self.logger.info('[Scheduler] 15:10 — triggering /analysis/run')
         import urllib.request
         url = f'http://127.0.0.1:{self.api_port}/analysis/run'
         try:
             req = urllib.request.Request(url, method='POST')
             with urllib.request.urlopen(req, timeout=120) as r:
                 body = r.read()
-            self.logger.info('Analysis triggered: %s', body.decode('utf-8', errors='replace')[:200])
+            self.logger.info('[Scheduler] analysis triggered: %s',
+                             body.decode('utf-8', errors='replace')[:200])
         except Exception as e:
-            self.logger.error('Analysis trigger failed: %s', e)
+            self.logger.error('[Scheduler] /analysis/run failed: %s', e)
+
+        # 每周一额外触发行业轮动
+        from datetime import datetime as _dt
+        if _dt.now().weekday() == 0:
+            self._trigger_sector_rotation()
+            # 季报刷新：季度末月（3/6/9/12）25日起，或财报季首周（1/4/7/10月1-7日）
+            is_quarter_end = _dt.now().month in (3, 6, 9, 12) and _dt.now().day >= 25
+            is_earnings_season = _dt.now().month in (1, 4, 7, 10) and 1 <= _dt.now().day <= 7
+            if is_quarter_end or is_earnings_season:
+                label = 'quarter-end' if is_quarter_end else 'earnings-season'
+                self.logger.info('[Scheduler] %s — refreshing fundamental data', label)
+                self._refresh_fundamentals()
 
     def _trigger_sector_rotation(self):
-        """HTTP POST to /analysis/sector_rotation — 每周一收盘后触发行业轮动换仓信号。"""
+        """每周一 15:10 后 — HTTP POST 到 /analysis/sector_rotation。"""
+        self.logger.info('[Scheduler] Monday — triggering sector rotation')
         import urllib.request, json as _json
         url = f'http://127.0.0.1:{self.api_port}/analysis/sector_rotation'
         try:
@@ -167,20 +257,14 @@ class Scheduler:
             data = _json.loads(body)
             buy  = data.get('data', {}).get('buy', [])
             sell = data.get('data', {}).get('sell', [])
-            self.logger.info('行业轮动信号 — 买入: %s  卖出: %s', buy, sell)
+            self.logger.info('[Scheduler] 行业轮动信号 — 买入: %s  卖出: %s', buy, sell)
         except Exception as e:
-            self.logger.error('Sector rotation trigger failed: %s', e)
+            self.logger.error('[Scheduler] sector rotation failed: %s', e)
 
     def _refresh_fundamentals(self):
-        """季报季度末 / 财报季强制刷新持仓标的基本面数据缓存。
-
-        触发时机（由 _run_loop 判断）：
-          • 每季度末月（3/6/9/12）25 日起 — 季报发布前预热
-          • 每财报季首周（1/4/7/10 月 1-7 日） — 新季报落地后强制更新
-        """
+        """季报季度末 / 财报季强制刷新持仓标的基本面数据缓存。"""
         import sys as _sys, urllib.request as _req, json as _j
         try:
-            # 1. 获取当前持仓标的
             url = f'http://127.0.0.1:{self.api_port}/positions'
             with _req.urlopen(url, timeout=5) as r:
                 d = _j.loads(r.read())
@@ -189,10 +273,9 @@ class Scheduler:
             symbols = []
 
         if not symbols:
-            self.logger.info('Fundamental refresh: no held positions, skipping')
+            self.logger.info('[Scheduler] Fundamental refresh: no positions, skipping')
             return
 
-        # 2. 使用 FundamentalDataManager 强制失效并重新拉取
         _sys.path.insert(0, PROJ_DIR)
         try:
             from core.fundamental_data import FundamentalDataManager
@@ -202,21 +285,18 @@ class Scheduler:
                 try:
                     mgr.invalidate(sym)
                     df = mgr.get_fundamentals(sym)
-                    if not df.empty:
-                        ok += 1
-                        self.logger.debug('Fundamental refreshed: %s (%d rows)', sym, len(df))
-                    else:
-                        fail += 1
-                        self.logger.warning('Fundamental refresh empty: %s', sym)
+                    ok += 1 if not df.empty else 0
+                    fail += 1 if df.empty else 0
                 except Exception as e:
                     fail += 1
                     self.logger.warning('Fundamental refresh error %s: %s', sym, e)
-            self.logger.info('Fundamental refresh done — ok=%d fail=%d symbols=%s', ok, fail, symbols)
+            self.logger.info('[Scheduler] Fundamental refresh done — ok=%d fail=%d', ok, fail)
         except ImportError as e:
-            self.logger.error('Fundamental refresh import failed: %s', e)
+            self.logger.error('[Scheduler] FundamentalDataManager import failed: %s', e)
 
     def _trigger_daily_ops_report(self):
-        """每日 16:00 生成运营报告并推送告警。"""
+        """16:00 — DailyOpsReporter 运营报告。"""
+        self.logger.info('[Scheduler] 16:00 — triggering daily ops report')
         try:
             sys.path.insert(0, PROJ_DIR)
             from core.daily_ops_reporter import DailyOpsReporter
@@ -224,52 +304,45 @@ class Scheduler:
             report = reporter.run()
             n_trades = report.get('trades', {}).get('n_trades', 0)
             pnl = report.get('portfolio', {}).get('total_unrealized_pnl', 0.0)
-            self.logger.info('Daily ops report sent — trades=%d unrealized_pnl=%.2f', n_trades, pnl)
+            self.logger.info('[Scheduler] ops report done — trades=%d unrealized_pnl=%.2f', n_trades, pnl)
         except Exception as e:
-            self.logger.error('Daily ops report failed: %s', e)
+            self.logger.error('[Scheduler] daily ops report failed: %s', e)
+
+    # ── 核心循环 ────────────────────────────────────────────────────────
 
     def _run_loop(self):
-        self.logger.info('Scheduler started')
+        self.logger.info('[Scheduler] started — tasks: %s',
+                         [(f'{h:02d}:{m:02d}', fn) for h, m, fn in self.DAILY_TASKS])
+
         while not self._stop.is_set():
-            seconds = wait_until_next(15, 10)
-            self.logger.info('Next run in %.0f seconds (%s)', seconds,
-                            'skipping non-trading day' if not is_trading_day() else 'will trigger')
-            # Wait in 60-second chunks so stop signal is responsive
-            waited = 0
-            while waited < seconds and not self._stop.is_set():
-                chunk = min(60, seconds - waited)
-                time.sleep(chunk)
-                waited += chunk
-            if self._stop.is_set():
-                break
-            if is_trading_day():
-                self.logger.info('Trading day — triggering analysis')
-                self._trigger_analysis()
-                from datetime import datetime as _dt
-                today = _dt.now()
-                # 每周一额外触发行业轮动（weekday() == 0）
-                if today.weekday() == 0:
-                    self.logger.info('Monday — triggering sector rotation')
-                    self._trigger_sector_rotation()
-                # 季报刷新：季度末月（3/6/9/12）25 日起，或财报季首周（1/4/7/10 月 1-7 日）
-                is_quarter_end = today.month in (3, 6, 9, 12) and today.day >= 25
-                is_earnings_season = today.month in (1, 4, 7, 10) and 1 <= today.day <= 7
-                if is_quarter_end or is_earnings_season:
-                    label = 'quarter-end' if is_quarter_end else 'earnings-season'
-                    self.logger.info('%s — refreshing fundamental data cache', label)
-                    self._refresh_fundamentals()
-                # 等待至 16:00 触发每日运营报告
-                ops_wait = wait_until_next(16, 0)
-                ops_waited = 0
-                while ops_waited < ops_wait and not self._stop.is_set():
-                    chunk = min(60, ops_wait - ops_waited)
-                    time.sleep(chunk)
-                    ops_waited += chunk
-                if not self._stop.is_set():
-                    self.logger.info('16:00 — generating daily ops report')
-                    self._trigger_daily_ops_report()
+            now = datetime.now()
+
+            # ── 检查每个定时任务 ──
+            for target_hour, target_min, method_name in self.DAILY_TASKS:
+                target = now.replace(hour=target_hour, minute=target_min,
+                                     second=0, microsecond=0)
+                # 触发窗口：目标时间 ± 60 秒（防止时钟漂移丢任务）
+                if abs((now - target).total_seconds()) < 60:
+                    if not is_trading_day():
+                        self.logger.info('[Scheduler] %02d:%02d — 非交易日，跳过 %s',
+                                         target_hour, target_min, method_name)
+                        continue
+
+                    self.logger.info('[Scheduler] >>> %02d:%02d 触发 %s',
+                                     target_hour, target_min, method_name)
+                    handler = getattr(self, method_name, None)
+                    if handler:
+                        t = threading.Thread(target=handler, name=f'Scheduler-{method_name}')
+                        t.start()
+                        # 等待该任务完成（避免多个任务同时跑抢占资源）
+                        t.join()
+                    else:
+                        self.logger.error('[Scheduler] 方法不存在: %s', method_name)
+
+                    break  # 一次循环只触发一个任务，避免重复
             else:
-                self.logger.info('Non-trading day — skipping')
+                # 没有任务触发：休息 30 秒再检查
+                time.sleep(30)
 
     def start(self) -> threading.Thread:
         t = threading.Thread(target=self._run_loop, daemon=True, name='Scheduler')
@@ -277,6 +350,7 @@ class Scheduler:
         return t
 
     def stop(self):
+        self.logger.info('[Scheduler] stopping')
         self._stop.set()
 
 
