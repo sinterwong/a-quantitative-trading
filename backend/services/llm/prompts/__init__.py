@@ -3,16 +3,13 @@ prompts/__init__.py — Prompt 模板导出
 """
 
 from backend.services.llm.prompts import (
-    news_sentiment, policy_analysis, market_narrative, ipo_narrative,
-    ipo_prospectus, signal_review,
+    news_sentiment, policy_analysis, market_narrative, signal_review,
 )
 
 SYSTEM_PROMPTS = {
     'news_sentiment': news_sentiment.SYSTEM_PROMPT,
     'policy_analysis': policy_analysis.SYSTEM_PROMPT,
     'market_narrative': market_narrative.SYSTEM_PROMPT,
-    'ipo_narrative': ipo_narrative.SYSTEM_PROMPT,
-    'ipo_prospectus': ipo_prospectus.SYSTEM_PROMPT,
     'signal_review': signal_review.SYSTEM_PROMPT,
 }
 
@@ -20,8 +17,6 @@ USER_TEMPLATES = {
     'news_sentiment': news_sentiment.USER_TEMPLATE,
     'policy_analysis': policy_analysis.USER_TEMPLATE,
     'market_narrative': market_narrative.USER_TEMPLATE,
-    'ipo_narrative': ipo_narrative.USER_TEMPLATE,
-    'ipo_prospectus': ipo_prospectus.USER_TEMPLATE,
     'signal_review': signal_review.USER_TEMPLATE,
 }
 
