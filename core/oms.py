@@ -5,7 +5,7 @@ BrokerAdapter 协议：所有券商（Paper / 富途 / 老虎 / IBKR）实现同
 OMS 类：PreTrade 风控 → 发送订单 → 记录成交
 
 当前实现：
-  - PaperBroker: 模拟撮合（复用现有逻辑）
+  - EventDrivenPaperBroker: 模拟撮合（事件驱动版，与 backend.services.broker.PaperBroker 区分）
   - OMS: 单例，管理订单路由
 """
 
@@ -127,16 +127,24 @@ class BrokerAdapter(ABC):
         return self.__class__.__name__
 
 
-# ─── PaperBroker ─────────────────────────────────────────────────────────────
+# ─── EventDrivenPaperBroker ──────────────────────────────────────────────────
 
-class PaperBroker(BrokerAdapter):
+class EventDrivenPaperBroker(BrokerAdapter):
     """
-    模拟撮合 Paper Broker（复用现有 backend/services/broker.py 逻辑）。
-    市价单：取腾讯实时报价 × 0.9995（买入）/ 1.0005（卖出）估算滑点
-    涨停/跌停股无法成交
+    事件驱动 Paper Broker（OMS / EventBus 路径专用）。
+
+    与 backend.services.broker.PaperBroker 的区别：
+      - 这个类继承 BrokerAdapter，依赖 Order/Fill/Position 数据类（事件流）
+      - backend.services.broker.PaperBroker 直接同步更新 PortfolioService（生产链路）
+      - 当前生产链路使用后者，本类供 paper_trade_validator 与 streamlit_app 等
+        事件驱动验证场景使用，避免名称歧义
+
+    撮合逻辑：
+      市价单：取腾讯实时报价 × 0.9995（买入）/ 1.0005（卖出）估算滑点
+      涨停/跌停股无法成交
     """
 
-    name = 'PaperBroker'
+    name = 'EventDrivenPaperBroker'
 
     def __init__(self):
         self._orders: Dict[str, Order] = {}
@@ -158,7 +166,7 @@ class PaperBroker(BrokerAdapter):
                     current_price=float(p.get('current_price', 0)),
                 )
         except Exception as e:
-            print(f"[PaperBroker] Failed to load positions: {e}")
+            print(f"[EventDrivenPaperBroker] Failed to load positions: {e}")
 
     def send(self, order: Order) -> Fill:
         """模拟撮合"""
@@ -263,7 +271,7 @@ class PaperBroker(BrokerAdapter):
             with urllib.request.urlopen(req, timeout=5) as r:
                 jsonlib.loads(r.read())
         except Exception as e:
-            print(f"[PaperBroker] persist_fill error: {e}")
+            print(f"[EventDrivenPaperBroker] persist_fill error: {e}")
 
     def cancel(self, order_id: str) -> bool:
         if order_id in self._orders:
@@ -292,7 +300,7 @@ class PaperBroker(BrokerAdapter):
                     'volume': float(fields[6]),
                 }
         except Exception as e:
-            print(f"[PaperBroker] quote error for {symbol}: {e}")
+            print(f"[EventDrivenPaperBroker] quote error for {symbol}: {e}")
         return {'last': 0}
 
     def get_positions(self) -> List[Position]:
@@ -324,7 +332,7 @@ class OMS:
         if hasattr(self, '_initialized') and self._initialized:
             return
         self._initialized = True
-        self.broker = broker or PaperBroker()
+        self.broker = broker or EventDrivenPaperBroker()
         self.bus: Optional['EventBus'] = None
         self._order_book: Dict[str, Order] = {}
         self._position_book: Dict[str, Position] = {}

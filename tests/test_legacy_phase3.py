@@ -25,10 +25,11 @@ class TestBrokerFactory(unittest.TestCase):
         print(f'\nDefault mode: {factory.mode}')
 
     def test_paper_broker_works(self):
+        # core.brokers.paper.PaperBroker 是 core.oms.EventDrivenPaperBroker 的别名
         from core.brokers.paper import PaperBroker
         broker = PaperBroker()
-        self.assertEqual(broker.name, 'PaperBroker')
-        print(f'\nPaperBroker name: {broker.name} OK')
+        self.assertEqual(broker.name, 'EventDrivenPaperBroker')
+        print(f'\nbroker.name: {broker.name} OK')
 
     def test_futu_submit_order_offline_graceful(self):
         """FutuBroker 已完整实现：未连接时 submit_order 优雅降级（返回零股 Fill）。"""

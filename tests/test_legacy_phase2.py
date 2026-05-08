@@ -13,7 +13,7 @@ from core.data_sources import (
     TencentMinuteDataSource, NorthBoundDataSource,
     CompositeMarketDataSource, MarketSnapshot,
 )
-from core.oms import OMS, PaperBroker, Order
+from core.oms import OMS, EventDrivenPaperBroker, Order
 from core.risk_engine import RiskEngine, RiskResult, PositionBook
 from core.event_bus import EventBus
 
@@ -58,7 +58,7 @@ class TestDataSources(unittest.TestCase):
 class TestPaperBroker(unittest.TestCase):
 
     def test_quote(self):
-        broker = PaperBroker()
+        broker = EventDrivenPaperBroker()
         quote = broker.quote('600900.SH')
         self.assertIn('last', quote)
         print(f"\nQuote 600900.SH: {quote}")
@@ -99,7 +99,7 @@ class TestOMSSignalIntegration(unittest.TestCase):
     def test_oms_single_signal(self):
         """Signal → OMS.submit → Fill"""
         from core.oms import OMS
-        broker = PaperBroker()
+        broker = EventDrivenPaperBroker()
         oms = OMS.__new__(OMS)
         oms.broker = broker
         oms._initialized = True
