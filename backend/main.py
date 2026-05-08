@@ -484,18 +484,37 @@ def main():
             from core.pipeline_factory import build_runner
 
             def _runner_symbols():
-                """动态获取候选标的：持仓标的 + 宽基 ETF 兜底。"""
+                """
+                动态获取候选标的：持仓 ∪ watchlist。
+                让 StrategyRunner 同时为 watchlist 标的算 pipeline_score，
+                IntradayMonitor._check_new_positions 才能基于真实分数决定建仓。
+                无持仓+无 watchlist 时回退到宽基 ETF。
+                """
+                import urllib.request as _req, json as _j
+                symbols: set = set()
+                # 持仓标的（用于持仓加仓 + ExitEngine 评分）
                 try:
-                    import urllib.request as _req, json as _j
                     url = f'http://127.0.0.1:{args.port}/positions'
                     with _req.urlopen(url, timeout=3) as r:
                         d = _j.loads(r.read())
-                    held = [p['symbol'] for p in d.get('positions', [])
-                            if p.get('shares', 0) > 0]
-                    if held:
-                        return held
+                    for p in d.get('positions', []):
+                        if p.get('shares', 0) > 0 and p.get('symbol'):
+                            symbols.add(p['symbol'])
                 except Exception:
                     pass
+                # watchlist 标的（用于新仓建仓评分）
+                try:
+                    url = f'http://127.0.0.1:{args.port}/watchlist'
+                    with _req.urlopen(url, timeout=3) as r:
+                        d = _j.loads(r.read())
+                    for w in d.get('watchlist', []):
+                        sym = w.get('symbol')
+                        if sym:
+                            symbols.add(sym)
+                except Exception:
+                    pass
+                if symbols:
+                    return sorted(symbols)
                 return ['510300.SH', '159915.SZ', '512690.SH']
 
             runner = build_runner(
