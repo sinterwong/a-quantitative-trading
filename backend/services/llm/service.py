@@ -107,6 +107,18 @@ class MarketNarrative:
     from_cache: bool = False
 
 
+@dataclass
+class SignalReview:
+    """LLM 信号审核结果"""
+    approved: bool = False
+    decision: str = ""             # APPROVE | REJECT | REVIEW_MANUALLY
+    reason: str = ""               # 决策理由
+    confidence: float = 0.0        # 0.0-1.0
+    size_rec: Optional[int] = None  # 建议仓位（股数），None 表示不建议建仓
+    risk_warnings: list[str] = field(default_factory=list)
+    raw_json: str = ""
+
+
 # ─── 异常定义 ────────────────────────────────
 
 
@@ -576,6 +588,162 @@ class LLMService:
             raw_json=raw,
             from_cache=False,
         )
+
+    # ─── 信号审核 ───────────────────────────────
+
+    def analyze_signal_review(
+        self,
+        symbol: str,
+        direction: str,
+        signal: str,
+        price: float,
+        alert_reason: str,
+        extra_fields: str = '',
+        timeout: int = 15,
+    ) -> SignalReview:
+        """
+        LLM 信号审核——评估交易信号是否值得执行。
+
+        Args:
+            symbol:       股票代码，如 600036.SH
+            direction:    BUY 或 SELL
+            signal:      信号来源/类型，如 BUY / RSI_OVERSOLD
+            price:       当前价格
+            alert_reason: 预警原因
+            extra_fields: 额外补充字段（格式化为字符串追加到 user prompt）
+            timeout:      LLM 超时（秒）
+
+        Returns:
+            SignalReview 结果
+        """
+        from .prompts import SYSTEM_PROMPTS, USER_TEMPLATES
+
+        system_prompt = SYSTEM_PROMPTS['signal_review']
+        user_prompt = USER_TEMPLATES['signal_review'].format(
+            symbol=symbol,
+            direction=direction,
+            signal=signal,
+            price=price,
+            alert_reason=alert_reason,
+            extra_fields=extra_fields,
+        )
+
+        messages = [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_prompt},
+        ]
+
+        try:
+            last_error = None
+            for attempt in range(self.max_retries + 1):
+                try:
+                    response = self.provider.chat(messages, temperature=0.1, max_tokens=1024)
+                    raw = response.content
+                    break
+                except Exception as e:
+                    last_error = e
+                    if attempt < self.max_retries:
+                        import time
+                        delay = self.retry_base_delay * (2 ** attempt)
+                        logger.warning("SignalReview LLM attempt %d failed: %s. Retrying in %.1fs...", attempt + 1, e, delay)
+                        time.sleep(delay)
+                    else:
+                        raise LLMError(f"SignalReview LLM failed after {self.max_retries + 1} attempts: {last_error}")
+
+            parsed = self._parse_json(raw)
+            return self._parse_signal_review_result(parsed, raw)
+        except LLMParseError:
+            # LLM 解析失败时返回人工复核
+            logger.warning("SignalReview LLM parse failed, returning REVIEW_MANUALLY")
+            return SignalReview(
+                approved=False,
+                decision='REVIEW_MANUALLY',
+                reason='LLM 响应格式解析失败，请人工复核',
+                confidence=0.0,
+                size_rec=None,
+                risk_warnings=['LLM 响应格式异常'],
+                raw_json='',
+            )
+
+    def _parse_signal_review_result(self, parsed: dict, raw: str) -> SignalReview:
+        """将 LLM JSON 解析为 SignalReview"""
+        decision = parsed.get('decision', 'REVIEW_MANUALLY')
+        return SignalReview(
+            approved=parsed.get('approved', False),
+            decision=decision,
+            reason=parsed.get('reason') or '',
+            confidence=_safe_float(parsed.get('confidence', 0.5)) or 0.5,
+            size_rec=parsed.get('size_rec'),
+            risk_warnings=parsed.get('risk_warnings') or [],
+            raw_json=raw,
+        )
+
+
+def signal_review(
+    symbol: str,
+    direction: str,
+    signal: str,
+    price: float,
+    alert_reason: str,
+    entry_price=None,
+    position_shares: int = 0,
+    position_pnl: float = 0,
+    rsi_value=None,
+    atr_ratio=None,
+    market_regime: str = 'UNKNOWN',
+    north_flow_yi: float = 0,
+    cash: float = 0,
+    equity: float = 0,
+    other_positions=None,
+    recent_trades=None,
+    news_sentiment: str = '',
+    provider=None,
+) -> SignalReview:
+    """
+    Standalone signal_review — 构建补充字段并委托 LLMService.analyze_signal_review。
+    """
+    extra_parts = []
+    if entry_price is not None:
+        extra_parts.append(f"持仓入场价：{entry_price}")
+    if position_shares:
+        extra_parts.append(f"当前持仓：{position_shares}股，浮动盈亏：{position_pnl:.2f}")
+    if rsi_value is not None:
+        extra_parts.append(f"RSI(14)：{rsi_value:.1f}")
+    if atr_ratio is not None:
+        extra_parts.append(f"ATR Ratio：{atr_ratio:.2f}")
+    extra_parts.append(f"市场状态：{market_regime}")
+    extra_parts.append(f"北向资金：{north_flow_yi:.1f}亿")
+    extra_parts.append(f"账户现金：{cash:.0f}元，总权益：{equity:.0f}元")
+    if other_positions:
+        extra_parts.append(f"其他持仓：{other_positions}")
+    if recent_trades:
+        extra_parts.append(f"近期交易：{recent_trades}")
+    if news_sentiment:
+        extra_parts.append(f"新闻情绪：{news_sentiment}")
+
+    extra_fields = '\n'.join(extra_parts)
+
+    # 如果没有 provider，走降级路径
+    if provider is None:
+        return SignalReview(
+            approved=False,
+            decision='REVIEW_MANUALLY',
+            reason='LLM Provider 未配置，请人工审核信号',
+            confidence=0.0,
+            size_rec=None,
+            risk_warnings=['LLM Provider 未配置'],
+            raw_json='',
+        )
+
+    svc = LLMService(provider)
+    return svc.analyze_signal_review(
+        symbol=symbol,
+        direction=direction,
+        signal=signal,
+        price=price,
+        alert_reason=alert_reason,
+        extra_fields=extra_fields,
+    )
 
 
 def _safe_float(val) -> Optional[float]:
