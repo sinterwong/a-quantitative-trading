@@ -43,6 +43,18 @@ logger = logging.getLogger('intraday_monitor')
 CHECK_INTERVAL  = 300   # 秒(5分钟)
 COOLDOWN       = 900   # 同一标的信号推送冷却时间(15分钟)
 
+# ── 信号阈值（统一管理，禁止散落硬编码）─────────────────────────────────
+# 新仓建仓阈值：watchlist 标的 pipeline_score 超过此值才考虑建仓。
+# 与 RunnerConfig.signal_threshold 对齐，确保 StrategyRunner 与 IntradayMonitor
+# 两侧使用相同基线。
+BUY_THRESHOLD_NEW = 0.50
+# 持仓加仓阈值：已有持仓的标的 pipeline_score 超过此值视为加仓积累信号。
+# 低于建仓阈值，因为加仓的边际成本（已知风险敞口）小于建仓。
+BUY_THRESHOLD_ADD = 0.30
+# 单标的最大仓位占总权益比例。与 PaperBroker.max_position_pct 对齐，
+# 在 IntradayMonitor 内做"前置裁剪"，避免提交后被 broker 拒单。
+MAX_POSITION_PCT = 0.25
+
 
 # ─── 交易日判断（与 main.py Scheduler 共享同一套逻辑） ───────
 
@@ -394,8 +406,15 @@ class IntradayMonitor:
 
     def _calc_shares(self, symbol: str, price: float) -> int:
         """
-        根据 Kelly 仓位比例计算可买股数(整手 100 股)。
-        使用 _kelly_pct(0.0~1.0)作为仓位比例。
+        计算可买股数(整手 100 股)，在 IntradayMonitor 层做"前置裁剪"：
+
+          1. Kelly 比例约束：max_cost = cash × _kelly_pct
+          2. 单标的占比约束：position_value ≤ total_equity × MAX_POSITION_PCT
+             其中 position_value 包含已有持仓的当前市值
+          3. 取两者较小（避免提交到 broker 后再被 max_position_pct 拒单）
+
+        broker 内部仍会做最终裁剪（兜底），但前置可避免无谓的"提交 → 拒单 → 告警"
+        循环，且让仓位逻辑在监控层就可观测。
         """
         try:
             cash = self._svc.get_cash()
@@ -403,9 +422,28 @@ class IntradayMonitor:
             cash = 0
         if cash <= 0 or price <= 0:
             return 0
-        max_cost = cash * self._kelly_pct
-        raw_shares = int(max_cost / price)
-        return max(100, (raw_shares // 100) * 100)
+
+        # Kelly 约束
+        kelly_cost = cash * self._kelly_pct
+
+        # 单标的占比约束
+        try:
+            equity = self._svc.get_total_equity()
+        except Exception:
+            equity = cash  # 无法读取权益时退化为只受 cash 约束
+        try:
+            existing_pos = self._svc.get_position(symbol)
+            existing_shares = (existing_pos or {}).get('shares', 0) or 0
+        except Exception:
+            existing_shares = 0
+        max_pos_value = equity * MAX_POSITION_PCT
+        existing_value = existing_shares * price
+        max_pos_cost = max(0.0, max_pos_value - existing_value)
+
+        budget = min(kelly_cost, max_pos_cost)
+        raw_shares = int(budget / price)
+        shares = (raw_shares // 100) * 100
+        return shares if shares >= 100 else 0
 
     # ── 新闻情绪检查(Method A & B 共享)───────────────────────
 
@@ -519,6 +557,16 @@ class IntradayMonitor:
         唯一信号来源：StrategyRunner.last_scores（FactorPipeline 动态 IC 加权）。
         evaluate_signal() 降级分支已删除（消除双信号并行架构隐患）。
         """
+        # 组合警告状态联动：回撤超 dd_warn / dd_stop 时禁止所有新仓建仓，
+        # 避免 ExitEngine 刚释放的现金被立即重新分配出去（违背风控初衷）。
+        if self._risk_warn_fired or self._risk_stop_fired:
+            logger.info(
+                '_check_new_positions: portfolio drawdown active '
+                '(warn=%s stop=%s), skipping all new buys',
+                self._risk_warn_fired, self._risk_stop_fired,
+            )
+            return
+
         from services.signals import confirm_signal_minute, fetch_realtime
         watched = self._get_watched_symbols()
         if not watched:
@@ -670,6 +718,19 @@ class IntradayMonitor:
         if not direction:
             self._record_skip(alert.symbol, f'no order mapping for {signal}', 'no_mapping')
             logger.debug('No order mapping for signal %s', signal)
+            return None
+
+        # 组合警告状态联动：回撤超 dd_warn / dd_stop 时禁止 BUY（含持仓加仓）。
+        # SELL 信号不受影响，正常通过 ExitEngine 执行。
+        if direction == 'BUY' and (self._risk_warn_fired or self._risk_stop_fired):
+            self._record_skip(
+                alert.symbol,
+                f'portfolio drawdown active (warn={self._risk_warn_fired} stop={self._risk_stop_fired})',
+                'portfolio_warn',
+            )
+            logger.info(
+                'BUY %s blocked: portfolio drawdown active', alert.symbol,
+            )
             return None
 
         # 分钟确认(仅对 BUY 信号)
@@ -846,7 +907,7 @@ class IntradayMonitor:
                     f"ATR 阈值:{params.get('atr_threshold', 0.85)}(当前ATR ratio={getattr(alert, 'atr_ratio', 'N/A')})\n"
                     f"市场环境:{self._market_regime.get('regime', 'UNKNOWN')}(ATR ratio={self._market_regime.get('atr_ratio', 0):.3f})\n"
                     f"大盘状态:{mb.get('趋势', '未知')} | 情绪:{mb.get('情绪', '未知')}\n"
-                    f"可用现金:¥{cash:,.0f}(总权益:¥{self._svc.get_equity():,.0f})\n"
+                    f"可用现金:¥{cash:,.0f}(总权益:¥{self._svc.get_total_equity():,.0f})\n"
                     f"该股已有持仓:{_pos_label}\n"
                     f"当前持仓:{' | '.join(pos_summary) if pos_summary else '空仓'}\n"
                     f"近期交易:{' | '.join(trade_summary) if trade_summary else '无'}\n"
@@ -1087,7 +1148,6 @@ class IntradayMonitor:
             except Exception:
                 pass
 
-        BUY_THRESHOLD = 0.30   # combined_score > 此值视为持仓加仓信号
         alerts = []
         for pos in positions:
             sym = pos.get('symbol')
@@ -1095,7 +1155,7 @@ class IntradayMonitor:
                 continue
             self._last_scan_symbol = sym
             score = pipeline_scores.get(sym, 0.0)
-            if score <= BUY_THRESHOLD:
+            if score <= BUY_THRESHOLD_ADD:
                 continue
 
             # 获取实时行情补充 Alert 字段
@@ -1103,7 +1163,7 @@ class IntradayMonitor:
             price = quote.get('close', 0) if quote else pos.get('current_price', 0)
             pct = quote.get('pct', 0) if quote else 0.0
             day_chg = quote.get('day_chg', 0) if quote else 0.0
-            reason = f'Pipeline score={score:.4f} > {BUY_THRESHOLD}，持仓加仓信号'
+            reason = f'Pipeline score={score:.4f} > {BUY_THRESHOLD_ADD}，持仓加仓信号'
 
             alert = SignalAlert(
                 symbol=sym,
@@ -1151,70 +1211,12 @@ class IntradayMonitor:
             logger.error('ExitEngine error: %s', e, exc_info=True)
 
     def _submit_market_sell(self, sym, shares, reason=""):
-        """Helper: market sell for portfolio risk exits."""
+        """Helper: 市价卖出（供 _check_sector_concentration 行业减仓使用）。"""
         class _F:
             def __init__(self, s, sh, r):
                 self.symbol = s; self.shares = sh; self.signal = "RSI_SELL"
                 self.price = 0.0; self.reason = r; self.direction = "SELL"
         self._submit_order_for_signal(_F(sym, shares, reason))
-
-
-    def _check_portfolio_risk(self, positions):
-        """DD cascade: 8pct warn, 12pct stop."""
-        try:
-            summary = self._svc.get_portfolio_summary(refresh_prices_now=True)
-        except Exception as e:
-            logger.warning("get_portfolio_summary failed: %s", e)
-            return
-        current_equity = summary.get("total_equity", 0)
-        if not current_equity or current_equity <= 0:
-            return
-        if current_equity > self._peak_equity:
-            self._peak_equity = current_equity
-            self._risk_warn_fired = False
-            self._risk_stop_fired = False
-            logger.debug("Portfolio peak updated: %.2f", self._peak_equity)
-            return
-        drawdown = (self._peak_equity - current_equity) / self._peak_equity
-        now_str = datetime.now().strftime("%H:%M")
-
-        # BUG-1 fix: 先检查 12% 熔断,再检查 8% 警告,避免 early return 屏蔽高优先级熔断
-        # 12pct stop: full liquidation(优先执行,不受 8% 分支 return 影响)
-        if drawdown >= self._dd_stop and not self._risk_stop_fired:
-            self._risk_stop_fired = True
-            msg = "[EMERGENCY] Portfolio cascade STOP! DD: %.1f%% (threshold %.0f%%)\n" % (
-                   drawdown * 100, self._dd_stop * 100)
-            msg += " Equity: %.2f  Peak: %.2f  Time: %s\n" % (
-                   current_equity, self._peak_equity, now_str)
-            msg += " ACTION: FULL LIQUIDATION"
-            self._deliver_alert(msg)
-            if self._broker:
-                for pos in positions:
-                    sym = pos.get("symbol")
-                    shares = pos.get("shares", 0)
-                    if shares > 0:
-                        self._submit_market_sell(sym, shares, reason="portfolio_cascade_stop")
-            return
-
-        # 8pct warning: reduce to 50pct(在 12% 检查之后,避免被 early return 屏蔽)
-        if drawdown >= self._dd_warn and not self._risk_warn_fired:
-            self._risk_warn_fired = True
-            msg = "[WARNING] Portfolio DD warning DD: %.1f%% (threshold %.0f%%)\n" % (
-                   drawdown * 100, self._dd_warn * 100)
-            msg += " Equity: %.2f  Peak: %.2f  Time: %s\n" % (
-                   current_equity, self._peak_equity, now_str)
-            msg += " ACTION: Reduce position to 50pct"
-            self._deliver_alert(msg)
-            if self._broker:
-                for pos in positions:
-                    sym = pos.get("symbol")
-                    shares = pos.get("shares", 0)
-                    if shares > 0:
-                        half = max(100, (shares // 2 // 100) * 100)  # BUG-3 fix: 整手且不低于100
-                        self._submit_market_sell(sym, half, reason="portfolio_risk_reduce")
-            return
-
-        logger.debug("Portfolio DD=%.1f%% warn_fired=%s", drawdown * 100, self._risk_warn_fired)
 
     def _check_sector_concentration(self, positions: list):
         """
@@ -1264,17 +1266,23 @@ class IntradayMonitor:
 
     def _run_exit_engine(self, positions: list, now: datetime):
         """
-        统一卖出信号引擎集成层。
-        替代分散的 _check_stop_losses() + _check_take_profits() + _check_portfolio_risk(),
-        使用 ExitEngine 生成优先级排序的退出信号并统一执行。
+        统一卖出信号引擎。
+        所有止损/止盈/组合熔断都通过 ExitEngine 生成优先级排序的退出信号并统一执行。
+        旧的分散方法（_check_stop_losses / _check_take_profits / _check_portfolio_risk）
+        已删除，避免双路径不一致。
         """
         try:
             from core.exit_engine import ExitEngine
         except ImportError as e:
-            logger.warning('ExitEngine import failed, falling back to legacy checks: %s', e)
-            self._check_portfolio_risk(positions)
-            self._check_stop_losses(positions, now)
-            self._check_take_profits(positions, now)
+            logger.error(
+                'ExitEngine import failed: %s. NO exit signals will be generated this cycle. '
+                'Sell-side risk control is DOWN until import is restored.', e,
+            )
+            self._deliver_alert(
+                f'🚨 ExitEngine 导入失败：本轮不会生成任何退出信号\n'
+                f'   错误：{e}\n'
+                f'   止损/止盈/熔断暂时失效，请立即检查 core.exit_engine 模块'
+            )
             return
 
         # ── 准备 price_bars(ATR/RSI 所需的 OHLCV 数据)─────────────────
@@ -1430,180 +1438,6 @@ class IntradayMonitor:
                             sig.priority.name, sym, sell_shares, result.avg_price, result.status)
             except Exception as e:
                 logger.error('ExitEngine order failed %s %s: %s', sig.priority.name, sym, e)
-
-    def _check_take_profits(self, positions, now: datetime):
-        """
-        对持仓检查止盈条件(优先用 params.json 配置):
-        1. ATR 移动止盈(Chandelier Exit):峰值回撤超过 2×ATR 时触发
-        2. 固定止盈:涨幅达到 take_profit_pct 时触发
-        触发 → 市价卖出 → 推送飞书。
-        """
-        from services.signals import (
-            fetch_realtime,
-            check_fixed_take_profit,
-            check_atr_trailing_stop,
-        )
-
-        for pos in positions:
-            sym = pos.get('symbol')
-            if not sym:
-                continue
-            shares = pos.get('shares', 0)
-            if shares <= 0:
-                continue
-            entry_price = pos.get('entry_price', 0)
-            peak_price = pos.get('peak_price', 0) or entry_price
-            if entry_price <= 0:
-                continue
-
-            params = self._get_params(sym)
-            tp_pct = params.get('take_profit', 0.25)
-            atr_multiplier = params.get('atr_multiplier', 3.0)  # Chandelier Exit: 3x ATR
-
-            snap = fetch_realtime(sym)
-            if not snap or snap.get('price', 0) <= 0:
-                continue
-            current_price = snap['price']
-
-            # 同时更新持仓峰值(内存层面)
-            if current_price > peak_price:
-                peak_price = current_price
-
-            # 止盈冷却 key
-            tp_key = f'tp_{sym}'
-
-            # 1. ATR 移动止盈(优先,让利润奔跑)
-            atr_triggered, atr_stop, atr_reason = check_atr_trailing_stop(
-                sym, peak_price, entry_price, current_price,
-                atr_period=int(params.get('atr_period', 14)),
-                atr_multiplier=atr_multiplier)
-            logger.debug('TakeProfit ATR %s @ %.2f: %s', sym, current_price, atr_reason)
-
-            # 2. 固定止盈
-            fixed_triggered, fixed_target, fixed_reason = check_fixed_take_profit(
-                entry_price, current_price, tp_pct=tp_pct)
-            logger.debug('TakeProfit fixed %s @ %.2f: %s', sym, current_price, fixed_reason)
-
-            # 哪个先触发用哪个(取更早的信号)
-            triggered = atr_triggered or fixed_triggered
-            if not triggered:
-                continue
-
-            # 优先报告 ATR 移动止盈(更智能)
-            if atr_triggered:
-                reason = atr_reason
-                label = f'ATR移动止盈({atr_multiplier}x)'
-            else:
-                reason = fixed_reason
-                label = f'固定止盈{tp_pct*100:.0f}%'
-
-            # 冷却检查
-            if not self._cooldown.can_fire(tp_key):
-                continue
-
-            sell_shares = (shares // 100) * 100
-            try:
-                if not self._can_trade():
-                    self._deliver_alert(
-                        f'📋 [{sym}] 模拟模式:止盈跳过执行\n'
-                        f'   止盈:{label} | 卖出:{sell_shares}股 | 价:{current_price:.2f}\n'
-                        f'   原因: {reason}(切换"实盘"后生效)'
-                    )
-                    logger.info('Simulation: skipped TakeProfit SELL %s %d', sym, sell_shares)
-                    continue
-                result = self._broker.submit_order(
-                    symbol=sym, direction='SELL',
-                    shares=sell_shares, price=current_price, price_type='market',
-                )
-                status_str = '✅ 成交' if result.status == 'filled' else f'❌ {result.status}'
-                self._deliver_alert(
-                    f'🎯[{sym}] {label}触发(自动止盈)\n'
-                    f'   {status_str} {sell_shares}股 @ {result.avg_price:.2f}\n'
-                    f'   原因: {reason}'
-                )
-                logger.info('TakeProfit SELL %s %d @ %.2f => %s',
-                           sym, sell_shares, result.avg_price, result.status)
-            except Exception as e:
-                logger.error('TakeProfit order failed for %s: %s', sym, e)
-
-    def _check_stop_losses(self, positions, now: datetime):
-        """
-        对持仓逐个检查 ATR 动态止损。
-        触发止损 → 市价卖出 → 推送飞书。
-        """
-        from services.signals import (
-            fetch_realtime, check_position_stop_loss,
-        )
-        check_time = now.strftime('%H:%M')
-
-        for pos in positions:
-            sym = pos.get('symbol')
-            if not sym:
-                continue
-
-            shares = pos.get('shares', 0)
-            if shares <= 0:
-                continue
-
-            entry_price = pos.get('entry_price', 0)
-            if entry_price <= 0:
-                continue
-
-            params = self._get_params(sym)
-
-            # 获取最新价
-            snap = fetch_realtime(sym)
-            if not snap or snap.get('price', 0) <= 0:
-                continue
-            current_price = snap['price']
-
-            # 检查止损(per-symbol params,WFA 优先)
-            triggered, stop_price, reason = check_position_stop_loss(
-                sym, entry_price, current_price,
-                atr_period=int(params.get('atr_period', 14)),
-                atr_multiplier=params.get('atr_multiplier', 2.0),
-                fixed_sl_pct=params.get('stop_loss', 0.08),
-            )
-            logger.debug('StopLoss check %s @ %.2f (entry %.2f): %s',
-                        sym, current_price, entry_price, reason)
-
-            if not triggered:
-                continue
-
-            # 冷却检查(止损触发后 15 分钟内不重复)
-            sl_key = f'sl_{sym}'
-            if not self._cooldown.can_fire(sl_key):
-                continue
-
-            # 执行止损卖出(全部清仓)
-            sell_shares = (shares // 100) * 100
-            try:
-                if not self._can_trade():
-                    self._deliver_alert(
-                        f'📋 [{sym}] 模拟模式:止损跳过执行\n'
-                        f'   止损触发 | 卖出:{sell_shares}股 | 价:{current_price:.2f}\n'
-                        f'   止损价:{stop_price:.2f} | 原因: {reason}(切换"实盘"后生效)'
-                    )
-                    logger.info('Simulation: skipped StopLoss SELL %s %d', sym, sell_shares)
-                    continue
-                result = self._broker.submit_order(
-                    symbol=sym,
-                    direction='SELL',
-                    shares=sell_shares,
-                    price=current_price,
-                    price_type='market',
-                )
-                status_str = '✅ 成交' if result.status == 'filled' else f'❌ {result.status}'
-                self._deliver_alert(
-                    f'🛑[{sym}] ATR止损触发(自动平仓)\n'
-                    f'   {status_str} {sell_shares}股 @ {result.avg_price:.2f}\n'
-                    f'   止损价:{stop_price:.2f} | 当前价:{current_price:.2f}\n'
-                    f'   原因: {reason}'
-                )
-                logger.info('StopLoss SELL %s %d @ %.2f => %s',
-                           sym, sell_shares, result.avg_price, result.status)
-            except Exception as e:
-                logger.error('StopLoss order failed for %s: %s', sym, e)
 
     # ── 大盘指数监控 ───────────────────────────────────────────────
     # 监控的指数及其预警阈值(涨跌幅绝对值超过此值则告警)

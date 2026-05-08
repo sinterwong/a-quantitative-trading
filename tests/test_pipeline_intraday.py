@@ -171,6 +171,9 @@ class TestCheckNewPositionsWithScore:
 
         # 构造 mock IntradayMonitor（最小化）
         monitor = MagicMock()
+        # 组合警告 flag 必须显式设 False，否则 MagicMock 默认是 truthy → 早退
+        monitor._risk_warn_fired = False
+        monitor._risk_stop_fired = False
         monitor._strategy_runner = MagicMock()
         monitor._strategy_runner.last_scores = {'000001.SZ': 0.8}
         monitor._strategy_runner.config.signal_threshold = 0.5
@@ -350,6 +353,9 @@ class TestSafetyLayersPreserved:
         mock_confirm.return_value = (False, 50.0, 'RSI too high')  # 拒绝
 
         monitor = MagicMock()
+        # 组合警告 flag 必须显式设 False，否则 MagicMock 默认是 truthy → 早退
+        monitor._risk_warn_fired = False
+        monitor._risk_stop_fired = False
         monitor._strategy_runner = MagicMock()
         monitor._strategy_runner.last_scores = {'000001.SZ': 1.0}
         monitor._strategy_runner.config.signal_threshold = 0.5
