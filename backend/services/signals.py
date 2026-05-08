@@ -925,56 +925,6 @@ def evaluate_signal(symbol: str,
     return None
 
 
-def check_portfolio_signals(positions: list[dict]) -> list[SignalAlert]:
-    """
-    检查持仓列表的全部信号。
-    positions: [{'symbol': '600900.SH', 'shares': ..., 'rsi_buy': 35, 'rsi_sell': 70}, ...]
-    使用 load_symbol_params() 加载 WFA 优化参数（含 atr_threshold）。
-    """
-    alerts = []
-    symbols = [p.get('symbol') for p in positions if p.get('symbol')]
-    snaps   = fetch_bulk(symbols)
-
-    for pos in positions:
-        sym = pos.get('symbol')
-        if not sym:
-            continue
-
-        # 尝试批量获取，否则单个兜底
-        snap = snaps.get(sym)
-        if not snap:
-            snap = fetch_realtime(sym)
-
-        if not snap:
-            continue
-
-        # 加载 WFA/params.json 优化参数（含 atr_threshold）
-        params = load_symbol_params(sym)
-
-        alert = evaluate_signal(
-            sym,
-            rsi_buy= int(params.get('rsi_buy',  RSI_BUY_THRESHOLD)),
-            rsi_sell=int(params.get('rsi_sell', RSI_SELL_THRESHOLD)),
-            atr_threshold=float(params.get('atr_threshold', DEFAULT_ATR_THRESH)),
-            positions=positions,
-        )
-        if alert:
-            alerts.append(alert)
-
-    # 涨跌停类信号优先（最紧急）
-    URGENCY_ORDER = [
-        'LIMIT_DOWN', 'LIMIT_RISK_DOWN', 'WATCH_LIMIT_DOWN',
-        'LIMIT_UP', 'LIMIT_RISK_UP', 'WATCH_LIMIT_UP',
-        'RSI_BUY', 'WATCH_BUY', 'WATCH_SELL', 'RSI_SELL',
-        'VOLATILE',
-    ]
-    alerts.sort(key=lambda a: (
-        URGENCY_ORDER.index(a.signal) if a.signal in URGENCY_ORDER else 99,
-        -abs(a.pct) if a.pct else 0,
-    ))
-    return alerts
-
-
 # ─── 飞书消息构建 ──────────────────────────────────────────
 
 SIGNAL_EMOJI = {
