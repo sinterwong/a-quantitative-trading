@@ -707,21 +707,20 @@ def _make_recommendation(combined_score: float, dominant: str,
             reasons.append(f'ROE 为负({roe:.1f}%)')
 
         if rev is not None:
-            if rev < 0:
-                fundamental_red = True
-                reasons.append(f'营收同比下滑({rev:+.1f}%)')
-            elif rev < -20:
-                # 跌幅超 20% 额外标记为"大幅"
+            if rev < -20:
                 fundamental_red = True
                 reasons.append(f'营收同比大幅下滑({rev:+.1f}%)')
+            elif rev < 0:
+                fundamental_red = True
+                reasons.append(f'营收同比下滑({rev:+.1f}%)')
 
         if profit is not None:
-            if profit < 0:
-                fundamental_red = True
-                reasons.append(f'净利同比下滑({profit:+.1f}%)')
-            elif profit < -20:
+            if profit < -20:
                 fundamental_red = True
                 reasons.append(f'净利同比大幅下滑({profit:+.1f}%)')
+            elif profit < 0:
+                fundamental_red = True
+                reasons.append(f'净利同比下滑({profit:+.1f}%)')
 
     # 1) Regime 调整
     multiplier = 1.0

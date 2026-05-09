@@ -829,12 +829,12 @@ def evaluate_signal(symbol: str,
                             from services.northbound import get_north_flow_direction
                             direction = get_north_flow_direction(threshold_yi=NORTH_BUY_BOOST_THRESHOLD)
                             if direction['strength'] == 2:
-                                north_boost = (f'|北向持续共振({direction["days"]}日)+{direction["trend_yi"]:.0f}亿')
+                                north_boost = (f'｜北向持续共振({direction["days"]}日)+{direction["trend_yi"]:.0f}亿')
                             elif direction['strength'] == 1:
-                                north_boost = f'|北向脉冲+{net_billions:.0f}亿'
+                                north_boost = f'｜北向脉冲+{net_billions:.0f}亿'
                             if north_boost:
-                                reason = reason.replace(f'|现价{price}',
-                                                     f'{north_boost}|现价{price}')
+                                reason = reason.replace(f'｜现价{price}',
+                                                     f'{north_boost}｜现价{price}')
                 except Exception:
                     pass
 

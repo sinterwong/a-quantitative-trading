@@ -76,8 +76,8 @@ class SinaFetcher(BaseFetcher):
             )
 
         # 客户端日期过滤（新浪不支持服务器端日期范围）
-        # fetch_daily_kline 返回 date 列为 datetime 类型
-        df['date_str'] = df['date'].dt.strftime('%Y-%m-%d')
+        # start_date / end_date 格式为 YYYYMMDD，date_str 需格式化为同格式才能正确比较
+        df['date_str'] = df['date'].dt.strftime('%Y%m%d')
         df = df[df['date_str'] >= start_date]
         df = df[df['date_str'] <= end_date]
         df = df.drop(columns=['date_str'])
