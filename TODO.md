@@ -266,9 +266,10 @@
 
 **问题**：基本面季度数据手动拉取；分钟 K 线仅 AKShare 免费源（限流风险）。
 
-- [ ] **基本面季度自动更新**：Scheduler 注册财报披露日（4/15、8/30、10/31）任务，调用 `core/fundamental_data.fetch_*()` 增量更新
-- [ ] **分钟 K 线主源切换 Futu**：`core/data_layer.py` 新增 Futu 行情接入路径，AKShare 退化为备份
-- [ ] **CircuitBreaker 增强**：连续 3 次失败自动降级到备份源 + 推送 WARNING 告警
+- [x] **基本面季度自动更新**：Scheduler 已在季度末（3/6/9/12 月 25 日起）+ 财报季首周（1/4/7/10 月 1-7 日）周一调用 `_refresh_fundamentals` → `FundamentalDataManager.invalidate()` + 强制重拉
+- [ ] **分钟 K 线主源切换 Futu**：暂缓——本机无 Futu OpenD，无法验证；当前 AKShare 路径已有熔断保护
+- [x] **CircuitBreaker 增强**：`core/circuit_breaker.py` 通用熔断器（closed/open/half_open 三态，连续 N 次失败 → cooldown 期短路），已在 `_http_get`（tencent/sina）+ `_fetch_minute_bars_akshare` 接入；on_open 回调可触发告警
+- [x] **新增测试** `tests/test_circuit_breaker.py` 13 用例
 
 **关键文件**：`core/data_layer.py`、`core/fundamental_data.py`、`backend/main.py`
 **验证**：模拟主源失败，备份源生效；季度财报披露日自动拉取生效

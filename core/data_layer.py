@@ -147,15 +147,30 @@ def _symbol_to_tencent(symbol: str) -> str:
 
 
 def _http_get(url: str, timeout: int = 8, encoding: str = "gbk") -> Optional[str]:
+    src = 'tencent' if 'gtimg.cn' in url else ('sina' if 'sina' in url else 'http')
+    # P2-16: 熔断检查
+    try:
+        from core.circuit_breaker import get_breaker
+        cb = get_breaker(src, failure_threshold=3, cooldown_seconds=120.0)
+        if not cb.allow():
+            logger.warning("数据源 %s 熔断中（state=%s），跳过", src, cb.state())
+            return None
+    except Exception:
+        cb = None
+
     try:
         req = urllib.request.Request(url, headers=_HEADERS)
         with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as resp:
-            return resp.read().decode(encoding, errors="replace")
+            data = resp.read().decode(encoding, errors="replace")
+        if cb:
+            cb.on_success()
+        return data
     except Exception as exc:
         logger.debug("HTTP GET failed %s: %s", url, exc)
+        if cb:
+            cb.on_failure()
         try:
             from core.metrics import get_registry
-            src = 'tencent' if 'gtimg.cn' in url else ('sina' if 'sina' in url else 'http')
             get_registry().record_data_source_failure(src)
         except Exception:
             pass
@@ -314,6 +329,17 @@ def _fetch_minute_bars_akshare(
     Returns:
         DataFrame，列：open, high, low, close, volume，DatetimeIndex
     """
+    # P2-16: 熔断检查 — 连续 3 次失败后冷却 5 分钟，避免限流加剧
+    try:
+        from core.circuit_breaker import get_breaker
+        cb = get_breaker('akshare_minute', failure_threshold=3,
+                         cooldown_seconds=300.0)
+        if not cb.allow():
+            logger.warning("AKShare 分钟 K 线熔断中（state=%s），跳过 %s", cb.state(), symbol)
+            return None
+    except Exception:
+        cb = None
+
     try:
         import akshare as ak  # type: ignore
     except ImportError:
@@ -327,8 +353,12 @@ def _fetch_minute_bars_akshare(
 
     try:
         df = ak.stock_zh_a_minute(symbol=code, period=period, adjust=adjust)
+        if cb:
+            cb.on_success()
     except Exception as exc:
         logger.debug("AKShare minute bars failed for %s: %s", symbol, exc)
+        if cb:
+            cb.on_failure()
         try:
             from core.metrics import get_registry
             get_registry().record_data_source_failure('akshare')
