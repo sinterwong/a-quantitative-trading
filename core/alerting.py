@@ -154,6 +154,51 @@ def _send_dingtalk(webhook_url: str, text: str, level: str) -> bool:
     return _http_post(webhook_url, payload)
 
 
+def _send_feishu(webhook_url: str, text: str, level: str) -> bool:
+    """
+    发送飞书自定义机器人消息（P2-17）。
+
+    飞书 webhook 协议（与微信/钉钉略不同）：
+      - msg_type: 'interactive'（卡片）或 'text'
+      - 成功响应：{"StatusCode": 0, "StatusMessage": "success"} 或 {"code": 0}
+
+    我们用 interactive 卡片，含分级颜色头与时间戳。
+    """
+    level_meta = {
+        'CRITICAL': ('🔴', 'red'),
+        'WARNING':  ('🟡', 'yellow'),
+        'INFO':     ('🟢', 'green'),
+    }
+    icon, color = level_meta.get(level, ('⚪', 'grey'))
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    payload = {
+        'msg_type': 'interactive',
+        'card': {
+            'header': {
+                'template': color,
+                'title': {
+                    'tag': 'plain_text',
+                    'content': f'{icon} [{level}] 量化交易系统告警',
+                },
+            },
+            'elements': [
+                {
+                    'tag': 'div',
+                    'text': {'tag': 'lark_md', 'content': text},
+                },
+                {
+                    'tag': 'note',
+                    'elements': [
+                        {'tag': 'plain_text', 'content': f'时间：{ts}'},
+                    ],
+                },
+            ],
+        },
+    }
+    return _http_post(webhook_url, payload, success_keys=('StatusCode', 'code'))
+
+
 def _send_email(
     smtp_host: str,
     smtp_port: int,
@@ -181,8 +226,18 @@ def _send_email(
         return False
 
 
-def _http_post(url: str, payload: dict, timeout: int = 10) -> bool:
-    """HTTP POST JSON 请求。"""
+def _http_post(url: str, payload: dict, timeout: int = 10,
+               success_keys: tuple = ('errcode', 'ErrCode')) -> bool:
+    """
+    HTTP POST JSON 请求。
+
+    Parameters
+    ----------
+    success_keys : tuple
+        响应中标识成功的 key 名（取值 == 0 时视为成功）。
+        - 微信/钉钉：'errcode' / 'ErrCode'
+        - 飞书：'StatusCode' / 'code'
+    """
     try:
         data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
         req = urllib.request.Request(
@@ -193,10 +248,11 @@ def _http_post(url: str, payload: dict, timeout: int = 10) -> bool:
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             result = json.loads(resp.read().decode('utf-8'))
-            # 企业微信：{"errcode": 0, "errmsg": "ok"}
-            # 钉钉：{"errcode": 0, "errmsg": "ok"}
-            errcode = result.get('errcode', result.get('ErrCode', 0))
-            return int(errcode) == 0
+            for key in success_keys:
+                if key in result:
+                    return int(result.get(key, 0)) == 0
+            # 没有任何 success_key 出现 → 视为失败（保守）
+            return False
     except Exception as e:
         logger.error('[AlertManager] HTTP POST 失败: %s', e)
         return False
@@ -232,12 +288,15 @@ class AlertManager:
         self,
         wechat_webhook: Optional[str] = None,
         dingtalk_webhook: Optional[str] = None,
+        feishu_webhook: Optional[str] = None,    # P2-17
         smtp_config: Optional[Dict] = None,
         min_level: str = 'WARNING',
         rate_limit_sec: int = _RATE_LIMIT_SEC,
     ) -> None:
         self.wechat_webhook = wechat_webhook or os.environ.get('WECHAT_WEBHOOK_URL', '')
         self.dingtalk_webhook = dingtalk_webhook or os.environ.get('DINGTALK_WEBHOOK_URL', '')
+        # P2-17: 飞书 webhook 优先级与 trading.yaml.alerts.feishu_webhook 一致
+        self.feishu_webhook = feishu_webhook or os.environ.get('FEISHU_WEBHOOK_URL', '')
         self.smtp_config = smtp_config or self._load_smtp_from_env()
         self.min_level = min_level
         self._limiter = _RateLimiter(rate_limit_sec)
@@ -399,8 +458,16 @@ class AlertManager:
         sent = False
         error = ''
 
-        # 推送到各渠道（按优先级）
-        if self.wechat_webhook:
+        # 推送到各渠道（按优先级：飞书 > 微信 > 钉钉 > 邮件）
+        # P2-17: 飞书优先（README/ARCHITECTURE 一致）
+        if self.feishu_webhook:
+            try:
+                sent = _send_feishu(self.feishu_webhook, message, level)
+                channel = 'feishu'
+            except Exception as e:
+                error = str(e)
+
+        if not sent and self.wechat_webhook:
             try:
                 sent = _send_wechat(self.wechat_webhook, message, level)
                 channel = 'wechat'
@@ -446,7 +513,12 @@ class AlertManager:
         self._history.append(record)
 
         # 无推送渠道时视为成功（log_only）
-        log_only = not self.wechat_webhook and not self.dingtalk_webhook and not self.smtp_config
+        log_only = (
+            not self.feishu_webhook
+            and not self.wechat_webhook
+            and not self.dingtalk_webhook
+            and not self.smtp_config
+        )
         effective_sent = sent or log_only
 
         # 频率限制：任何实际处理（发送成功或 log_only）都标记
