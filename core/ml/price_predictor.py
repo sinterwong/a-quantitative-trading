@@ -408,7 +408,31 @@ class MLPredictionFactor(Factor):
           - 之后每行：用该行之前的数据训练，预测该行
 
         为了计算效率，当数据量足够时，直接用已保存模型对全量特征矩阵预测。
+
+        P1-8: retrain_every>0 时累计调用次数到达阈值自动重训（数据充足时）。
         """
+        # P1-8: 自动重训触发
+        self._bars_since_train += 1
+        if (
+            self.retrain_every > 0
+            and self._predictor is not None
+            and self._bars_since_train >= self.retrain_every
+            and len(data) >= 252 + 63   # WalkForwardTrainer 最小窗口
+        ):
+            try:
+                import logging
+                logging.getLogger('core.ml.price_predictor').info(
+                    'auto-retrain triggered for %s (bars_since_train=%d ≥ %d)',
+                    self.symbol, self._bars_since_train, self.retrain_every,
+                )
+                self.fit(data, use_walk_forward=True)
+                # fit() 内部会重置 _bars_since_train = 0
+            except Exception as exc:
+                import logging
+                logging.getLogger('core.ml.price_predictor').warning(
+                    'auto-retrain failed for %s: %s', self.symbol, exc,
+                )
+
         if self._predictor is None:
             # 尝试加载已保存模型
             loaded = self.load()
