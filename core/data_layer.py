@@ -562,6 +562,7 @@ class DataLayer:
         self._cache = _TTLCache()
         self._parquet = ParquetCache() if use_parquet_cache else None
         self._tencent_src = None  # 延迟初始化
+        self._quote_manager = None  # 延迟初始化
 
     def _get_tencent_source(self):
         """延迟初始化 TencentQuoteDataSource"""
@@ -569,6 +570,13 @@ class DataLayer:
             from core.tencent_quote_source import TencentQuoteDataSource
             self._tencent_src = TencentQuoteDataSource(cache_ttl=self.QUOTE_TTL)
         return self._tencent_src
+
+    def _get_quote_manager(self):
+        """延迟初始化 QuoteSourceManager"""
+        if self._quote_manager is None:
+            from core.quote_source_manager import QuoteSourceManager
+            self._quote_manager = QuoteSourceManager()
+        return self._quote_manager
 
     # ── 日K线 ────────────────────────────────────────────────────────────────
 
@@ -602,16 +610,8 @@ class DataLayer:
 
         # 网络抓取（缓存过旧或不存在时）
         if df is None:
-            # 港股/美股使用统一腾讯数据源
-            tc_sym = _symbol_to_tencent(symbol)
-            if tc_sym.startswith(("hk", "us")):
-                src = self._get_tencent_source()
-                df_net = src.fetch_kline(symbol, period="day", limit=max(days, 365))
-            else:
-                df_net = _fetch_daily_bars_tencent(symbol, max(days, 365))
-                if df_net is None or df_net.empty:
-                    logger.info("Tencent bars failed for %s, trying Sina", symbol)
-                    df_net = _fetch_daily_bars_sina(symbol, max(days, 365))
+            mgr = self._get_quote_manager()
+            df_net = mgr.fetch_daily_kline(symbol, days=max(days, 365))
 
             if df_net is not None and not df_net.empty:
                 # 转换为 DatetimeIndex
@@ -644,7 +644,7 @@ class DataLayer:
         adjust: str = 'qfq',
     ) -> pd.DataFrame:
         """
-        获取分钟 K 线（通过 AKShare，免费，约 1 年历史）。
+        获取分钟 K 线（新浪 A 股 / 腾讯港股，AKShare 兜底）。
 
         Args:
             symbol: 标的代码，如 '510300' 或 '510300.SH'
@@ -652,17 +652,22 @@ class DataLayer:
             adjust: 复权方式 'qfq'|'hfq'|''
 
         Returns:
-            DataFrame，DatetimeIndex，列：open, high, low, close, volume
+            DataFrame，列：datetime, open, high, low, close, volume
         """
         cache_key = f"minute:{symbol}:{period}:{adjust}"
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
 
-        df = _fetch_minute_bars_akshare(symbol, period=period, adjust=adjust)
+        mgr = self._get_quote_manager()
+        df = mgr.fetch_minute_kline(symbol, period=f'{period}m', limit=200)
+
         if df is None or df.empty:
-            logger.warning("分钟 K 线获取失败: %s", symbol)
-            df = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+            # 最后兜底：AKShare
+            df = _fetch_minute_bars_akshare(symbol, period=period, adjust=adjust)
+            if df is None or df.empty:
+                logger.warning("分钟 K 线获取失败: %s", symbol)
+                df = pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
 
         # 分钟数据缓存 5 分钟（交易时间内需要较频繁刷新）
         self._cache.set(cache_key, df, 300)

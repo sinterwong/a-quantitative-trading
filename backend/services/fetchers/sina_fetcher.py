@@ -61,52 +61,26 @@ class SinaFetcher(BaseFetcher):
         """
         通过新浪财经接口获取日线历史数据。
 
-        注意：新浪接口不支持服务器端日期过滤，
-        返回全量历史（约6000条），日期过滤在客户端完成。
+        委托给 core.sina_quote_source.SinaQuoteDataSource 统一处理。
         """
         self._rate_limit_sleep()
 
-        sina_code = self._to_sina_code(stock_code)
-        url = (
-            f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php"
-            f"/CN_MarketData.getKLineData"
-            f"?symbol={sina_code}&scale=240&ma=no&datalen=6000"
-        )
+        from core.sina_quote_source import get_sina_source
+        src = get_sina_source()
+        df = src.fetch_daily_kline(stock_code, days=6000)
 
-        headers = {
-            'User-Agent': random.choice(self._USER_AGENTS),
-            'Referer': 'https://finance.sina.com.cn/',
-        }
-
-        raw_text: Optional[str] = None
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, context=self._SSL_CTX, timeout=30) as resp:
-                raw_text = resp.read().decode('utf-8', errors='replace')
-
-        except Exception as e:
-            self._classify_and_raise(e, stock_code)
-
-        try:
-            data_list = json.loads(raw_text)
-        except json.JSONDecodeError:
-            raise DataSourceUnavailableError(
-                f"[SinaFetcher] JSON解析失败: {stock_code}",
-                source=self.name, stock_code=stock_code
-            )
-
-        if not data_list:
+        if df.empty:
             raise DataFetchError(
                 f"[SinaFetcher] 空数据: {stock_code}",
                 source=self.name, stock_code=stock_code
             )
 
-        # 转换为 DataFrame
-        df = pd.DataFrame(data_list)
-
         # 客户端日期过滤（新浪不支持服务器端日期范围）
-        df = df[df['day'] >= start_date]
-        df = df[df['day'] <= end_date]
+        # fetch_daily_kline 返回 date 列为 datetime 类型
+        df['date_str'] = df['date'].dt.strftime('%Y-%m-%d')
+        df = df[df['date_str'] >= start_date]
+        df = df[df['date_str'] <= end_date]
+        df = df.drop(columns=['date_str'])
 
         if df.empty:
             raise DataFetchError(
@@ -118,18 +92,14 @@ class SinaFetcher(BaseFetcher):
 
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
         """
-        新浪原始列名: day, open, close, high, low, volume
+        SinaQuoteDataSource.fetch_daily_kline 已返回标准列名:
+        date(datetime), open, high, low, close, volume
         →
-        标准列名: date, open, high, low, close, volume, amount, pct_chg
+        补充 amount 和 pct_chg
         """
         df = df.copy()
 
-        # 重命名
-        df = df.rename(columns={
-            'day': 'date',
-        })
-
-        # 数值列转换
+        # 数值列确保为 float
         for col in ['open', 'close', 'high', 'low', 'volume']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -141,6 +111,9 @@ class SinaFetcher(BaseFetcher):
         # 涨跌幅
         df = df.sort_values('date', ascending=True).reset_index(drop=True)
         df['pct_chg'] = df['close'].pct_change().fillna(0).round(4) * 100
+
+        # date 转为字符串（BaseFetcher 标准格式）
+        df['date'] = df['date'].astype(str).str[:10]
 
         cols = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
         return df[[c for c in cols if c in df.columns]]

@@ -258,35 +258,14 @@ def _fetch_history_sina(symbol: str, days: int = 6) -> Optional[list[dict]]:
     2. 计算 5 日均量
     返回 [{date, close, volume}, ...]，最近日期在最后。
     """
-    if '.SH' in symbol:
-        code = 'sh' + symbol.replace('.SH', '')
-    else:
-        code = 'sz' + symbol.replace('.SZ', '')
-    url = f'https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={code}&scale=240&ma=no&datalen={days}'
     try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'Mozilla/5.0',
-            'Referer': 'https://finance.sina.com.cn',
-        })
-        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
-            content = resp.read().decode('utf-8')
-            data = json.loads(content)
-            if not data or not isinstance(data, list):
-                return None
-            result = []
-            for item in data:
-                try:
-                    result.append({
-                        'date':   item.get('day', ''),
-                        'close':  float(item.get('close', 0)),
-                        'volume': float(item.get('volume', 0)),
-                    })
-                except (ValueError, TypeError):
-                    continue
-            return result if len(result) >= 2 else None
+        from core.sina_quote_source import get_sina_source
+        src = get_sina_source()
+        df = src.fetch_daily_kline(symbol, days=days)
+        if df.empty or len(df) < 2:
+            return None
+        return [{'date': str(r['date']), 'close': r['close'], 'volume': r['volume']}
+                for _, r in df.iterrows()]
     except Exception:
         return None
 
@@ -550,40 +529,14 @@ def _fetch_minute_bars(symbol: str, scale: int = 15,
     datalen: 返回的BAR数量（最多约100）
     返回 [{time, close, volume}, ...]，时间升序。
     """
-    upper = symbol.upper()
-    if upper.endswith('.SH'):
-        code = 'sh' + upper[:-3]
-    elif upper.endswith('.SZ'):
-        code = 'sz' + upper[:-3]
-    else:
-        return None
-    url = (f'https://money.finance.sina.com.cn/quotes_service/api/json_v2.php'
-           f'/CN_MarketData.getKLineData?symbol={code}&scale={scale}'
-           f'&ma=no&datalen={datalen}')
     try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'Mozilla/5.0',
-            'Referer': 'https://finance.sina.com.cn',
-        })
-        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
-            content = resp.read().decode('utf-8')
-            data = json.loads(content)
-            if not data or not isinstance(data, list):
-                return None
-            result = []
-            for item in data:
-                try:
-                    result.append({
-                        'time':  item.get('day', ''),
-                        'close': float(item.get('close', 0)),
-                        'volume': float(item.get('volume', 0)),
-                    })
-                except (ValueError, TypeError):
-                    continue
-            return result if len(result) >= 5 else None
+        from core.sina_quote_source import get_sina_source
+        src = get_sina_source()
+        df = src.fetch_minute_kline(symbol, period=f'{scale}m', limit=datalen)
+        if df.empty or len(df) < 5:
+            return None
+        return [{'time': str(r['datetime']), 'close': r['close'], 'volume': r['volume']}
+                for _, r in df.iterrows()]
     except Exception:
         return None
 
