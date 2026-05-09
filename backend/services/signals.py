@@ -53,15 +53,6 @@ def _get_northbound_check():
 
 # 北向资金阈值（亿元）
 NORTH_BUY_BOOST_THRESHOLD = 50.0  # 北向净流入 > 50亿 → RSI_BUY 信号强化
-def _get_fundamentals_check():
-    global _fundamentals_check
-    if _fundamentals_check is None:
-        try:
-            from services.fundamentals import check_fundamentals_filter as f
-            _fundamentals_check = f
-        except Exception:
-            pass
-    return _fundamentals_check
 
 # A股盘中时间段（UTC+8）
 MARKET_MORNING_START    = (9, 35)   # 9:35 开盘后可检查

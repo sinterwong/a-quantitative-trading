@@ -244,9 +244,9 @@ class TestDataLayerCache:
                      pct_change=2.04, high=5.1, low=4.8, vol_ratio=1.2)
 
     def _make_tencent_quote(self, symbol: str = "510310.SH"):
-        """构造一个 TencentQuote mock 对象"""
-        from core.tencent_quote_source import TencentQuote
-        return TencentQuote(
+        """构造一个 QuoteData mock 对象"""
+        from core.quote_data_source import QuoteData
+        return QuoteData(
             symbol=symbol, name="测试", code=symbol.split(".")[0],
             market="A", price=5.0, prev_close=4.9, open=5.0,
             high=5.1, low=4.8, avg_price=5.0,

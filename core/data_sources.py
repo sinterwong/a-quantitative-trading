@@ -425,21 +425,20 @@ class NorthBoundDataSource(DataSource):
         return pd.DataFrame()
 
 
-# ─── 腾讯港股/美股数据源 ──────────────────────────────────────────────────────
+# ─── 腾讯行情适配器（港股/美股/指数）──────────────────────────────────────────
 
-class TencentHKDataSource(DataSource):
+class _TencentMarketSource(DataSource):
     """
-    腾讯港股实时行情数据源。
-    替代 HSIFuturesDataSource（yfinance 延迟大），直接使用 qt.gtimg.cn。
+    将 TencentQuoteDataSource 适配为 DataSource 接口。
+    用于 CompositeMarketDataSource 获取港股/美股实时行情。
     """
 
-    name = 'TencentHK'
-
-    def __init__(self, symbol: str = 'hkHSI'):
+    def __init__(self, symbol: str, cache_ttl: int = 30):
         self.symbol = symbol
+        self.name = f'Tencent:{symbol}'
         self._cache: Optional[Dict] = None
         self._cache_time: float = 0
-        self._cache_ttl: int = 30
+        self._cache_ttl: int = cache_ttl
 
     def fetch_latest(self) -> Dict[str, Any]:
         now = time.time()
@@ -457,13 +456,13 @@ class TencentHKDataSource(DataSource):
                     'close': q.price,
                     'prev_close': q.prev_close,
                     'change_pct': q.pct_change,
-                    'source': 'tencent_qt',
+                    'source': 'tencent',
                 }
                 self._cache = result
                 self._cache_time = now
                 return result
         except Exception as e:
-            logger.debug("[TencentHK] fetch_latest failed: %s", e)
+            logger.debug("[_TencentMarketSource] fetch_latest failed for %s: %s", self.symbol, e)
 
         return {'symbol': self.symbol, 'error': 'fetch failed', 'source': 'failed'}
 
@@ -473,57 +472,7 @@ class TencentHKDataSource(DataSource):
             src = TencentQuoteDataSource()
             return src.fetch_kline(self.symbol, period="day", limit=days)
         except Exception as e:
-            logger.debug("[TencentHK] fetch_history failed: %s", e)
-            return pd.DataFrame()
-
-
-class TencentUSDataSource(DataSource):
-    """
-    腾讯美股实时行情数据源。
-    替代 SPFuturesDataSource（yfinance 不稳定），直接使用 qt.gtimg.cn。
-    """
-
-    name = 'TencentUS'
-
-    def __init__(self, symbol: str = 'usSPY'):
-        self.symbol = symbol
-        self._cache: Optional[Dict] = None
-        self._cache_time: float = 0
-        self._cache_ttl: int = 30
-
-    def fetch_latest(self) -> Dict[str, Any]:
-        now = time.time()
-        if self._cache and (now - self._cache_time) < self._cache_ttl:
-            return self._cache
-
-        try:
-            from core.tencent_quote_source import TencentQuoteDataSource
-            src = TencentQuoteDataSource(cache_ttl=30)
-            q = src.fetch_quote(self.symbol)
-            if q and q.is_valid:
-                result = {
-                    'symbol': self.symbol,
-                    'timestamp': datetime.now(),
-                    'close': q.price,
-                    'prev_close': q.prev_close,
-                    'change_pct': q.pct_change,
-                    'source': 'tencent_qt',
-                }
-                self._cache = result
-                self._cache_time = now
-                return result
-        except Exception as e:
-            logger.debug("[TencentUS] fetch_latest failed: %s", e)
-
-        return {'symbol': self.symbol, 'error': 'fetch failed', 'source': 'failed'}
-
-    def fetch_history(self, days: int = 5) -> pd.DataFrame:
-        try:
-            from core.tencent_quote_source import TencentQuoteDataSource
-            src = TencentQuoteDataSource()
-            return src.fetch_kline(self.symbol, period="day", limit=days)
-        except Exception as e:
-            logger.debug("[TencentUS] fetch_history failed: %s", e)
+            logger.debug("[_TencentMarketSource] fetch_history failed for %s: %s", self.symbol, e)
             return pd.DataFrame()
 
 
@@ -580,10 +529,10 @@ class CompositeMarketDataSource(DataSource):
 
     def __init__(self):
         # 优先使用腾讯数据源（免费、稳定），yfinance 作为 fallback
-        self.sp500 = TencentUSDataSource('usSPY')
-        self.nasdaq = TencentUSDataSource('usQQQ')
+        self.sp500 = _TencentMarketSource('usSPY')
+        self.nasdaq = _TencentMarketSource('usQQQ')
         self.vix = VIXDataSource()
-        self.hsi = TencentHKDataSource('hkHSI')
+        self.hsi = _TencentMarketSource('hkHSI')
         self.north = NorthBoundDataSource()
 
         # Fallback 源（yfinance 延迟大，仅在腾讯失败时使用）

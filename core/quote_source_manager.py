@@ -27,7 +27,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from .quote_data_source import QuoteData, QuoteDataSource, detect_market, tencent_quote_to_quote_data
+from .quote_data_source import QuoteData, QuoteDataSource, detect_market
 
 logger = logging.getLogger('quote_source_manager')
 
@@ -52,37 +52,6 @@ _ROUTE = {
     ('minute', 'HK'):      ('tencent', None),    # 腾讯港股分钟 K
     ('minute', 'US'):      (None, None),          # 不支持
 }
-
-
-# ─── 腾讯源适配器 ────────────────────────────────────────────────────────────
-
-
-class _TencentAdapter(QuoteDataSource):
-    """将 TencentQuoteDataSource 适配为 QuoteDataSource ABC（转换返回类型）"""
-
-    name = "TencentQuoteDataSource"
-
-    def __init__(self, inner):
-        self._inner = inner
-
-    def fetch_quote(self, symbol: str) -> Optional[QuoteData]:
-        tq = self._inner.fetch_quote(symbol)
-        if tq is None:
-            return None
-        return tencent_quote_to_quote_data(tq)
-
-    def fetch_quotes(self, symbols: List[str]) -> Dict[str, QuoteData]:
-        tqs = self._inner.fetch_quotes(symbols)
-        return {sym: tencent_quote_to_quote_data(q) for sym, q in tqs.items()}
-
-    def fetch_daily_kline(self, symbol: str, days: int = 120, adjust: str = "qfq") -> pd.DataFrame:
-        return self._inner.fetch_daily_kline(symbol, days=days, adjust=adjust)
-
-    def fetch_minute_kline(self, symbol: str, period: str = "15m", limit: int = 100) -> pd.DataFrame:
-        return self._inner.fetch_minute_kline(symbol, period=period, limit=limit)
-
-    def supported_markets(self) -> List[str]:
-        return self._inner.supported_markets()
 
 
 # ─── 管理器 ──────────────────────────────────────────────────────────────────
@@ -119,7 +88,7 @@ class QuoteSourceManager:
 
             if name == 'tencent':
                 from .tencent_quote_source import TencentQuoteDataSource
-                self._sources['tencent'] = _TencentAdapter(TencentQuoteDataSource())
+                self._sources['tencent'] = TencentQuoteDataSource()
             elif name == 'sina':
                 from .sina_quote_source import SinaQuoteDataSource
                 self._sources['sina'] = SinaQuoteDataSource()

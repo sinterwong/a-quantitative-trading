@@ -492,7 +492,7 @@ class DataLayer:
         snap = NorthFlowSnapshot()
         try:
             import sys as _sys
-            _backend = _os.path.join(_os.path.dirname(__file__), "..", "backend")
+            _backend = os.path.join(os.path.dirname(__file__), "..", "backend")
             if _backend not in _sys.path:
                 _sys.path.insert(0, _backend)
             from services.data_cache import cached_kamt  # type: ignore

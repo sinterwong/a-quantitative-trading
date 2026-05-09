@@ -36,25 +36,19 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import ssl
 import threading
 import time
 import urllib.request
-from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Literal
+from typing import Dict, List, Optional, Literal
 
 import pandas as pd
 
 from .quote_data_source import QuoteData, QuoteDataSource
+from .symbol_utils import _safe_float, detect_market
 
 logger = logging.getLogger("core.tencent_quote")
-
-# 清除代理
-for _k in list(os.environ.keys()):
-    if "proxy" in _k.lower():
-        del os.environ[_k]
 
 _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
@@ -67,69 +61,6 @@ _HEADERS = {
 
 # 批量请求上限
 BATCH_LIMIT = 50
-
-
-# ─── 数据类 ──────────────────────────────────────────────────────────────────
-
-
-@dataclass
-class TencentQuote:
-    """腾讯行情快照（全市场统一格式）"""
-
-    symbol: str           # 原始传入的 symbol，如 'sh600519', 'hk00700', 'usAAPL'
-    name: str = ""        # 中文名
-    code: str = ""        # 纯代码，如 '600519', '00700', 'AAPL'
-    market: str = ""      # A / INDEX / HK / US
-
-    # 价格
-    price: float = 0.0
-    prev_close: float = 0.0
-    open: float = 0.0
-    high: float = 0.0
-    low: float = 0.0
-    avg_price: float = 0.0
-
-    # 涨跌
-    change: float = 0.0       # 涨跌额
-    pct_change: float = 0.0   # 涨跌幅 (%)
-
-    # 成交
-    volume: float = 0.0       # 成交量（股/份）
-    amount: float = 0.0       # 成交额（元/港元/美元）
-    turnover_rate: float = 0.0  # 换手率 (%)
-
-    # 盘口
-    bid1_price: float = 0.0
-    bid1_vol: float = 0.0
-    ask1_price: float = 0.0
-    ask1_vol: float = 0.0
-
-    # 基本面
-    pe_ttm: float = 0.0
-    pb: float = 0.0
-    dividend_yield: float = 0.0
-    market_cap: float = 0.0    # 总市值（亿元/亿港元/亿美元）
-    float_cap: float = 0.0     # 流通市值
-
-    # 限制
-    limit_up: float = 0.0
-    limit_down: float = 0.0
-    amplitude: float = 0.0     # 振幅 (%)
-
-    # 52 周
-    high_52w: float = 0.0
-    low_52w: float = 0.0
-
-    # 元数据
-    volume_ratio: float = 0.0  # 量比
-    currency: str = ""         # CNY / HKD / USD
-    timestamp: str = ""        # 原始时间戳字符串
-    raw_field_count: int = 0
-
-    @property
-    def is_valid(self) -> bool:
-        return self.price > 0
-
 
 # ─── 字段映射 ────────────────────────────────────────────────────────────────
 
@@ -209,37 +140,6 @@ _US_EXTRA = {
 # ─── 工具函数 ────────────────────────────────────────────────────────────────
 
 
-def _detect_market(symbol: str) -> str:
-    """
-    检测市场类型。
-
-    Returns: 'A' | 'INDEX' | 'HK' | 'US'
-    """
-    s = symbol.strip().lower()
-    if s.startswith("hk"):
-        return "HK"
-    if s.startswith("us"):
-        return "US"
-    # 指数：sh000xxx / sz399xxx
-    if s.startswith(("sh000", "sz399")):
-        return "INDEX"
-    return "A"
-
-
-def _safe_float(val: Any, default: float = 0.0) -> float:
-    """安全转换为 float"""
-    if val is None:
-        return default
-    try:
-        s = str(val).strip()
-        if s in ("", "-", "--"):
-            return default
-        f = float(s)
-        return f if f == f else default  # NaN check
-    except (ValueError, TypeError):
-        return default
-
-
 def _get_field(fields: list, idx: int, default: float = 0.0) -> float:
     """安全获取字段值"""
     if idx < 0 or idx >= len(fields):
@@ -260,7 +160,7 @@ def _get_field_str(fields: list, idx: int, default: str = "") -> str:
 # ─── 解析器 ──────────────────────────────────────────────────────────────────
 
 
-def parse_quote(symbol: str, raw_line: str) -> Optional[TencentQuote]:
+def parse_quote(symbol: str, raw_line: str) -> Optional[QuoteData]:
     """
     解析单行腾讯行情数据。
 
@@ -269,7 +169,7 @@ def parse_quote(symbol: str, raw_line: str) -> Optional[TencentQuote]:
         raw_line: qt.gtimg.cn 返回的单行文本
 
     Returns:
-        TencentQuote 或 None（解析失败时）
+        QuoteData 或 None（解析失败时）
     """
     # 去掉 v_xxx=" 前缀
     eq = raw_line.find('="')
@@ -280,11 +180,11 @@ def parse_quote(symbol: str, raw_line: str) -> Optional[TencentQuote]:
     if len(fields) < 30:
         return None
 
-    market = _detect_market(symbol)
+    market = detect_market(symbol)
     common = _COMMON_FIELDS
 
     # 提取公共字段
-    q = TencentQuote(
+    q = QuoteData(
         symbol=symbol,
         name=_get_field_str(fields, common["name"]),
         code=_get_field_str(fields, common["code"]),
@@ -301,7 +201,7 @@ def parse_quote(symbol: str, raw_line: str) -> Optional[TencentQuote]:
         ask1_price=_get_field(fields, common["ask1_price"]),
         ask1_vol=_get_field(fields, common["ask1_vol"]),
         timestamp=_get_field_str(fields, common["timestamp"]),
-        raw_field_count=len(fields),
+        source='tencent',
     )
 
     # 根据市场类型提取扩展字段
@@ -368,7 +268,7 @@ def parse_quote(symbol: str, raw_line: str) -> Optional[TencentQuote]:
     return q
 
 
-def parse_quotes(raw_text: str, symbols: List[str]) -> Dict[str, TencentQuote]:
+def parse_quotes(raw_text: str, symbols: List[str]) -> Dict[str, QuoteData]:
     """
     解析批量行情响应。
 
@@ -377,10 +277,10 @@ def parse_quotes(raw_text: str, symbols: List[str]) -> Dict[str, TencentQuote]:
         symbols: 请求时使用的 symbol 列表（与行顺序对应）
 
     Returns:
-        {symbol: TencentQuote}
+        {symbol: QuoteData}
     """
     lines = raw_text.strip().split("\n")
-    result: Dict[str, TencentQuote] = {}
+    result: Dict[str, QuoteData] = {}
     for i, line in enumerate(lines):
         if i >= len(symbols):
             break
@@ -399,7 +299,7 @@ def _http_get(url: str, timeout: int = 8, encoding: str = "gbk") -> Optional[str
     """带熔断器的 HTTP GET"""
     try:
         from core.circuit_breaker import get_breaker
-        cb = get_breaker("tencent_qt", failure_threshold=3, cooldown_seconds=120.0)
+        cb = get_breaker("tencent_quote", failure_threshold=3, cooldown_seconds=120.0)
         if not cb.allow():
             logger.warning("腾讯行情源熔断中（state=%s），跳过", cb.state())
             return None
@@ -447,7 +347,7 @@ class TencentQuoteDataSource(QuoteDataSource):
         self._cache: Dict[str, tuple] = {}  # symbol → (quote, expire_at)
         self._lock = threading.Lock()
 
-    def _cache_get(self, symbol: str) -> Optional[TencentQuote]:
+    def _cache_get(self, symbol: str) -> Optional[QuoteData]:
         with self._lock:
             entry = self._cache.get(symbol)
             if entry is None:
@@ -458,11 +358,11 @@ class TencentQuoteDataSource(QuoteDataSource):
                 return None
             return quote
 
-    def _cache_set(self, symbol: str, quote: TencentQuote) -> None:
+    def _cache_set(self, symbol: str, quote: QuoteData) -> None:
         with self._lock:
             self._cache[symbol] = (quote, time.monotonic() + self._cache_ttl)
 
-    def fetch_quote(self, symbol: str) -> Optional[TencentQuote]:
+    def fetch_quote(self, symbol: str) -> Optional[QuoteData]:
         """
         获取单只标的行情。
 
@@ -474,7 +374,7 @@ class TencentQuoteDataSource(QuoteDataSource):
                 - 美股: 'usAAPL', 'US:AAPL'
 
         Returns:
-            TencentQuote 或 None
+            QuoteData 或 None
         """
         normalized = self._normalize_symbol(symbol)
         cached = self._cache_get(normalized)
@@ -486,7 +386,7 @@ class TencentQuoteDataSource(QuoteDataSource):
             self._cache_set(normalized, result)
         return result
 
-    def fetch_quotes(self, symbols: List[str]) -> Dict[str, TencentQuote]:
+    def fetch_quotes(self, symbols: List[str]) -> Dict[str, QuoteData]:
         """
         批量获取行情（自动分片，每批最多 50 只）。
 
@@ -494,13 +394,13 @@ class TencentQuoteDataSource(QuoteDataSource):
             symbols: 标的代码列表
 
         Returns:
-            {原始symbol: TencentQuote}
+            {原始symbol: QuoteData}
         """
         if not symbols:
             return {}
 
         # 分离缓存命中和未命中
-        result: Dict[str, TencentQuote] = {}
+        result: Dict[str, QuoteData] = {}
         missing: List[str] = []
         normalized_map: Dict[str, str] = {}  # normalized → original
 
@@ -568,7 +468,7 @@ class TencentQuoteDataSource(QuoteDataSource):
         normalized = self._normalize_symbol(symbol)
         bars = self._fetch_kline_raw(normalized, period, start, end, limit, adjust)
         if not bars:
-            return pd.DataFrame(columns=["date", "open", "close", "high", "low", "volume"])
+            return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
 
         rows = []
         for bar in bars:
@@ -578,16 +478,16 @@ class TencentQuoteDataSource(QuoteDataSource):
                 rows.append({
                     "date": bar[0],
                     "open": float(bar[1]),
-                    "close": float(bar[2]),
                     "high": float(bar[3]),
                     "low": float(bar[4]),
+                    "close": float(bar[2]),
                     "volume": float(bar[5]),
                 })
             except (ValueError, IndexError):
                 continue
 
         if not rows:
-            return pd.DataFrame(columns=["date", "open", "close", "high", "low", "volume"])
+            return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
 
         df = pd.DataFrame(rows)
         df["date"] = pd.to_datetime(df["date"])
@@ -603,7 +503,7 @@ class TencentQuoteDataSource(QuoteDataSource):
         limit: int = 100,
     ) -> pd.DataFrame:
         """
-        获取分钟 K 线（⚠️ 仅港股可用，A 股/指数/美股不可用）。
+        获取分钟 K 线（仅港股可用）。
 
         Args:
             symbol: 港股代码（如 'hk00700', 'HK:00700'）
@@ -613,20 +513,19 @@ class TencentQuoteDataSource(QuoteDataSource):
             limit: 返回根数
 
         Returns:
-            DataFrame，列：datetime, open, close, high, low, volume
+            DataFrame，列：datetime, open, high, low, close, volume
             失败时返回空 DataFrame
         """
         normalized = self._normalize_symbol(symbol)
-        market = _detect_market(normalized)
+        market = detect_market(normalized)
         if market != "HK":
             logger.warning("分钟 K 线仅支持港股，%s 的市场类型为 %s", symbol, market)
-            return pd.DataFrame(columns=["datetime", "open", "close", "high", "low", "volume"])
+            return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
 
-        # 去掉 'm' 后缀，腾讯接口用纯数字
         p = period.replace("m", "")
         bars = self._fetch_kline_raw(normalized, p, start, end, limit, "qfq")
         if not bars:
-            return pd.DataFrame(columns=["datetime", "open", "close", "high", "low", "volume"])
+            return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
 
         rows = []
         for bar in bars:
@@ -634,7 +533,6 @@ class TencentQuoteDataSource(QuoteDataSource):
                 continue
             try:
                 dt_str = bar[0]
-                # 分钟 K 线时间格式：YYYYMMDDHHMMSS 或 YYYY-MM-DD HH:MM:SS
                 if len(dt_str) == 14 and dt_str.isdigit():
                     dt = datetime.strptime(dt_str, "%Y%m%d%H%M%S")
                 else:
@@ -642,16 +540,16 @@ class TencentQuoteDataSource(QuoteDataSource):
                 rows.append({
                     "datetime": dt,
                     "open": float(bar[1]),
-                    "close": float(bar[2]),
                     "high": float(bar[3]),
                     "low": float(bar[4]),
+                    "close": float(bar[2]),
                     "volume": float(bar[5]),
                 })
             except (ValueError, IndexError):
                 continue
 
         if not rows:
-            return pd.DataFrame(columns=["datetime", "open", "close", "high", "low", "volume"])
+            return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
 
         df = pd.DataFrame(rows)
         df = df.sort_values("datetime").reset_index(drop=True)
@@ -669,14 +567,10 @@ class TencentQuoteDataSource(QuoteDataSource):
         from datetime import timedelta
         end = datetime.now().strftime("%Y-%m-%d")
         start = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
-        df = self.fetch_kline(
+        return self.fetch_kline(
             symbol=symbol, period="day", start=start, end=end,
             limit=days, adjust=adjust,
         )
-        # 统一列名：fetch_kline 返回 date,open,close,high,low → 标准化为 date,open,high,low,close
-        if not df.empty:
-            df = df[['date', 'open', 'high', 'low', 'close', 'volume']]
-        return df
 
     def supported_markets(self) -> List[str]:
         return ['A', 'INDEX', 'HK', 'US']
@@ -827,47 +721,10 @@ class TencentQuoteDataSource(QuoteDataSource):
 
         return lower
 
-    def _fetch_single(self, normalized: str) -> Optional[TencentQuote]:
+    def _fetch_single(self, normalized: str) -> Optional[QuoteData]:
         """获取单只标的（直接 HTTP）"""
         url = f"https://qt.gtimg.cn/q={normalized}"
         raw = _http_get(url)
         if not raw:
             return None
         return parse_quote(normalized, raw)
-
-
-# ─── 便捷函数 ────────────────────────────────────────────────────────────────
-
-_default_source: Optional[TencentQuoteDataSource] = None
-_default_lock = threading.Lock()
-
-
-def get_tencent_source() -> TencentQuoteDataSource:
-    """获取全局 TencentQuoteDataSource 单例"""
-    global _default_source
-    with _default_lock:
-        if _default_source is None:
-            _default_source = TencentQuoteDataSource()
-    return _default_source
-
-
-def fetch_tencent_quote(symbol: str) -> Optional[TencentQuote]:
-    """便捷函数：获取单只行情"""
-    return get_tencent_source().fetch_quote(symbol)
-
-
-def fetch_tencent_quotes(symbols: List[str]) -> Dict[str, TencentQuote]:
-    """便捷函数：批量获取行情"""
-    return get_tencent_source().fetch_quotes(symbols)
-
-
-def fetch_tencent_kline(
-    symbol: str,
-    period: str = "day",
-    start: str = "2020-01-01",
-    end: str = "2030-01-01",
-    limit: int = 120,
-    adjust: str = "qfq",
-) -> pd.DataFrame:
-    """便捷函数：获取 K 线"""
-    return get_tencent_source().fetch_kline(symbol, period, start, end, limit, adjust)
