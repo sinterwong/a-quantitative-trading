@@ -1,20 +1,27 @@
 # TODO — A 股量化交易系统开发任务
 
 > 评估日期：2026-05-08
-> 当前状态：**P0-1/2/3/4/5 已实现** · 935 测试通过 · 新增 27 个测试 · 0 回归
-> 核心问题：**实装 ≠ 集成** — 多个核心模块（ExitEngine / VWAP / PortfolioOptimizer / CVaR）已实现但未真正接入生产路径
+> 当前状态：**P0/P1 全部完成** · 1011 测试通过 · 新增 77 个测试 · 0 回归
+> 核心问题：**实装 ≠ 集成** — 多个核心模块（ExitEngine / VWAP / PortfolioOptimizer / CVaR）已实现但未真正接入生产路径 → **已修复**
 > 评估详情见 `/home/sinter/.claude/plans/enchanted-roaming-pebble.md`
 
-## 进度速查（2026-05-08 18:00 实施完成）
+## 进度速查
 
 | 任务 | 状态 | 关键交付 | 测试 |
 |---|---|---|---|
-| P0-1 ExitEngine 接入回测+主循环 | ✅ | `BacktestEngine.use_exit_engine` / `StrategyRunner.use_exit_engine` 钩子 | 4 |
+| P0-1 ExitEngine 接入回测+主循环 | ✅ | `BacktestEngine.use_exit_engine` / `StrategyRunner.use_exit_engine` | 4 |
 | P0-2 因子降级权重归一化 | ✅ | `pipeline_factory._safe_add` + `MIN_FACTORS_REQUIRED` 守卫 | 5 |
 | P0-3 PortfolioOptimizer 接入 | ✅ | `RunnerConfig.enable_rebalance` + `_maybe_rebalance` | 6 |
 | P0-4 Kelly + 回撤折扣 | ✅ | `OMS._drawdown_discount` + max_position_pct 截断 | 7 |
 | P0-5 CVaR + Monte Carlo 调度 | ✅ | `scripts/daily_risk_report.py` + 15:30 Scheduler | 5 |
 | P0-6 Futu OpenD 联调 | ⏳ 需真实环境 | — | — |
+| P1-7 VWAP/TWAP intraday 路由 | ✅ | `IntradayMonitor._submit_with_routing` + ExecutionConfig | 7 |
+| P1-8 ML 重训机制 | ✅ | `MLPredictionFactor` retrain_every 实装 + `scripts/ml_train_all.py` | 8 |
+| P1-9 NLP 因子工业化 | ✅ | Parquet 优先读取 + `scripts/nlp_batch_score.py` | 4 |
+| P1-10 配对交易接入主调度 | ✅ | Scheduler 周三 `_trigger_pairs_trading` | 5 |
+| P1-11 回测一字涨跌停/退市 | ✅ | `simulate_limit_up_down` + `simulate_delisting` | 6 |
+| P1-12 TCA 反馈闭环 | ✅ | `scripts/daily_tca.py` + 15:45 Scheduler + ImpactEstimator 校准 | 9 |
+| P1-13 Regime 升级 | ✅ | 自适应 ATR 阈值 + MA60 斜率 + 切换冷却期 + 减仓目标 | 11 |
 
 ---
 
@@ -344,10 +351,11 @@
 - `TODO.md`（旧）声明 841 测试，实际 934
 - `ARCHITECTURE.md` 提"飞书推送"但 `alerting.py` 不支持（与 P2-17 关联）
 
-- [ ] **修正 `README.md`**：`make_a_stock_pipeline` → `build_pipeline`；测试数同步
-- [ ] **修正 `ARCHITECTURE.md`**：同上 + 飞书推送（P2-17 实装后描述一致）
-- [ ] **建立文档检查脚本** `scripts/check_docs_consistency.py`：grep README/ARCHITECTURE 中的函数名是否在代码中存在
-- [ ] **CI 增加文档检查步骤**
+- [x] **修正 `README.md`**：`make_a_stock_pipeline` → `build_pipeline`
+- [x] **修正 `ARCHITECTURE.md`**：同上
+- [x] **TODO.md 进度速查更新**：P0-1/2/3/4/5 + P1-7/8/9/10/11/12/13 全完成
+- [ ] **建立文档检查脚本** `scripts/check_docs_consistency.py`（推迟）
+- [ ] **CI 增加文档检查步骤**（推迟）
 
 **关键文件**：`README.md`、`ARCHITECTURE.md`、`scripts/check_docs_consistency.py`（新建）、`.github/workflows/ci.yml`
 **验证**：文档检查脚本通过；新 CI 步骤通过

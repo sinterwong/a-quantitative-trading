@@ -113,10 +113,11 @@ a-quantitative-trading-xh/
 ### 多因子系统
 
 ```python
-from core.pipeline_factory import make_a_stock_pipeline
+from core.pipeline_factory import build_pipeline
 
-pipeline = make_a_stock_pipeline(symbol="000001.SH")
-pipeline.run()  # 返回 composite_score 和 signal
+pipeline = build_pipeline(symbol="000001.SH")
+result = pipeline.run(symbol="000001.SH", data=df, price=current_price)
+# result.combined_score / result.dominant_signal / result.signals
 ```
 
 ### 回测

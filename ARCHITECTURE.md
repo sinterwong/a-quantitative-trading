@@ -89,10 +89,11 @@ bus.emit(MarketEvent(symbol='000001.SH', close=10.0))
 ### 因子流水线 (`core/pipeline_factory.py`)
 
 ```python
-from core.pipeline_factory import make_a_stock_pipeline
+from core.pipeline_factory import build_pipeline
 
-pipeline = make_a_stock_pipeline(symbol="000001.SH")
-result = pipeline.run()  # {'composite_score': 0.72, 'signal': 'BUY', 'weights': {...}}
+pipeline = build_pipeline(symbol="000001.SH")
+result = pipeline.run(symbol="000001.SH", data=df, price=current_price)
+# result.combined_score / result.dominant_signal / result.signals
 ```
 
 ### 回测引擎 (`core/backtest_engine.py`)
