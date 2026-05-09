@@ -137,13 +137,48 @@ class _TTLCache:
 
 
 def _symbol_to_tencent(symbol: str) -> str:
-    """'600519.SH' → 'sh600519'"""
-    s = symbol.upper()
-    if s.endswith(".SH"):
-        return "sh" + s[:-3]
-    if s.endswith(".SZ"):
-        return "sz" + s[:-3]
-    return symbol.lower()
+    """
+    标准化 symbol 为腾讯格式。
+
+    '600519.SH' → 'sh600519'
+    '000001.SZ' → 'sz000001'
+    'HK:00700'  → 'hk00700'
+    'US:AAPL'   → 'usAAPL'
+    'hkHSI'     → 'hkHSI'
+    """
+    s = symbol.strip()
+
+    # HK:xxx / US:xxx 格式
+    if s.upper().startswith("HK:"):
+        code = s[3:].strip()
+        if code.isdigit():
+            return f"hk{code.zfill(5)}"
+        return f"hk{code}"
+    if s.upper().startswith("US:"):
+        return f"us{s[3:].strip()}"
+
+    # xxx.SH / xxx.SZ 格式
+    upper = s.upper()
+    if upper.endswith(".SH"):
+        return "sh" + s[:-3].strip()
+    if upper.endswith(".SZ"):
+        return "sz" + s[:-3].strip()
+    if upper.endswith(".HK"):
+        code = s[:-3].strip()
+        if code.isdigit():
+            return f"hk{code.zfill(5)}"
+        return f"hk{code}"
+
+    # 已经是 us/hk 格式（区分大小写，保留原样）
+    if s.lower().startswith(("us", "hk")):
+        return s
+
+    # 已经是 sh/sz 格式
+    lower = s.lower()
+    if lower.startswith(("sh", "sz")):
+        return lower
+
+    return lower
 
 
 def _http_get(url: str, timeout: int = 8, encoding: str = "gbk") -> Optional[str]:
@@ -227,6 +262,21 @@ def _fetch_realtime_bulk_raw(symbols: List[str]) -> Dict[str, Quote]:
         if q:
             result[sym] = q
     return result
+
+
+def _tencent_quote_to_quote(symbol: str, tq) -> Optional[Quote]:
+    """将 TencentQuote 转换为 data_layer.Quote"""
+    if not tq or not tq.is_valid:
+        return None
+    return Quote(
+        symbol=symbol,
+        price=tq.price,
+        prev_close=tq.prev_close,
+        pct_change=tq.pct_change,
+        high=tq.high,
+        low=tq.low,
+        vol_ratio=tq.volume_ratio if tq.volume_ratio > 0 else None,
+    )
 
 
 def _fetch_daily_bars_tencent(symbol: str, days: int = 60) -> Optional[pd.DataFrame]:
@@ -511,6 +561,14 @@ class DataLayer:
         """
         self._cache = _TTLCache()
         self._parquet = ParquetCache() if use_parquet_cache else None
+        self._tencent_src = None  # 延迟初始化
+
+    def _get_tencent_source(self):
+        """延迟初始化 TencentQuoteDataSource"""
+        if self._tencent_src is None:
+            from core.tencent_quote_source import TencentQuoteDataSource
+            self._tencent_src = TencentQuoteDataSource(cache_ttl=self.QUOTE_TTL)
+        return self._tencent_src
 
     # ── 日K线 ────────────────────────────────────────────────────────────────
 
@@ -544,10 +602,16 @@ class DataLayer:
 
         # 网络抓取（缓存过旧或不存在时）
         if df is None:
-            df_net = _fetch_daily_bars_tencent(symbol, max(days, 365))
-            if df_net is None or df_net.empty:
-                logger.info("Tencent bars failed for %s, trying Sina", symbol)
-                df_net = _fetch_daily_bars_sina(symbol, max(days, 365))
+            # 港股/美股使用统一腾讯数据源
+            tc_sym = _symbol_to_tencent(symbol)
+            if tc_sym.startswith(("hk", "us")):
+                src = self._get_tencent_source()
+                df_net = src.fetch_kline(symbol, period="day", limit=max(days, 365))
+            else:
+                df_net = _fetch_daily_bars_tencent(symbol, max(days, 365))
+                if df_net is None or df_net.empty:
+                    logger.info("Tencent bars failed for %s, trying Sina", symbol)
+                    df_net = _fetch_daily_bars_sina(symbol, max(days, 365))
 
             if df_net is not None and not df_net.empty:
                 # 转换为 DatetimeIndex
@@ -613,8 +677,8 @@ class DataLayer:
 
     def get_realtime_bulk(self, symbols: List[str]) -> Dict[str, Quote]:
         """
-        批量实时行情（腾讯单次 HTTP 请求）。
-        对缓存命中的标的不重复请求。
+        批量实时行情（腾讯 qt.gtimg.cn）。
+        支持 A 股 / 港股 / 美股 / 指数，对缓存命中的标的不重复请求。
         """
         if not symbols:
             return {}
@@ -630,10 +694,14 @@ class DataLayer:
                 missing.append(sym)
 
         if missing:
-            fresh = _fetch_realtime_bulk_raw(missing)
-            for sym, q in fresh.items():
-                self._cache.set(f"quote:{sym}", q, self.QUOTE_TTL)
-                cached_result[sym] = q
+            # 使用统一的 TencentQuoteDataSource（支持全市场）
+            src = self._get_tencent_source()
+            fresh_quotes = src.fetch_quotes(missing)
+            for sym, tq in fresh_quotes.items():
+                q = _tencent_quote_to_quote(sym, tq)
+                if q:
+                    self._cache.set(f"quote:{sym}", q, self.QUOTE_TTL)
+                    cached_result[sym] = q
 
         return cached_result
 

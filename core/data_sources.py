@@ -425,6 +425,108 @@ class NorthBoundDataSource(DataSource):
         return pd.DataFrame()
 
 
+# ─── 腾讯港股/美股数据源 ──────────────────────────────────────────────────────
+
+class TencentHKDataSource(DataSource):
+    """
+    腾讯港股实时行情数据源。
+    替代 HSIFuturesDataSource（yfinance 延迟大），直接使用 qt.gtimg.cn。
+    """
+
+    name = 'TencentHK'
+
+    def __init__(self, symbol: str = 'hkHSI'):
+        self.symbol = symbol
+        self._cache: Optional[Dict] = None
+        self._cache_time: float = 0
+        self._cache_ttl: int = 30
+
+    def fetch_latest(self) -> Dict[str, Any]:
+        now = time.time()
+        if self._cache and (now - self._cache_time) < self._cache_ttl:
+            return self._cache
+
+        try:
+            from core.tencent_quote_source import TencentQuoteDataSource
+            src = TencentQuoteDataSource(cache_ttl=30)
+            q = src.fetch_quote(self.symbol)
+            if q and q.is_valid:
+                result = {
+                    'symbol': self.symbol,
+                    'timestamp': datetime.now(),
+                    'close': q.price,
+                    'prev_close': q.prev_close,
+                    'change_pct': q.pct_change,
+                    'source': 'tencent_qt',
+                }
+                self._cache = result
+                self._cache_time = now
+                return result
+        except Exception as e:
+            logger.debug("[TencentHK] fetch_latest failed: %s", e)
+
+        return {'symbol': self.symbol, 'error': 'fetch failed', 'source': 'failed'}
+
+    def fetch_history(self, days: int = 5) -> pd.DataFrame:
+        try:
+            from core.tencent_quote_source import TencentQuoteDataSource
+            src = TencentQuoteDataSource()
+            return src.fetch_kline(self.symbol, period="day", limit=days)
+        except Exception as e:
+            logger.debug("[TencentHK] fetch_history failed: %s", e)
+            return pd.DataFrame()
+
+
+class TencentUSDataSource(DataSource):
+    """
+    腾讯美股实时行情数据源。
+    替代 SPFuturesDataSource（yfinance 不稳定），直接使用 qt.gtimg.cn。
+    """
+
+    name = 'TencentUS'
+
+    def __init__(self, symbol: str = 'usSPY'):
+        self.symbol = symbol
+        self._cache: Optional[Dict] = None
+        self._cache_time: float = 0
+        self._cache_ttl: int = 30
+
+    def fetch_latest(self) -> Dict[str, Any]:
+        now = time.time()
+        if self._cache and (now - self._cache_time) < self._cache_ttl:
+            return self._cache
+
+        try:
+            from core.tencent_quote_source import TencentQuoteDataSource
+            src = TencentQuoteDataSource(cache_ttl=30)
+            q = src.fetch_quote(self.symbol)
+            if q and q.is_valid:
+                result = {
+                    'symbol': self.symbol,
+                    'timestamp': datetime.now(),
+                    'close': q.price,
+                    'prev_close': q.prev_close,
+                    'change_pct': q.pct_change,
+                    'source': 'tencent_qt',
+                }
+                self._cache = result
+                self._cache_time = now
+                return result
+        except Exception as e:
+            logger.debug("[TencentUS] fetch_latest failed: %s", e)
+
+        return {'symbol': self.symbol, 'error': 'fetch failed', 'source': 'failed'}
+
+    def fetch_history(self, days: int = 5) -> pd.DataFrame:
+        try:
+            from core.tencent_quote_source import TencentQuoteDataSource
+            src = TencentQuoteDataSource()
+            return src.fetch_kline(self.symbol, period="day", limit=days)
+        except Exception as e:
+            logger.debug("[TencentUS] fetch_history failed: %s", e)
+            return pd.DataFrame()
+
+
 # ─── Composite Market Data ────────────────────────────────────────────────────
 
 @dataclass
@@ -477,37 +579,47 @@ class CompositeMarketDataSource(DataSource):
     name = 'CompositeMarket'
 
     def __init__(self):
-        self.sp500 = SPFuturesDataSource('ES=F')
-        self.nasdaq = SPFuturesDataSource('NQ=F')
+        # 优先使用腾讯数据源（免费、稳定），yfinance 作为 fallback
+        self.sp500 = TencentUSDataSource('usSPY')
+        self.nasdaq = TencentUSDataSource('usQQQ')
         self.vix = VIXDataSource()
-        self.hsi = HSIFuturesDataSource()
+        self.hsi = TencentHKDataSource('hkHSI')
         self.north = NorthBoundDataSource()
+
+        # Fallback 源（yfinance 延迟大，仅在腾讯失败时使用）
+        self._sp500_fb = SPFuturesDataSource('ES=F')
+        self._nasdaq_fb = SPFuturesDataSource('NQ=F')
+        self._hsi_fb = HSIFuturesDataSource()
 
     def fetch_latest(self) -> MarketSnapshot:
         snap = MarketSnapshot()
 
-        # 外盘
-        try:
-            d = self.sp500.fetch_latest()
-            snap.sp500_change_pct = d.get('change_pct', 0)
-        except Exception:
-            pass
+        # 外盘（腾讯优先，yfinance 兜底）
+        for src, fb, attr in [
+            (self.sp500, self._sp500_fb, 'sp500_change_pct'),
+            (self.nasdaq, self._nasdaq_fb, 'nasdaq_change_pct'),
+            (self.hsi, self._hsi_fb, 'hsih_change_pct'),
+        ]:
+            try:
+                d = src.fetch_latest()
+                val = d.get('change_pct', 0)
+                if val or not d.get('error'):
+                    setattr(snap, attr, val)
+                else:
+                    # 腾讯失败，尝试 yfinance
+                    d2 = fb.fetch_latest()
+                    setattr(snap, attr, d2.get('change_pct', 0))
+            except Exception:
+                try:
+                    d2 = fb.fetch_latest()
+                    setattr(snap, attr, d2.get('change_pct', 0))
+                except Exception:
+                    pass
 
-        try:
-            d = self.nasdaq.fetch_latest()
-            snap.nasdaq_change_pct = d.get('change_pct', 0)
-        except Exception:
-            pass
-
+        # VIX（保持 yfinance）
         try:
             d = self.vix.fetch_latest()
             snap.vix = d.get('close', 0)
-        except Exception:
-            pass
-
-        try:
-            d = self.hsi.fetch_latest()
-            snap.hsih_change_pct = d.get('change_pct', 0)
         except Exception:
             pass
 
