@@ -337,6 +337,8 @@ class OMS:
         self._order_book: Dict[str, Order] = {}
         self._position_book: Dict[str, Position] = {}
         self._pending_signals: set = set()  # 防止重复下单
+        # Kelly + 回撤折扣（P0-4）：跨调用维护峰值权益
+        self._peak_equity: float = 0.0
         self._load_positions_from_backend()
 
     def set_bus(self, bus: 'EventBus'):
@@ -431,24 +433,82 @@ class OMS:
         self._order_book[order.order_id] = order
         return fill
 
-    def _kelly_shares(self, signal) -> int:
-        """Kelly 公式计算仓位份额（简化版）"""
+    def _fetch_equity(self) -> float:
+        """从 Backend API 读取当前总权益（position_value + cash）。"""
         try:
-            import urllib.request, json as jsonlib
+            import urllib.request
+            import json as jsonlib
             base = 'http://127.0.0.1:5555'
             with urllib.request.urlopen(f'{base}/portfolio/summary', timeout=5) as r:
                 summary = jsonlib.loads(r.read())
-            equity = summary.get('position_value', 0) + summary.get('cash', 0)
-            win_rate = 0.55
-            avg_win = 0.02   # 2% avg gain
-            avg_loss = 0.01  # 1% avg loss
-            kelly = (win_rate * avg_win - (1 - win_rate) * avg_loss) / (avg_win * avg_loss)
-            kelly = max(kelly, 0) * 0.5  # 半 Kelly
-            shares = int(equity * kelly / signal.price)
-            shares = (shares // 100) * 100  # 整手
-            return max(shares, 0)
+            return float(summary.get('position_value', 0) + summary.get('cash', 0))
         except Exception:
+            return 0.0
+
+    def _drawdown_discount(self, equity: float, max_dd_limit: float) -> float:
+        """
+        基于当前回撤计算 Kelly 折扣因子（[0, 1]）。
+
+        - dd = 0 → discount = 1.0（峰值，全 Kelly）
+        - dd >= max_dd_limit → discount = 0.0（已到上限，停止开新仓）
+        - 中间线性递减
+
+        副作用：当 equity > _peak_equity 时刷新峰值。
+        """
+        if equity > self._peak_equity:
+            self._peak_equity = equity
+            return 1.0
+        if self._peak_equity <= 0 or max_dd_limit <= 0:
+            return 1.0
+        dd = (self._peak_equity - equity) / self._peak_equity
+        return max(0.0, 1.0 - dd / max_dd_limit)
+
+    def _kelly_shares(self, signal) -> int:
+        """
+        Kelly 公式计算仓位份额（P0-4：含回撤折扣 + 单仓上限保护）。
+
+        修复点（vs 旧实现）：
+          1. Kelly 原始值经 max_position_pct 上限截断（避免 32x 杠杆等离谱值）
+          2. 引入回撤折扣：当前回撤接近 max_drawdown 时仓位自动收缩
+          3. 配置驱动：win/loss 参数仍硬编码，但风控阈值从 trading.yaml 读取
+        """
+        if signal.price <= 0:
             return 0
+
+        equity = self._fetch_equity()
+        if equity <= 0:
+            return 0
+
+        # 读取配置（失败时退回硬编码默认值）
+        try:
+            from core.config import load_config
+            cfg = load_config()
+            max_dd_limit = float(cfg.risk.max_drawdown)
+            max_position_pct = float(cfg.portfolio.max_position_pct)
+        except Exception:
+            max_dd_limit = 0.15
+            max_position_pct = 0.25
+
+        # 历史 win/loss 统计（占位常量，未来由 TCA 反馈替换）
+        win_rate = 0.55
+        avg_win = 0.02
+        avg_loss = 0.01
+        kelly_raw = (
+            (win_rate * avg_win - (1 - win_rate) * avg_loss) / (avg_win * avg_loss)
+        )
+        # half-Kelly + 单仓上限截断
+        kelly_fraction = min(max(kelly_raw, 0.0) * 0.5, max_position_pct)
+
+        # 回撤折扣
+        discount = self._drawdown_discount(equity, max_dd_limit)
+        target_capital = equity * kelly_fraction * discount
+
+        if target_capital <= 0:
+            return 0
+
+        shares = int(target_capital / signal.price)
+        shares = (shares // 100) * 100  # 整手
+        return max(shares, 0)
 
     def _update_position_book(self, fill) -> None:
         """成交后更新本地持仓快照，供当次 run_once() 周期内的 PreTrade 检查使用。"""
