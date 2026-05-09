@@ -47,6 +47,8 @@ from typing import Any, Dict, List, Optional, Literal
 
 import pandas as pd
 
+from .quote_data_source import QuoteData, QuoteDataSource
+
 logger = logging.getLogger("core.tencent_quote")
 
 # 清除代理
@@ -421,7 +423,7 @@ def _http_get(url: str, timeout: int = 8, encoding: str = "gbk") -> Optional[str
 # ─── 数据源类 ────────────────────────────────────────────────────────────────
 
 
-class TencentQuoteDataSource:
+class TencentQuoteDataSource(QuoteDataSource):
     """
     腾讯 qt.gtimg.cn 统一行情数据源。
 
@@ -433,6 +435,8 @@ class TencentQuoteDataSource:
         q = src.fetch_quote('hk00700')
         quotes = src.fetch_quotes(['sh600519', 'hk00700', 'usAAPL'])
     """
+
+    name = "TencentQuoteDataSource"
 
     def __init__(self, cache_ttl: float = 30.0):
         """
@@ -652,6 +656,30 @@ class TencentQuoteDataSource:
         df = pd.DataFrame(rows)
         df = df.sort_values("datetime").reset_index(drop=True)
         return df
+
+    # ── QuoteDataSource ABC 方法 ───────────────────────────────────────────
+
+    def fetch_daily_kline(
+        self,
+        symbol: str,
+        days: int = 120,
+        adjust: str = "qfq",
+    ) -> pd.DataFrame:
+        """获取日 K 线（ABC 接口，包装 fetch_kline）"""
+        from datetime import timedelta
+        end = datetime.now().strftime("%Y-%m-%d")
+        start = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
+        df = self.fetch_kline(
+            symbol=symbol, period="day", start=start, end=end,
+            limit=days, adjust=adjust,
+        )
+        # 统一列名：fetch_kline 返回 date,open,close,high,low → 标准化为 date,open,high,low,close
+        if not df.empty:
+            df = df[['date', 'open', 'high', 'low', 'close', 'volume']]
+        return df
+
+    def supported_markets(self) -> List[str]:
+        return ['A', 'INDEX', 'HK', 'US']
 
     def _fetch_kline_raw(
         self,
