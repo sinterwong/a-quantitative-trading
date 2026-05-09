@@ -16,15 +16,15 @@
 | `run_morning_report.py` | 盘前报告 CLI 入口 |
 | `walkforward_job.py` | Walk-Forward 参数验证定时任务 |
 | `regime_wfa.py` | Regime 感知的 WFA 分析 |
-| `ipo_scanner.py` | 港股打新扫描（每日 09:00，feature/ipo-stars 分支） |
+| `ipo_scanner.py` | 港股打新扫描（feature/ipo-stars 分支） |
 
 ### 研究与调试
 
 | 文件 | 说明 |
 |------|------|
 | `dynamic_selector.py` | 动态标的筛选器 |
-| `stock_data_only.py` | 仅获取行情数据（不生成信号） |
-| `bayesian_optimize.py` | 贝叶斯参数优化（配合 Walk-Forward） |
+| `stock_data_only.py` | 仅获取行情数据 |
+| `bayesian_optimize.py` | 贝叶斯参数优化 |
 
 ---
 
@@ -58,7 +58,7 @@ python scripts/walkforward_job.py --start 20200101 --end 20251231
 # 贝叶斯参数优化
 python scripts/bayesian_optimize.py --n-trials 100
 
-# 港股打新扫描（需在 feature/ipo-stars 分支）
+# 港股打新扫描（feature/ipo-stars 分支）
 python -m scheduler.ipo_scanner
 ```
 
@@ -66,6 +66,6 @@ python -m scheduler.ipo_scanner
 
 ## 注意
 
-- 单元测试统一在 `tests/`，使用 `pytest` 或 `python tests/run_tests.py`
+- 单元测试统一在 `tests/`
 - `scripts/quant/` 中的部分脚本依赖较早接口，功能已被 `core/` 模块替代
 - 调试脚本需要网络连接，不作为 CI 测试

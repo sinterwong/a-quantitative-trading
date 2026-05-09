@@ -1,10 +1,8 @@
 # 系统架构
 
-> 本文件描述系统当前生产就绪状态的架构，不含开发过程记录。
-
 ---
 
-## 分层架构总览
+## 分层架构
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -59,16 +57,13 @@
 
 ---
 
-## 核心设计原则
+## 设计原则
 
-### 1. EventBus 作为中央总线
-所有模块通过事件通信：`MarketEvent` → `SignalEvent` → `OrderEvent` → `FillEvent`。新增因子/策略无需修改核心。
+1. **EventBus 作为中央总线**：所有模块通过事件通信：`MarketEvent` → `SignalEvent` → `OrderEvent` → `FillEvent`。新增因子/策略无需修改核心。
 
-### 2. 回测 = 实盘
-同一因子接口、同一信号格式，回测引擎和实盘运行器共享 `FactorPipeline`，消除策略从回测到实盘的差异。
+2. **回测 = 实盘**：同一因子接口、同一信号格式，回测引擎和实盘运行器共享 `FactorPipeline`。
 
-### 3. 券商适配层
-`BrokerAdapter` 接口抽象所有券商，切换券商只需替换适配器实例，策略和风控逻辑零改动。
+3. **券商适配层**：`BrokerAdapter` 接口抽象所有券商，切换券商只需替换适配器实例。
 
 ---
 
@@ -93,7 +88,6 @@ from core.pipeline_factory import build_pipeline
 
 pipeline = build_pipeline(symbol="000001.SH")
 result = pipeline.run(symbol="000001.SH", data=df, price=current_price)
-# result.combined_score / result.dominant_signal / result.signals
 ```
 
 ### 回测引擎 (`core/backtest_engine.py`)
@@ -126,9 +120,9 @@ risk = RiskEngine()
 result = risk.check_pre_trade(order=order, portfolio=portfolio)
 ```
 
-### 港股打新分析 (`core/ipo_analyst_engine.py`)
+### 港股打新 (`core/ipo_analyst_engine.py`)
 
-feature/ipo-stars 分支可用。详见 `reports/ipo_renderer.py`。
+feature/ipo-stars 分支可用。
 
 ```python
 from core.ipo_analyst_engine import IPOAnalystEngine
@@ -192,7 +186,7 @@ AKShare / Futu / Browser
     IPOAnalysisReport + IPORenderer ──▶ 飞书推送
 ```
 
-**定位**：纯分析报告工具，不进入 PositionBook / 风控体系 / 操盘决策。
+定位：纯分析报告工具，不进入 PositionBook / 风控体系 / 操盘决策。
 
 ---
 
