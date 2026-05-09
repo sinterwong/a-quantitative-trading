@@ -45,6 +45,16 @@ class Quote:
     high: float
     low: float
     vol_ratio: Optional[float] = None   # 量比
+    # ── 腾讯 88 字段补充 ──
+    pe_ttm: Optional[float] = None      # 市盈率（TTM）
+    pb: Optional[float] = None           # 市净率
+    turnover_rate: Optional[float] = None  # 换手率（%）
+    market_cap: Optional[float] = None   # 总市值（亿元）
+    float_cap: Optional[float] = None   # 流通市值（亿元）
+    high_52w: Optional[float] = None    # 52W 高
+    low_52w: Optional[float] = None     # 52W 低
+    limit_up: Optional[float] = None    # 涨停价
+    limit_down: Optional[float] = None  # 跌停价
     timestamp: datetime = field(default_factory=datetime.now)
 
     @property
@@ -129,6 +139,16 @@ def _tencent_quote_to_quote(symbol: str, tq) -> Optional[Quote]:
         high=tq.high,
         low=tq.low,
         vol_ratio=tq.volume_ratio if tq.volume_ratio > 0 else None,
+        # ── 腾讯 88 字段映射 ──
+        pe_ttm=tq.pe_ttm if tq.pe_ttm and tq.pe_ttm > 0 else None,
+        pb=tq.pb if tq.pb and tq.pb > 0 else None,
+        turnover_rate=tq.turnover_rate if tq.turnover_rate and tq.turnover_rate > 0 else None,
+        market_cap=tq.market_cap if tq.market_cap and tq.market_cap > 0 else None,
+        float_cap=tq.float_cap if tq.float_cap and tq.float_cap > 0 else None,
+        high_52w=tq.high_52w if tq.high_52w and tq.high_52w > 0 else None,
+        low_52w=tq.low_52w if tq.low_52w and tq.low_52w > 0 else None,
+        limit_up=tq.limit_up if tq.limit_up and tq.limit_up > 0 else None,
+        limit_down=tq.limit_down if tq.limit_down and tq.limit_down > 0 else None,
     )
 
 

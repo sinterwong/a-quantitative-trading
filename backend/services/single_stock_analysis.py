@@ -244,6 +244,16 @@ def analyze_a_share(req: AnalysisRequest) -> AnalysisReport:
                         'realtime_price': float(getattr(quote, 'price', 0.0) or 0.0),
                         'pct_change': float(getattr(quote, 'pct_change', 0.0) or 0.0),
                         'vol_ratio': getattr(quote, 'vol_ratio', None),
+                        # ── 腾讯 88 扩展字段 ──
+                        'pe_ttm': getattr(quote, 'pe_ttm', None),
+                        'pb': getattr(quote, 'pb', None),
+                        'turnover_rate': getattr(quote, 'turnover_rate', None),
+                        'market_cap': getattr(quote, 'market_cap', None),
+                        'float_cap': getattr(quote, 'float_cap', None),
+                        'high_52w': getattr(quote, 'high_52w', None),
+                        'low_52w': getattr(quote, 'low_52w', None),
+                        'limit_up': getattr(quote, 'limit_up', None),
+                        'limit_down': getattr(quote, 'limit_down', None),
                     })
             except Exception as exc:
                 logger.debug('realtime quote failed: %s', exc)
