@@ -156,6 +156,7 @@ class Scheduler:
         (9,  31, '_trigger_intraday_monitor'), # 盘中信号监控（仅交易时段）
         (15,  0, '_trigger_afternoon_report'),  # 收盘晚报
         (15, 10, '_trigger_analysis'),          # 日终选股分析
+        (15, 30, '_trigger_daily_risk_report'), # CVaR + 蒙特卡洛压力测试（P0-5）
         (16,  0, '_trigger_daily_ops_report'),  # 每日运营报告
     ]
 
@@ -293,6 +294,34 @@ class Scheduler:
             self.logger.info('[Scheduler] Fundamental refresh done — ok=%d fail=%d', ok, fail)
         except ImportError as e:
             self.logger.error('[Scheduler] FundamentalDataManager import failed: %s', e)
+
+    def _trigger_daily_risk_report(self):
+        """15:30 — 每日组合风险报告（CVaR + 蒙特卡洛压力测试，P0-5）。"""
+        self.logger.info('[Scheduler] 15:30 — triggering daily risk report')
+        try:
+            sys.path.insert(0, PROJ_DIR)
+            from scripts.daily_risk_report import run_report
+            summary = run_report(
+                n_simulations=10000,
+                horizon_days=21,
+                api_port=self.api_port,
+                enable_alert=True,
+            )
+            breach = summary.get('breach', [])
+            equity = summary.get('equity', 0.0)
+            n_pos = summary.get('positions_count', 0)
+            if breach:
+                self.logger.warning(
+                    '[Scheduler] risk report — equity=%.0f positions=%d BREACH=%s',
+                    equity, n_pos, breach,
+                )
+            else:
+                self.logger.info(
+                    '[Scheduler] risk report ok — equity=%.0f positions=%d',
+                    equity, n_pos,
+                )
+        except Exception as e:
+            self.logger.error('[Scheduler] daily risk report failed: %s', e)
 
     def _trigger_daily_ops_report(self):
         """16:00 — DailyOpsReporter 运营报告。"""
