@@ -320,8 +320,8 @@
 
 **问题**：`backend/api.py` 30+ 端点完全裸跑，无认证、无限流。如对外暴露存在风险。
 
-- [ ] **API Key 认证**：环境变量 `BACKEND_API_KEY`，所有写入端点（POST/PUT/DELETE）校验 `X-API-Key` 头
-- [ ] **per-IP 限流**：使用 `flask-limiter`，写入端点 60 req/min，读取端点 600 req/min
+- [x] **API Key 认证**：环境变量 `TRADING_API_KEY`，全局 `before_request` 校验 `X-API-Key`（公共路径 `/health` `/docs` `/metrics` 豁免）；env 未设置时关闭以兼容 dev/测试
+- [x] **per-IP 限流**：自实现内存桶，env `TRADING_RL_PER_MIN`（默认 120/min，0 关闭），公共路径不计入配额
 - [ ] **本地访问豁免**：127.0.0.1 / ::1 跳过校验（保留 Streamlit 调用）
 - [ ] **更新 `backend/openapi.json`** 反映认证要求
 

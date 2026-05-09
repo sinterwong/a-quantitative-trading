@@ -78,6 +78,69 @@ def rate_limit(max_per_window: int = None, window_seconds: int = None):
         return wrapped
     return decorator
 
+
+# ─── P2-20: Global API Key Auth + Per-IP Rate Limit ──────────────────
+# 通过 before_request 钩子覆盖 50+ 端点，未 decorate 的端点也受保护。
+# 配置：
+#   TRADING_API_KEY     — 设置后启用 X-API-Key 校验；未设置则放行（dev 默认）
+#   TRADING_RL_PER_MIN  — 全局每分钟限流上限，默认 120；设为 0 关闭
+#
+# 公共端点（始终免认证、免限流）：/health, /docs, /metrics
+_PUBLIC_PATHS = frozenset({'/health', '/docs', '/metrics'})
+
+_GLOBAL_RATE_LIMIT: dict = {}    # ip -> [timestamps...]
+
+
+def _global_rl_max() -> int:
+    try:
+        return max(0, int(os.environ.get('TRADING_RL_PER_MIN', '120')))
+    except ValueError:
+        return 120
+
+
+def _api_key_required() -> str:
+    return os.environ.get('TRADING_API_KEY', '').strip()
+
+
+@app.before_request
+def _check_auth_and_rate_limit():
+    path = (request.path or '').rstrip('/') or '/'
+    # OPTIONS（CORS preflight）与公共端点放行
+    if request.method == 'OPTIONS' or path in _PUBLIC_PATHS:
+        return None
+
+    # API Key 认证（仅在 TRADING_API_KEY 设置时启用）
+    expected = _api_key_required()
+    if expected:
+        provided = request.headers.get('X-API-Key', '').strip()
+        if not provided or provided != expected:
+            return jsonify({
+                'status': 'error',
+                'error': 'unauthorized: invalid or missing X-API-Key',
+                'timestamp': datetime.now().isoformat(),
+            }), 401
+
+    # 全局每分钟 per-IP 限流
+    rl_max = _global_rl_max()
+    if rl_max > 0:
+        now = time.time()
+        cutoff = now - 60.0
+        key = request.remote_addr or 'unknown'
+        bucket = _GLOBAL_RATE_LIMIT.get(key, [])
+        bucket = [t for t in bucket if t > cutoff]
+        if len(bucket) >= rl_max:
+            _GLOBAL_RATE_LIMIT[key] = bucket
+            return jsonify({
+                'status': 'error',
+                'code': 429,
+                'message': f'global rate limit exceeded (>{rl_max}/min)',
+                'timestamp': datetime.now().isoformat(),
+            }), 429
+        bucket.append(now)
+        _GLOBAL_RATE_LIMIT[key] = bucket
+
+    return None
+
 # Singleton portfolio service
 _svc: PortfolioService = None
 
