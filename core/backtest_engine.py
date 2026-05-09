@@ -96,6 +96,19 @@ class BacktestConfig:
     """传给 ExitEngine 构造函数的覆盖参数（如 dd_warn/hard_sl/atr_multiplier 等）。
     None 时使用 ExitEngine 默认值。"""
 
+    # ── 一字涨跌停 & 退市模拟（P1-11）──────────────────────────
+    simulate_limit_up_down: bool = True
+    """模拟 A 股一字涨跌停：成交日 high==low（封单）时 BUY 拒绝、SELL 排队下一日。
+    不开启时回测过于乐观（涨停日仍能买入）。"""
+
+    limit_threshold_pct: float = 0.05
+    """识别一字涨跌停的最小涨跌幅。high==low 且 |open/prev_close-1| >= 此值视为封单。
+    A 股主板 ±10%、科创板 ±20%、ST ±5%。0.05 取最低门槛覆盖所有情形。"""
+
+    simulate_delisting: bool = True
+    """模拟退市：标的最后一根可用 bar 后自动按最后 close 强制清仓。
+    数据序列截止可能是退市，也可能是回测窗口结束 — 保守处理避免持仓"凭空消失"。"""
+
 
 @dataclass
 class BacktestResult:
@@ -334,8 +347,41 @@ class BacktestEngine:
                     continue
                 self._process_signal(exit_sig, next_dt, next_bar)
 
+        # P1-11: 退市强制清仓 — 标的的最后一根数据后无法继续交易
+        if self.config.simulate_delisting:
+            self._force_liquidate_delisted(dt)
+
         # 更新日终统计
         self._update_daily(dt)
+
+    def _force_liquidate_delisted(self, dt: datetime) -> None:
+        """
+        对当日是数据最后一根的持仓标的强制按 close 清仓。
+
+        - 仅在 dt 等于该 symbol 的 df.index[-1] 时触发
+        - 其它标的在更晚日期才结束 → 该 symbol 视为退市
+        - 用最后一根 close 成交（带滑点），避免持仓"凭空消失"
+        """
+        for sym in list(self._positions.keys()):
+            pos = self._positions.get(sym)
+            if not pos or pos.shares == 0:
+                continue
+            df = self._data.get(sym)
+            if df is None or dt not in df.index:
+                continue
+            if dt != df.index[-1]:
+                continue
+            last_close = float(df.iloc[-1]['close'])
+            if last_close <= 0:
+                continue
+            sig = Signal(
+                timestamp=dt, symbol=sym, direction='SELL',
+                strength=1.0, factor_name='Delisting.ForcedLiquidation',
+                price=last_close,
+                metadata={'shares': pos.shares, 'forced': True},
+            )
+            fill_price = self._simulate_fill('SELL', last_close)
+            self._execute_sell(sym, fill_price, pos.shares, sig, dt)
 
     def _generate_exit_signals(
         self,
@@ -480,6 +526,16 @@ class BacktestEngine:
         # 用下一根 bar 的 open 作为基准成交价
         exec_price = float(bar['open'])
 
+        # P1-11: 一字涨跌停封单检查
+        if self.config.simulate_limit_up_down:
+            limit_status = self._limit_status(sym, dt, bar)
+            if sig.direction == 'BUY' and limit_status == 'limit_up':
+                # 一字涨停：买入封单失败
+                return
+            if sig.direction == 'SELL' and limit_status == 'limit_down':
+                # 一字跌停：卖出排队失败（下一日重试由后续 bar 触发）
+                return
+
         if sig.direction == 'BUY':
             # 检查是否已有持仓
             if pos and pos.shares > 0:
@@ -508,6 +564,45 @@ class BacktestEngine:
 
             fill_price = self._simulate_fill(sig.direction, exec_price)
             self._execute_sell(sym, fill_price, target_shares, sig, dt)
+
+    def _limit_status(
+        self, symbol: str, dt: datetime, bar: pd.Series,
+    ) -> Optional[str]:
+        """
+        判断 bar 是否为一字涨/跌停封单。
+
+        条件：high == low（无价差）且 open 相对前一交易日 close 涨/跌幅
+        >= limit_threshold_pct。
+
+        Returns
+        -------
+        'limit_up' / 'limit_down' / None
+        """
+        try:
+            high = float(bar['high'])
+            low = float(bar['low'])
+            open_p = float(bar['open'])
+        except Exception:
+            return None
+        if high <= 0 or low <= 0 or abs(high - low) > 1e-6:
+            return None  # 不是一字行情
+
+        df = self._data.get(symbol)
+        if df is None or dt not in df.index:
+            return None
+        idx = df.index.get_loc(dt)
+        if idx == 0:
+            return None
+        prev_close = float(df.iloc[idx - 1]['close'])
+        if prev_close <= 0:
+            return None
+        change = open_p / prev_close - 1.0
+        threshold = self.config.limit_threshold_pct
+        if change >= threshold:
+            return 'limit_up'
+        if change <= -threshold:
+            return 'limit_down'
+        return None
 
     def _can_buy(self, price: float, shares: int = None) -> bool:
         """PreTrade 风控"""
