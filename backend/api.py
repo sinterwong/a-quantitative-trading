@@ -102,11 +102,26 @@ def _api_key_required() -> str:
     return os.environ.get('TRADING_API_KEY', '').strip()
 
 
+_LOOPBACK_IPS = frozenset({'127.0.0.1', '::1', 'localhost'})
+
+
+def _is_loopback_request() -> bool:
+    """识别本地回环请求（Streamlit / 本机脚本）。"""
+    addr = (request.remote_addr or '').strip()
+    return addr in _LOOPBACK_IPS
+
+
 @app.before_request
 def _check_auth_and_rate_limit():
     path = (request.path or '').rstrip('/') or '/'
     # OPTIONS（CORS preflight）与公共端点放行
     if request.method == 'OPTIONS' or path in _PUBLIC_PATHS:
+        return None
+
+    # 本地回环豁免（保留 Streamlit / 本机调度脚本零摩擦），可用 env
+    # TRADING_API_REQUIRE_LOCALHOST=1 关闭以模拟生产
+    require_local = os.environ.get('TRADING_API_REQUIRE_LOCALHOST', '0').strip()
+    if _is_loopback_request() and require_local != '1':
         return None
 
     # API Key 认证（仅在 TRADING_API_KEY 设置时启用）

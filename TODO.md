@@ -324,7 +324,7 @@
 
 - [x] **API Key 认证**：环境变量 `TRADING_API_KEY`，全局 `before_request` 校验 `X-API-Key`（公共路径 `/health` `/docs` `/metrics` 豁免）；env 未设置时关闭以兼容 dev/测试
 - [x] **per-IP 限流**：自实现内存桶，env `TRADING_RL_PER_MIN`（默认 120/min，0 关闭），公共路径不计入配额
-- [ ] **本地访问豁免**：127.0.0.1 / ::1 跳过校验（保留 Streamlit 调用）
+- [x] **本地访问豁免**：127.0.0.1 / ::1 / localhost 自动跳过 X-API-Key 校验，保留 Streamlit / 本机调度脚本零摩擦；env `TRADING_API_REQUIRE_LOCALHOST=1` 关闭豁免（生产模拟）
 - [ ] **更新 `backend/openapi.json`** 反映认证要求
 
 **关键文件**：`backend/api.py`、`backend/openapi.json`

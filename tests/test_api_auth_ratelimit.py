@@ -25,11 +25,19 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, BACKEND)
 
 
+REMOTE_NON_LOCAL = '203.0.113.42'   # TEST-NET-3，可放心当作"非本地"
+
+
 @pytest.fixture()
 def app(tmp_path, monkeypatch):
-    """构造一个隔离的 Flask test client。"""
+    """构造一个隔离的 Flask test client。
+
+    注意：默认强制把请求来源伪装成非 loopback，这样 auth/限流逻辑会真实执行；
+    需要 loopback 行为的测试可显式 GET(..., environ_base={'REMOTE_ADDR':'127.0.0.1'})。
+    """
     monkeypatch.delenv('TRADING_API_KEY', raising=False)
     monkeypatch.delenv('TRADING_RL_PER_MIN', raising=False)
+    monkeypatch.delenv('TRADING_API_REQUIRE_LOCALHOST', raising=False)
 
     import backend.api as api_mod
     from services.portfolio import PortfolioService
@@ -40,8 +48,11 @@ def app(tmp_path, monkeypatch):
     api_mod._GLOBAL_RATE_LIMIT.clear()
     api_mod.app.config['TESTING'] = True
 
-    with api_mod.app.test_client() as client:
-        yield client
+    test_client = api_mod.app.test_client()
+    # 默认所有请求伪装成外网来源，避免 loopback 自动豁免遮蔽测试
+    test_client.environ_base['REMOTE_ADDR'] = REMOTE_NON_LOCAL
+
+    yield test_client
 
     api_mod._svc = None
     api_mod._GLOBAL_RATE_LIMIT.clear()
@@ -85,6 +96,33 @@ class TestApiKeyEnforced:
             data=json.dumps({'cash': 1.0}),
             content_type='application/json',
         )
+        assert r.status_code == 401
+
+
+class TestLoopbackBypass:
+    """127.0.0.1 / ::1 / localhost 默认免认证，可被 env 覆盖。"""
+
+    def test_loopback_skips_api_key(self, app, monkeypatch):
+        monkeypatch.setenv('TRADING_API_KEY', 'sk')
+        r = app.get('/positions', environ_base={'REMOTE_ADDR': '127.0.0.1'})
+        assert r.status_code == 200
+
+    def test_ipv6_loopback_skips_api_key(self, app, monkeypatch):
+        monkeypatch.setenv('TRADING_API_KEY', 'sk')
+        r = app.get('/positions', environ_base={'REMOTE_ADDR': '::1'})
+        assert r.status_code == 200
+
+    def test_external_ip_still_required(self, app, monkeypatch):
+        monkeypatch.setenv('TRADING_API_KEY', 'sk')
+        r = app.get('/positions',
+                    environ_base={'REMOTE_ADDR': '198.51.100.7'})
+        assert r.status_code == 401
+
+    def test_require_localhost_env_disables_bypass(self, app, monkeypatch):
+        """TRADING_API_REQUIRE_LOCALHOST=1 → loopback 也必须带 key。"""
+        monkeypatch.setenv('TRADING_API_KEY', 'sk')
+        monkeypatch.setenv('TRADING_API_REQUIRE_LOCALHOST', '1')
+        r = app.get('/positions', environ_base={'REMOTE_ADDR': '127.0.0.1'})
         assert r.status_code == 401
 
 
