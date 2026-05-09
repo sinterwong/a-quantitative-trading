@@ -87,6 +87,15 @@ class BacktestConfig:
     max_position_pct: float = 0.25    # 单标的最大仓位
     bar_freq: str = 'daily'            # 'daily' | 'hourly' | 'minute'
 
+    # ── ExitEngine 集成（P0-1）──────────────────────────────────
+    use_exit_engine: bool = True
+    """启用 ExitEngine 在每根 bar 末尾对当前持仓生成退出信号。
+    与 IntradayMonitor 保持同一份退出逻辑，确保回测/实盘行为一致。"""
+
+    exit_engine_params: Optional[Dict] = None
+    """传给 ExitEngine 构造函数的覆盖参数（如 dd_warn/hard_sl/atr_multiplier 等）。
+    None 时使用 ExitEngine 默认值。"""
+
 
 @dataclass
 class BacktestResult:
@@ -159,6 +168,7 @@ class BacktestEngine:
         self._strategies: List[Tuple[Factor, float, dict]] = []  # (factor, threshold, params)
         self._equity = self.config.initial_equity
         self._cash = self.config.initial_equity
+        self._equity_peak = self.config.initial_equity   # P0-1: 用于 ExitEngine 组合回撤
         self._positions: Dict[str, PositionSnapshot] = {}  # symbol → snapshot
         self._trades: List[TradeRecord] = []
         self._daily_stats: List[DailyStats] = []
@@ -172,6 +182,13 @@ class BacktestEngine:
         self._total_loss = 0.0
         self._holding_periods: List[int] = []
         self._position_entries: Dict[str, datetime] = {}  # symbol → entry time
+        self._position_entry_dates: Dict[str, datetime] = {}  # P0-1: ExitEngine 的 holding_days
+
+        # P0-1: 单例 ExitEngine
+        self._exit_engine = None
+        if self.config.use_exit_engine:
+            from core.exit_engine import ExitEngine
+            self._exit_engine = ExitEngine(**(self.config.exit_engine_params or {}))
 
     def load_data(
         self,
@@ -245,6 +262,7 @@ class BacktestEngine:
     def _reset(self):
         self._equity = self.config.initial_equity
         self._cash = self.config.initial_equity
+        self._equity_peak = self.config.initial_equity
         self._positions.clear()
         self._trades.clear()
         self._daily_stats.clear()
@@ -254,6 +272,7 @@ class BacktestEngine:
         self._total_profit = 0.0
         self._total_loss = 0.0
         self._holding_periods.clear()
+        self._position_entry_dates.clear()
 
     def _on_bar(self, dt: datetime, next_dt: Optional[datetime] = None):
         """处理每根 K 线
@@ -304,8 +323,119 @@ class BacktestEngine:
                     continue
                 self._process_signal(sig, next_dt, next_bar)
 
+        # P0-1: ExitEngine 在所有标的的入仓信号后运行
+        # 输出的 SELL 信号同样用 next_dt 的 open 成交，保持前视偏差防护
+        if self._exit_engine is not None and next_dt is not None:
+            for exit_sig in self._generate_exit_signals(dt, next_dt):
+                next_bar = self._data[exit_sig.symbol].loc[next_dt] \
+                    if next_dt in self._data.get(exit_sig.symbol, pd.DataFrame()).index \
+                    else None
+                if next_bar is None or bool(next_bar.get('is_suspended', False)):
+                    continue
+                self._process_signal(exit_sig, next_dt, next_bar)
+
         # 更新日终统计
         self._update_daily(dt)
+
+    def _generate_exit_signals(
+        self,
+        dt: datetime,
+        next_dt: datetime,
+    ) -> List[Signal]:
+        """
+        P0-1: 基于 ExitEngine 对当前持仓生成退出信号。
+
+        - 把 PositionSnapshot 转成 ExitEngine 期望的 dict 格式
+        - 截止到 dt（不含未来）的最近 60 根 bar 作为 ATR/RSI 输入
+        - 把 ExitSignal 转换成 backtest 的 Signal（含 metadata['shares']）
+
+        Returns
+        -------
+        List[Signal]: SELL 方向，按 ExitEngine 优先级升序
+        """
+        if not self._positions:
+            return []
+
+        # 1. 构造 positions dict 列表
+        positions: List[Dict] = []
+        price_bars: Dict[str, pd.DataFrame] = {}
+        for sym, pos in self._positions.items():
+            if pos.shares <= 0:
+                continue
+            df = self._data.get(sym)
+            if df is None or dt not in df.index:
+                continue
+            # 截止到当前 bar 的历史，最多 60 根（ExitEngine 内部 ATR(14)/RSI(14) 足够）
+            idx = df.index.get_loc(dt)
+            hist = df.iloc[max(0, idx - 60): idx + 1]
+            price_bars[sym] = hist
+
+            entry_dt = self._position_entry_dates.get(sym)
+            entry_date = (
+                entry_dt.date() if isinstance(entry_dt, datetime) else None
+            )
+
+            positions.append({
+                'symbol': sym,
+                'shares': pos.shares,
+                'entry_price': pos.avg_price,
+                'avg_price': pos.avg_price,
+                'current_price': pos.current_price,
+                'peak_price': pos.entry_high,
+                'entry_date': entry_date,
+            })
+
+        if not positions:
+            return []
+
+        # 2. 调用 ExitEngine
+        try:
+            exit_signals = self._exit_engine.generate(
+                positions=positions,
+                equity_peak=self._equity_peak,
+                current_equity=self._equity,
+                pipeline_scores=None,        # 回测中暂不传（后续可扩展）
+                price_bars=price_bars,
+            )
+        except Exception as exc:
+            # 回测中不应让 ExitEngine 异常打断主循环
+            import logging
+            logging.getLogger('core.backtest_engine').warning(
+                'ExitEngine.generate failed: %s', exc,
+            )
+            return []
+
+        # 3. 转换为 SELL Signal（保留 exit_pct → metadata['shares']）
+        result: List[Signal] = []
+        for esig in exit_signals:
+            pos = self._positions.get(esig.symbol)
+            if not pos or pos.shares <= 0:
+                continue
+            # 计算实际卖出股数（exit_pct × pos.shares，整手）
+            target = int(pos.shares * esig.exit_pct)
+            target = (target // 100) * 100
+            if target <= 0 and esig.exit_pct >= 1.0:
+                target = pos.shares      # 全仓清仓时不强制整手
+            if target <= 0:
+                continue
+
+            sig = Signal(
+                timestamp=next_dt,
+                symbol=esig.symbol,
+                direction='SELL',
+                strength=1.0,
+                factor_name=f'ExitEngine.{esig.priority.name}',
+                price=esig.current_price,
+                metadata={
+                    'shares': target,
+                    'exit_priority': esig.priority.name,
+                    'exit_pct': esig.exit_pct,
+                    'exit_reason': esig.reason,
+                },
+            )
+            result.append(sig)
+
+        return result
 
     def _generate_signals(
         self,
@@ -370,8 +500,14 @@ class BacktestEngine:
             if not pos or pos.shares == 0:
                 return  # 无持仓
 
+            # P0-1: 支持 ExitEngine 的部分卖出（exit_pct < 1.0）
+            target_shares = sig.metadata.get('shares', pos.shares)
+            target_shares = min(target_shares, pos.shares)
+            if target_shares <= 0:
+                return
+
             fill_price = self._simulate_fill(sig.direction, exec_price)
-            self._execute_sell(sym, fill_price, pos.shares, sig, dt)
+            self._execute_sell(sym, fill_price, target_shares, sig, dt)
 
     def _can_buy(self, price: float, shares: int = None) -> bool:
         """PreTrade 风控"""
@@ -458,6 +594,9 @@ class BacktestEngine:
         self._cash -= (price * shares + commission)
         self._update_equity()
 
+        # P0-1: 记录建仓日期（ExitEngine 计算 holding_days 用）
+        self._position_entry_dates[symbol] = dt
+
         trade = TradeRecord(
             timestamp=dt,
             symbol=symbol,
@@ -495,6 +634,7 @@ class BacktestEngine:
         if pos.shares == 0:
             del self._positions[symbol]
             self._position_entries.pop(symbol, None)
+            self._position_entry_dates.pop(symbol, None)
         else:
             pos.current_price = price
 
@@ -534,6 +674,8 @@ class BacktestEngine:
 
     def _update_equity(self):
         self._equity = self._get_equity()
+        if self._equity > self._equity_peak:
+            self._equity_peak = self._equity
         self._equity_curve.append(self._equity)
 
     def _update_daily(self, dt: datetime):
