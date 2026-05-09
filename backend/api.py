@@ -970,6 +970,110 @@ def pairs_trading_signal():
 
 
 # ============================================================
+# 单股票综合分析（A 股 / 港股）
+# ============================================================
+
+@app.route('/analysis/stock/a', methods=['POST'])
+def analyze_a_stock_endpoint():
+    """
+    POST /analysis/stock/a
+
+    A 股单标的综合分析。整合：
+      - 行情快照 + 实时报价
+      - 因子流水线（technical + fundamental + macro，DynamicWeightPipeline）
+      - 基本面快照（PE / PB / ROE / 营收增速等，AKShare）
+      - 大盘 Regime（BULL / BEAR / VOLATILE / CALM）
+      - 单股票风险（ATR / VaR-95 / 年化波动率 / 建议止损止盈）
+      - 可选：ML 方向预测、新闻情感、LLM 综合解读
+      - 规则化投资建议（基于综合得分 × Regime × 基本面）
+
+    Body:
+      {
+        "symbol": "603369.SH",        // 必填，'NNNNNN.SH' 或 'NNNNNN.SZ'
+        "lookback_days": 250,          // 可选，默认 250
+        "include_regime": true,        // 可选，默认 true
+        "include_news": false,         // 可选，默认 false（依赖 NLP 缓存）
+        "include_ml": false,           // 可选，默认 false（依赖已训练模型）
+        "include_llm": false           // 可选，默认 false（产生 LLM 调用费用）
+      }
+
+    Returns:
+      与 services.single_stock_analysis.AnalysisReport 的 to_dict() 一致，
+      详见模块 docstring。失败字段以 warnings + 字段为 None 表达。
+    """
+    try:
+        from services.single_stock_analysis import (
+            AnalysisRequest, analyze_a_share, detect_market,
+        )
+        body = request.get_json(silent=True) or {}
+        try:
+            req = AnalysisRequest.from_body(body)
+        except ValueError as exc:
+            return err(str(exc), 422)
+
+        market = detect_market(req.symbol)
+        if market != 'A':
+            return err(
+                f'symbol {req.symbol!r} 不是 A 股代码（应为 NNNNNN.SH/SZ）；'
+                f'港股请用 /analysis/stock/hk',
+                422,
+            )
+
+        report = analyze_a_share(req)
+        return ok(**report.to_dict())
+    except Exception as e:
+        return err(str(e) + '\n' + traceback.format_exc(), 500)
+
+
+@app.route('/analysis/stock/hk', methods=['POST'])
+def analyze_hk_stock_endpoint():
+    """
+    POST /analysis/stock/hk
+
+    港股单标的综合分析。整合：
+      - 港股快照（新浪 HK：last / 52w / 涨跌幅 / 市值）
+      - 技术因子（RSI / MACD / Bollinger / ATR；港股不接入 A 股 fundamental / macro）
+      - 风险（基于历史 K 线 ATR / VaR；不可用时回退 52w range 估算）
+      - 可选 LLM 综合解读（ML / 新闻港股暂未支持）
+
+    Body:
+      {
+        "symbol": "HK:00700",          // 必填，支持 'HK:NNNNN' / 'NNNNN.HK' / 'hkNNNNN'
+        "lookback_days": 250,
+        "include_regime": false,        // 港股忽略；返回 N/A
+        "include_news": false,          // 港股 NLP 因子未对接，返回 unavailable
+        "include_ml": false,            // 港股 ML 模型未注册，返回 unavailable
+        "include_llm": false            // 可用，调用配置的 LLM provider
+      }
+
+    Returns:
+      AnalysisReport.to_dict() 结构，market='HK'，缺失能力以 warnings 列出。
+    """
+    try:
+        from services.single_stock_analysis import (
+            AnalysisRequest, analyze_hk_share, detect_market,
+        )
+        body = request.get_json(silent=True) or {}
+        try:
+            req = AnalysisRequest.from_body(body)
+        except ValueError as exc:
+            return err(str(exc), 422)
+
+        market = detect_market(req.symbol)
+        if market != 'HK':
+            return err(
+                f'symbol {req.symbol!r} 不是港股代码（应为 HK:NNNNN / NNNNN.HK / hkNNNNN）；'
+                f'A 股请用 /analysis/stock/a',
+                422,
+            )
+
+        report = analyze_hk_share(req)
+        return ok(**report.to_dict())
+    except Exception as e:
+        return err(str(e) + '\n' + traceback.format_exc(), 500)
+
+
+# ============================================================
 # Monthly Performance
 # ============================================================
 
