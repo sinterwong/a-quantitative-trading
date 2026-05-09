@@ -670,10 +670,14 @@ def main():
             # 注入到 IntradayMonitor（在 start() 之前，避免竞态读取 None）
             if monitor is not None:
                 monitor.set_strategy_runner(runner)
+            # P2-15: 区分 sync / async runner 的线程目标方法
+            # AsyncStrategyRunner 的 run_loop 是协程，必须通过 run_sync 包装
+            target_fn = getattr(runner, 'run_sync', None) or runner.run_loop
             runner_t = threading.Thread(
-                target=runner.run_loop, daemon=True, name='StrategyRunner')
+                target=target_fn, daemon=True, name='StrategyRunner')
             runner_t.start()
-            logger.info('StrategyRunner started (DynamicWeightPipeline, dry_run=True)')
+            logger.info('StrategyRunner started (%s, DynamicWeightPipeline, dry_run=True)',
+                        type(runner).__name__)
         except Exception as exc:
             logger.warning('StrategyRunner start failed (non-fatal): %s', exc)
 

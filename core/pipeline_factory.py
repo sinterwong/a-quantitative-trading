@@ -162,9 +162,10 @@ def build_runner(
     dry_run: bool = True,
     interval: int = 300,
     signal_threshold: float = 0.5,
+    runtime: str = 'sync',
 ):
     """
-    快速创建生产用 StrategyRunner。
+    快速创建生产用 Runner。
 
     Parameters
     ----------
@@ -176,11 +177,16 @@ def build_runner(
         run_loop() 两轮之间的等待秒数（默认 300s）。
     signal_threshold : float
         |combined_score| 超过此值才触发下单（默认 0.5）。
+    runtime : 'sync' | 'async'
+        'sync'（默认） → StrategyRunner（线程 + time.sleep 轮询，回测/单测兼容）
+        'async'        → AsyncStrategyRunner（asyncio.gather 并发取数，生产推荐）
+        env `RUNNER_RUNTIME` 可覆盖默认值。
 
     Returns
     -------
-    StrategyRunner
+    StrategyRunner | AsyncStrategyRunner
     """
+    import os
     from core.strategy_runner import StrategyRunner, RunnerConfig
     from core.data_layer import get_data_layer
     from core.risk_engine import RiskEngine
@@ -198,4 +204,10 @@ def build_runner(
         risk_engine = RiskEngine()
     except Exception:
         risk_engine = None
+
+    rt = (os.environ.get('RUNNER_RUNTIME') or runtime or 'sync').lower()
+    if rt == 'async':
+        from core.async_runner import AsyncStrategyRunner
+        return AsyncStrategyRunner(cfg, data_layer=get_data_layer(),
+                                   risk_engine=risk_engine)
     return StrategyRunner(cfg, data_layer=get_data_layer(), risk_engine=risk_engine)

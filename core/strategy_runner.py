@@ -1,7 +1,11 @@
 """
-StrategyRunner — 策略主循环
+StrategyRunner — 策略主循环（同步版）
 
-替代散落的 cron job / IntradayMonitor，成为唯一的策略驱动入口。
+P2-15 收敛建议：生产环境推荐使用 `core.async_runner.AsyncStrategyRunner`
+（asyncio.gather 并发取数，N 标的延迟 N×200ms → 200ms）。本类保留为
+回测 / 单测 / 同步上下文兼容入口。两者共享 `RunnerConfig` 与 `RunResult`，
+通过 `core.pipeline_factory.build_runner(runtime='async')` 或环境变量
+`RUNNER_RUNTIME=async` 切换。
 
 数据流：
   DataLayer.get_bars() → FactorPipeline.run() → RiskEngine.check()
@@ -9,11 +13,11 @@ StrategyRunner — 策略主循环
 
 两种运行模式：
   run_once()  — 单轮扫描（回测/测试/手动触发）
-  run_loop()  — 生产主循环（内部 sleep + 线程安全停止）
+  run_loop()  — 主循环（内部 sleep + 线程安全停止）
 
 dry_run=True 时只打印信号，不真正下单（调试首选）。
 
-用法（生产）：
+用法（同步，回测/单测）：
     from core.strategy_runner import StrategyRunner, RunnerConfig
     from core.factor_pipeline import DynamicWeightPipeline
     from core.data_layer import get_data_layer

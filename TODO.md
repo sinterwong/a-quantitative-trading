@@ -252,8 +252,9 @@
 
 **问题**：`StrategyRunner`（456 行同步）与 `AsyncStrategyRunner`（494 行异步）共享 RunnerConfig 但实现分歧，维护两套增加 Bug 风险。
 
-- [ ] **`AsyncStrategyRunner` 设为默认生产运行模式**
-- [ ] **`StrategyRunner` 降级为回测/单测专用**（注释标明，新代码不应使用）
+- [x] **`AsyncStrategyRunner` 通过 `build_runner(runtime='async')` 或 env `RUNNER_RUNTIME=async` 启用**：backend/main.py 自动用 `runner.run_sync` 替代 `run_loop` 作为线程目标
+- [x] **`StrategyRunner` 文档显式标记为同步/兼容路径**（docstring 说明），生产推荐 AsyncStrategyRunner
+- [x] **新增测试** `tests/test_runner_factory.py` 7 用例
 - [ ] **统一两者的事件发射格式**，便于后续完全迁移
 - [ ] **更新 `backend/main.py`** 启动逻辑
 
