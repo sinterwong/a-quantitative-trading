@@ -44,6 +44,7 @@ class AnalysisRequest:
     include_regime: bool = True
     include_news: bool = False
     include_ml: bool = False
+    sector: Optional[str] = None        # 行业名称，如"白酒"，用于横向对比
 
     @classmethod
     def from_body(cls, body: Dict[str, Any]) -> 'AnalysisRequest':
@@ -57,6 +58,7 @@ class AnalysisRequest:
             include_regime=bool(body.get('include_regime', True)),
             include_news=bool(body.get('include_news', False)),
             include_ml=bool(body.get('include_ml', False)),
+            sector=body.get('sector') or None,
         )
 
 
@@ -75,6 +77,7 @@ class AnalysisReport:
     llm_summary: Optional[Dict[str, Any]] = None
     recommendation: Dict[str, Any] = field(default_factory=dict)
     data_quality: Dict[str, Any] = field(default_factory=dict)
+    sector_comparison: Optional[Dict[str, Any]] = None  # 行业横向对比
     warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -92,6 +95,7 @@ class AnalysisReport:
             'llm_summary': self.llm_summary,
             'recommendation': self.recommendation,
             'data_quality': self.data_quality,
+            'sector_comparison': self.sector_comparison,
             'warnings': self.warnings,
         }
 
@@ -366,6 +370,18 @@ def analyze_a_share(req: AnalysisRequest) -> AnalysisReport:
         'has_fundamentals': bool(report.fundamentals),
         'has_regime': report.regime is not None,
     }
+
+    # 11) 行业横向对比（sector 作为可选输入）
+    if req.sector:
+        try:
+            from services.sector_comparison import compare_sector
+            comp = compare_sector(req.sector, base_symbol=sym)
+            report.sector_comparison = comp.to_dict()
+        except ValueError:
+            # 未知行业，静默跳过
+            pass
+        except Exception as exc:
+            report.warnings.append(f'sector_comparison_error: {exc}')
 
     return report
 
@@ -659,10 +675,43 @@ def _make_recommendation(combined_score: float, dominant: str,
                          risk: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """规则化决策：综合得分 × Regime 阻尼 × 基本面健康度。
 
+    基本面硬红线（任一条触发直接 SELL，不受综合得分覆盖）：
+      - 营收 YoY 连续为负（本期 < 0）
+      - 净利 YoY 连续为负（本期 < 0）
+      - 任一 YoY 跌幅超过 20%（趋势性恶化）
+
     返回 {action, confidence, reasoning}.
     """
     score = float(combined_score or 0.0)
     reasons: List[str] = []
+
+    # 0) 基本面硬红线 — 任一触发则强制 SELL，不受综合得分左右
+    fundamental_red = False
+    if fundamentals:
+        rev = fundamentals.get('revenue_yoy')
+        profit = fundamentals.get('profit_yoy')
+        roe = fundamentals.get('roe_ttm')
+
+        if roe is not None and roe < 0:
+            fundamental_red = True
+            reasons.append(f'ROE 为负({roe:.1f}%)')
+
+        if rev is not None:
+            if rev < 0:
+                fundamental_red = True
+                reasons.append(f'营收同比下滑({rev:+.1f}%)')
+            elif rev < -20:
+                # 跌幅超 20% 额外标记为"大幅"
+                fundamental_red = True
+                reasons.append(f'营收同比大幅下滑({rev:+.1f}%)')
+
+        if profit is not None:
+            if profit < 0:
+                fundamental_red = True
+                reasons.append(f'净利同比下滑({profit:+.1f}%)')
+            elif profit < -20:
+                fundamental_red = True
+                reasons.append(f'净利同比大幅下滑({profit:+.1f}%)')
 
     # 1) Regime 调整
     multiplier = 1.0
@@ -676,16 +725,10 @@ def _make_recommendation(combined_score: float, dominant: str,
             blocked = True
             reasons.append('BEAR 禁止新开多仓')
 
-    # 2) 基本面健康度修正
-    if fundamentals:
-        roe = fundamentals.get('roe_ttm')
-        rev = fundamentals.get('revenue_yoy')
-        if roe is not None and roe < 0:
-            score -= 0.15
-            reasons.append(f'ROE 为负({roe:.1f})')
-        if rev is not None and rev < -0.20:
-            score -= 0.10
-            reasons.append(f'营收同比大幅下滑({rev:.1%})')
+    # 2) 基本面软修正（仅在未触发红线时适用）
+    # 营收/净利本身的 YoY 已在红线处理；这里只处理无 YoY 风险但 ROE/营收质量偏弱的情况
+    if fundamentals and not fundamental_red:
+        pass  # 暂不需要软修正，当前因子已足够严格
 
     # 3) 风险约束
     if risk and isinstance(risk, dict):
@@ -698,6 +741,9 @@ def _make_recommendation(combined_score: float, dominant: str,
     threshold = 0.5 * multiplier
     if blocked:
         action = 'HOLD'
+    elif fundamental_red:
+        # 基本面红线：强制 SELL，reasoning 已在上面说明具体原因
+        action = 'SELL'
     elif score >= threshold:
         action = 'BUY'
     elif score <= -threshold:
