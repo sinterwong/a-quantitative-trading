@@ -274,10 +274,18 @@ class EventDrivenPaperBroker(BrokerAdapter):
         except Exception as e:
             print(f"[EventDrivenPaperBroker] persist_fill error: {e}")
 
-    def cancel(self, order_id: str) -> bool:
+    def cancel(self, order_id: str, reason: str = 'manual',
+               origin: str = 'manual') -> bool:
         if order_id in self._orders:
-            self._orders[order_id].status = 'CANCELLED'
+            order = self._orders[order_id]
+            order.status = 'CANCELLED'
             self._record_status('cancelled')
+            try:
+                from core.audit_log import log_order_cancel
+                log_order_cancel(order_id=order_id, symbol=order.symbol,
+                                 reason=reason, origin=origin)
+            except Exception:
+                pass
             return True
         return False
 

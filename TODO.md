@@ -296,8 +296,8 @@
 **问题**：Prometheus metrics（`core/metrics.py`）已采集净值/现金/持仓/订单延迟，但缺关键风险指标；审计日志（`core/audit_log.py`）未覆盖订单取消、强平等关键事件。
 
 - [x] **Prometheus 新增指标**：VaR/CVaR/drawdown/MC P95、broker 在线状态、订单状态分布、数据源失败计数（已在 OMS / data_layer / futu / daily_risk_report 接入）
-- [ ] **审计日志补全**：订单取消原因、强平触发理由、参数变更前后值、ML 模型重训记录
-- [ ] **Grafana 看板模板** `monitoring/grafana_dashboard.json`：净值曲线 + P&L 热力图 + 风险指标 + 系统健康
+- [x] **审计日志补全**：`core/audit_log.py` 新增通用 `_log_event()` + 4 个语义化 helper：`log_order_cancel()` / `log_liquidation()` / `log_param_change()` / `log_ml_retrain()`，jsonl 共享同一日审计文件，按 `kind` 字段区分；`core/oms.py.cancel(reason, origin)` 自动写入；`scripts/ml_train_all.py` 训练后自动记录 OOS 指标
+- [ ] **Grafana 看板模板** `monitoring/grafana_dashboard.json`：净值曲线 + P&L 热力图 + 风险指标 + 系统健康（暂缓——本机无 Grafana 实例验证）
 
 **关键文件**：`core/metrics.py`、`core/audit_log.py`、`monitoring/grafana_dashboard.json`（新建）
 **验证**：`/metrics` 端点暴露新指标；Grafana 导入看板可看到完整视图

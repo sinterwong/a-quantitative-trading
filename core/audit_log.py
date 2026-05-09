@@ -46,7 +46,7 @@ import json
 import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 _AUDIT_DIR = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), 'outputs', 'audit'
@@ -213,6 +213,98 @@ def get_audit_logger() -> AuditLogger:
     if _default_audit_logger is None:
         _default_audit_logger = AuditLogger()
     return _default_audit_logger
+
+
+# ---------------------------------------------------------------------------
+# P2-18: 通用事件审计（订单取消 / 强平 / 参数变更 / ML 重训）
+# ---------------------------------------------------------------------------
+
+# 通用事件 JSONL 写入到同一个 audit_dir，kind 字段区分类型。
+# - kind='order_fill'      → AuditEntry（log_fill 写入）
+# - kind='order_cancel'    → 订单取消（含 reason / origin）
+# - kind='liquidation'     → 强平触发（含 trigger / drawdown / equity）
+# - kind='param_change'    → 参数 / 配置变更（before/after）
+# - kind='ml_retrain'      → ML 模型重训（含 oos_acc / sharpe / 是否落盘）
+
+def _log_event(kind: str, payload: Dict[str, Any]) -> Optional[str]:
+    """通用事件审计：写入与 AuditEntry 相同目录的 jsonl 文件。"""
+    try:
+        ts = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        record = {
+            'kind': kind,
+            'timestamp': ts,
+            **payload,
+        }
+        # 哈希指纹（kind + payload，去掉 timestamp 让相同业务事件可比）
+        canonical = json.dumps({k: v for k, v in record.items() if k != 'timestamp'},
+                               sort_keys=True, ensure_ascii=False)
+        record['entry_hash'] = hashlib.sha256(canonical.encode()).hexdigest()[:16]
+        logger = get_audit_logger()
+        path = logger._log_path()
+        line = json.dumps(record, ensure_ascii=False)
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(line + '\n')
+        return path
+    except Exception as exc:  # noqa: BLE001
+        import logging
+        logging.getLogger('core.audit_log').error('[AuditLog] event 写入失败 (%s): %s',
+                                                    kind, exc)
+        return None
+
+
+def log_order_cancel(order_id: str, symbol: str, reason: str,
+                     origin: str = 'manual',
+                     extra: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """记录订单取消。origin: 'manual' / 'risk_engine' / 'exit_engine' / 'broker'。"""
+    return _log_event('order_cancel', {
+        'order_id': order_id,
+        'symbol': symbol,
+        'reason': reason,
+        'origin': origin,
+        **(extra or {}),
+    })
+
+
+def log_liquidation(symbol: str, trigger: str, drawdown_pct: float,
+                    equity: float, shares: int,
+                    extra: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """记录强平触发。trigger: 'P0_emergency_stop' / 'max_drawdown_breach' / 'circuit_break'。"""
+    return _log_event('liquidation', {
+        'symbol': symbol,
+        'trigger': trigger,
+        'drawdown_pct': round(float(drawdown_pct), 6),
+        'equity': round(float(equity), 2),
+        'shares': int(shares),
+        **(extra or {}),
+    })
+
+
+def log_param_change(component: str, key: str, before: Any, after: Any,
+                     changed_by: str = 'system') -> Optional[str]:
+    """记录参数 / 配置变更。component='RiskEngine' / 'OMS' / 'PortfolioOptimizer' 等。"""
+    return _log_event('param_change', {
+        'component': component,
+        'key': key,
+        'before': before,
+        'after': after,
+        'changed_by': changed_by,
+    })
+
+
+def log_ml_retrain(symbol: str, model: str, oos_accuracy: float,
+                   oos_sharpe: float, persisted: bool,
+                   reason: str = '',
+                   extra: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """记录 ML 模型重训。reason: 'scheduled' / 'oos_below_threshold' / 'manual'。"""
+    return _log_event('ml_retrain', {
+        'symbol': symbol,
+        'model': model,
+        'oos_accuracy': round(float(oos_accuracy), 6),
+        'oos_sharpe': round(float(oos_sharpe), 6),
+        'persisted': bool(persisted),
+        'reason': reason,
+        **(extra or {}),
+    })
 
 
 def log_fill(

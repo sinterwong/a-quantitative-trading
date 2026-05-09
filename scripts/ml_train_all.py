@@ -109,6 +109,21 @@ def _train_one(symbol: str, min_history: int) -> Dict[str, Any]:
         else:
             record['status'] = 'updated_low_quality'
 
+        # P2-18 续：审计日志记录重训
+        try:
+            from core.audit_log import log_ml_retrain
+            log_ml_retrain(
+                symbol=symbol,
+                model='xgboost',
+                oos_accuracy=float(result.oos_accuracy or 0.0),
+                oos_sharpe=float(getattr(result, 'oos_sharpe', 0.0) or 0.0),
+                persisted=record['status'] in ('updated', 'updated_low_quality'),
+                reason=record.get('reason', 'scheduled'),
+                extra={'n_folds': result.n_folds, 'oos_auc': float(result.oos_auc or 0.0)},
+            )
+        except Exception:
+            pass
+
     except Exception as exc:
         record['status'] = 'error'
         record['error'] = str(exc)
