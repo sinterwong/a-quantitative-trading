@@ -46,7 +46,7 @@ from typing import Dict, List, Optional, Literal
 import pandas as pd
 
 from .quote_data_source import QuoteData, QuoteDataSource
-from .symbol_utils import _safe_float, detect_market
+from .symbol_utils import _safe_float, detect_market, normalize_to_tencent
 
 logger = logging.getLogger("core.tencent_quote")
 
@@ -666,60 +666,8 @@ class TencentQuoteDataSource(QuoteDataSource):
     # ── 内部方法 ──────────────────────────────────────────────────────────
 
     def _normalize_symbol(self, symbol: str) -> str:
-        """
-        标准化 symbol 为腾讯格式。
-
-        '600519.SH' → 'sh600519'
-        '000001.SZ' → 'sz000001'
-        'HK:00700'  → 'hk00700'
-        'US:AAPL'   → 'usAAPL'  （美股代码区分大小写）
-        'sh600519'  → 'sh600519'（不变）
-        """
-        s = symbol.strip()
-
-        # 处理 HK:xxx / US:xxx 格式
-        if s.upper().startswith("HK:"):
-            code = s[3:].strip()
-            # 纯数字代码补齐 5 位（如 700 → 00700），字母代码保留原样（如 HSI）
-            if code.isdigit():
-                return f"hk{code.zfill(5)}"
-            return f"hk{code}"
-        if s.upper().startswith("US:"):
-            return f"us{s[3:].strip()}"
-
-        # 处理 xxx.SH / xxx.SZ 格式
-        upper = s.upper()
-        if upper.endswith(".SH"):
-            return f"sh{s[:-3].strip()}"
-        if upper.endswith(".SZ"):
-            return f"sz{s[:-3].strip()}"
-        if upper.endswith(".HK"):
-            code = s[:-3].strip()
-            if code.isdigit():
-                return f"hk{code.zfill(5)}"
-            return f"hk{code}"
-
-        # 已经是 us/hk 格式（代码部分区分大小写，保留原样）
-        # hkHSI, hkHSTECH, usAAPL 等需要保留混合大小写
-        if s.lower().startswith(("us", "hk")):
-            return s  # 保留原始大小写
-
-        # 已经是 sh/sz 格式（A 股不区分大小写）
-        lower = s.lower()
-        if lower.startswith(("sh", "sz")):
-            return lower
-
-        # 纯数字代码，根据规则判断市场
-        if s.isdigit():
-            if s.startswith(("60", "68", "5")):
-                return f"sh{s}"
-            return f"sz{s}"
-
-        # 纯字母，假设美股（保留大小写）
-        if s.isalpha():
-            return f"us{s.upper()}"
-
-        return lower
+        """标准化 symbol 为腾讯格式（委托 symbol_utils）"""
+        return normalize_to_tencent(symbol)
 
     def _fetch_single(self, normalized: str) -> Optional[QuoteData]:
         """获取单只标的（直接 HTTP）"""

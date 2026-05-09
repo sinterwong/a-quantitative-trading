@@ -242,11 +242,14 @@ class SinaQuoteDataSource(QuoteDataSource):
 
     def _http_get(self, url: str, encoding: str = 'utf-8', timeout: int = 8) -> Optional[str]:
         """带熔断器的 HTTP GET"""
-        from .circuit_breaker import get_breaker
-        cb = get_breaker('sina_quote', failure_threshold=3, cooldown_seconds=120.0)
-        if not cb.allow():
-            logger.warning("[SinaQuote] 熔断中，跳过请求")
-            return None
+        try:
+            from .circuit_breaker import get_breaker
+            cb = get_breaker('sina_quote', failure_threshold=3, cooldown_seconds=120.0)
+            if not cb.allow():
+                logger.warning("[SinaQuote] 熔断中，跳过请求")
+                return None
+        except Exception:
+            cb = None
 
         self._rate_limit()
         try:
@@ -256,10 +259,12 @@ class SinaQuoteDataSource(QuoteDataSource):
             })
             with urllib.request.urlopen(req, context=_SSL_CTX, timeout=timeout) as resp:
                 raw = resp.read().decode(encoding, errors='replace')
-            cb.on_success()
+            if cb:
+                cb.on_success()
             return raw
         except Exception as e:
-            cb.on_failure()
+            if cb:
+                cb.on_failure()
             logger.warning("[SinaQuote] HTTP 请求失败: %s", e)
             return None
 

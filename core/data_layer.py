@@ -54,7 +54,7 @@ class Quote:
 
     @property
     def is_limit_up(self) -> bool:
-        """是否涨停（普通 A 股阈值 9.9%）"""
+        """是否涨停（默认普通 A 股 9.9%，ST/创业板/科创板需调用 check_limit_status）"""
         return self.pct_change >= 9.9
 
     @property

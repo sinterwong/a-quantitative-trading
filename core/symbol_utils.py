@@ -159,7 +159,7 @@ def normalize_to_sina(symbol: str) -> str:
 
     # 纯数字 → A 股
     if s.isdigit():
-        if s.startswith(("60", "68", "5")):
+        if s.startswith(("60", "68", "51", "58")):
             return f"sh{s}"
         return f"sz{s}"
 
@@ -223,7 +223,7 @@ def normalize_to_tencent(symbol: str) -> str:
 
     # 纯数字
     if s.isdigit():
-        if s.startswith(("60", "68", "5")):
+        if s.startswith(("60", "68", "51", "58")):
             return f"sh{s}"
         return f"sz{s}"
 

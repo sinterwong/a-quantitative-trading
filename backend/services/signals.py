@@ -500,7 +500,7 @@ def _compute_avg_volume_ratio(symbol: str) -> Optional[float]:
     if not hist or len(hist) < 5:
         return None
     # hist 最近5天（去掉今天，今天K线可能还不完整）
-    recent = hist[-5:-1] if len(hist) > 1 else hist[-4:]
+    recent = hist[:-1][-5:] if len(hist) > 1 else hist[-4:]
     if len(recent) < 4:
         return None
     avg_vol = sum(d['volume'] for d in recent) / len(recent)
@@ -707,7 +707,9 @@ def evaluate_signal(symbol: str,
     if limit_signal in ('LIMIT_UP', 'LIMIT_RISK_UP', 'WATCH_LIMIT_UP'):
         # 检查是否已有持仓
         has_position = any(
-            (p.get('symbol') == symbol or p.get('symbol') == symbol.replace('.SH', '.SZ'))
+            (p.get('symbol') == symbol
+             or p.get('symbol') == symbol.replace('.SH', '.SZ')
+             or p.get('symbol') == symbol.replace('.SZ', '.SH'))
             for p in (positions or [])
             if p.get('shares', 0) > 0
         )
@@ -718,7 +720,7 @@ def evaluate_signal(symbol: str,
                 symbol=symbol, signal='WATCH_SELL',
                 price=price, pct=pct, prev_rsi=prev_rsi,
                 volume_ratio=vol_ratio, day_chg=day_chg or 0.0,
-                reason=(f'涨停持仓预警！{vol_note}，持仓者注意止盈｜RSI={prev_rsi:.0f}｜现价{price}'),
+                reason=(f'涨停持仓预警！{vol_note}，持仓者注意止盈｜RSI={prev_rsi:.0f if prev_rsi is not None else "N/A"}｜现价{price}'),
                 emitted_at=datetime.now().strftime('%H:%M:%S'),
             )
         # 无持仓 → 禁止追涨
@@ -738,7 +740,9 @@ def evaluate_signal(symbol: str,
     if limit_signal in ('LIMIT_DOWN', 'LIMIT_RISK_DOWN', 'WATCH_LIMIT_DOWN'):
         # 检查是否已有持仓
         has_position = any(
-            (p.get('symbol') == symbol or p.get('symbol') == symbol.replace('.SH', '.SZ'))
+            (p.get('symbol') == symbol
+             or p.get('symbol') == symbol.replace('.SH', '.SZ')
+             or p.get('symbol') == symbol.replace('.SZ', '.SH'))
             for p in (positions or [])
             if p.get('shares', 0) > 0
         )
@@ -749,7 +753,7 @@ def evaluate_signal(symbol: str,
                 symbol=symbol, signal='RSI_SELL',
                 price=price, pct=pct, prev_rsi=prev_rsi,
                 volume_ratio=vol_ratio, day_chg=day_chg or 0.0,
-                reason=(f'{urgency.get(limit_signal, "")}跌停逃生！尽快减仓｜RSI={prev_rsi:.0f}｜现价{price}'),
+                reason=(f'{urgency.get(limit_signal, "")}跌停逃生！尽快减仓｜RSI={prev_rsi:.0f if prev_rsi is not None else "N/A"}｜现价{price}'),
                 emitted_at=datetime.now().strftime('%H:%M:%S'),
             )
         # 无持仓 → 禁止抄底
@@ -816,6 +820,7 @@ def evaluate_signal(symbol: str,
             if nb_fetch:
                 try:
                     nb_data = nb_fetch()
+                    from services.northbound import record_today_north_from_kamt
                     record_today_north_from_kamt(nb_data)
                     if nb_data:
                         net_cny = nb_data.get('net_north_cny', 0)
@@ -828,7 +833,7 @@ def evaluate_signal(symbol: str,
                             elif direction['strength'] == 1:
                                 north_boost = f'|北向脉冲+{net_billions:.0f}亿'
                             if north_boost:
-                                reason = reason.replace('|现价{price}',
+                                reason = reason.replace(f'|现价{price}',
                                                      f'{north_boost}|现价{price}')
                 except Exception:
                     pass
@@ -862,7 +867,7 @@ def evaluate_signal(symbol: str,
             symbol=symbol, signal='VOLATILE',
             price=price, pct=pct, prev_rsi=prev_rsi,
             volume_ratio=vol_ratio, day_chg=day_chg or 0.0,
-            reason=f"当日波动{'%.1f'%(day_chg*100)}%（RSI={prev_rsi:.0f}）｜现价{price}",
+            reason=f"当日波动{'%.1f'%(day_chg*100)}%（RSI={prev_rsi:.0f if prev_rsi is not None else 'N/A'}）｜现价{price}",
             emitted_at=datetime.now().strftime('%H:%M:%S'),
         )
 

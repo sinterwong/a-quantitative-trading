@@ -19,10 +19,13 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from typing import Callable, Dict, List, Optional, Any
+import logging
 import threading
 import time
 import os
 import sys
+
+logger = logging.getLogger('data_sources')
 
 import requests
 import pandas as pd
@@ -34,6 +37,7 @@ class DataSource(ABC):
     """数据源基类"""
 
     name: str = 'DataSource'
+    _running: bool = False
 
     @abstractmethod
     def fetch_latest(self) -> Dict[str, Any]:
@@ -180,22 +184,10 @@ class VIXDataSource(DataSource):
         if self._cache and (now - self._cache_time) < 300:  # 5min TTL
             return self._cache
 
-        result = self._fetch_cboe()
-        if result.get('error'):
-            result = self._fetch_yfinance()
+        result = self._fetch_yfinance()
         self._cache = result
         self._cache_time = now
         return result
-
-    def _fetch_cboe(self) -> Dict[str, Any]:
-        """CBOE 直连（VIX 当前值）"""
-        try:
-            url = 'https://cdn.cboe.com/api/global/economic_data/indices/vix/daily/20XX/05_VIX技术和.vix.csv'
-            # CBOE 当前数据（简化版，实际 URL 需查询）
-            # 使用备用：Yahoo Finance ^VIX 历史
-            return self._fetch_yfinance()
-        except Exception:
-            return {'symbol': '^VIX', 'error': 'cboe failed'}
 
     def _fetch_yfinance(self) -> Dict[str, Any]:
         """Yahoo Finance ^VIX"""
@@ -303,11 +295,6 @@ class TencentMinuteDataSource(DataSource):
 
         try:
             import urllib.request
-            # 清除代理
-            env = os.environ.copy()
-            env.pop('HTTP_PROXY', None)
-            env.pop('HTTPS_PROXY', None)
-            # 腾讯分钟K线接口
             url = (
                 f'https://web.ifzq.gtimg.cn/appstock/app/kline/mkline'
                 f'?param={self.symbol},m1,,10'
@@ -345,9 +332,6 @@ class TencentMinuteDataSource(DataSource):
         """获取最近 N 分钟 K 线"""
         try:
             import urllib.request
-            env = os.environ.copy()
-            env.pop('HTTP_PROXY', None)
-            env.pop('HTTPS_PROXY', None)
             url = (
                 f'https://web.ifzq.gtimg.cn/appstock/app/kline/mkline'
                 f'?param={self.symbol},m1,,{minutes}'
