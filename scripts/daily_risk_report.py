@@ -332,7 +332,30 @@ def run_report(
     summary = _summarize_result(snapshot, cvar_result, mc_result, var_limit, cvar_limit)
     _write_report(summary, output_dir)
 
-    # 7. 告警
+    # 7. 推送 Prometheus
+    try:
+        from core.metrics import get_registry
+        var_pct_val = None
+        cvar_pct_val = None
+        mc_p95_val = None
+        if cvar_result is not None:
+            details = cvar_result.details or {}
+            var_pct_val = details.get('var_pct')
+            cvar_pct_val = details.get('cvar_pct')
+        if mc_result is not None:
+            mc_p95_val = mc_result.max_drawdown_p95
+        peak_eq = snapshot.get('peak_equity', equity) or equity
+        dd = max(0.0, 1.0 - equity / peak_eq) if peak_eq > 0 else 0.0
+        get_registry().set_risk_metrics(
+            var_pct=var_pct_val,
+            cvar_pct=cvar_pct_val,
+            drawdown_pct=dd,
+            max_drawdown_p95=mc_p95_val,
+        )
+    except Exception as exc:
+        logger.debug('metrics push failed: %s', exc)
+
+    # 8. 告警
     if enable_alert:
         _maybe_alert(summary)
 

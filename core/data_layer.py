@@ -153,6 +153,12 @@ def _http_get(url: str, timeout: int = 8, encoding: str = "gbk") -> Optional[str
             return resp.read().decode(encoding, errors="replace")
     except Exception as exc:
         logger.debug("HTTP GET failed %s: %s", url, exc)
+        try:
+            from core.metrics import get_registry
+            src = 'tencent' if 'gtimg.cn' in url else ('sina' if 'sina' in url else 'http')
+            get_registry().record_data_source_failure(src)
+        except Exception:
+            pass
         return None
 
 
@@ -323,6 +329,11 @@ def _fetch_minute_bars_akshare(
         df = ak.stock_zh_a_minute(symbol=code, period=period, adjust=adjust)
     except Exception as exc:
         logger.debug("AKShare minute bars failed for %s: %s", symbol, exc)
+        try:
+            from core.metrics import get_registry
+            get_registry().record_data_source_failure('akshare')
+        except Exception:
+            pass
         return None
 
     if df is None or df.empty:

@@ -178,6 +178,7 @@ class EventDrivenPaperBroker(BrokerAdapter):
 
         if last <= 0:
             order.status = 'REJECTED'
+            self._record_status('rejected')
             return Fill(
                 order_id=order.order_id,
                 symbol=order.symbol,
@@ -199,10 +200,12 @@ class EventDrivenPaperBroker(BrokerAdapter):
         limit_down = last * 0.90
         if order.direction == 'BUY' and fill_price >= limit_up:
             order.status = 'REJECTED'
+            self._record_status('rejected')
             return Fill(order_id=order.order_id, symbol=order.symbol,
                         direction=order.direction, shares=0, price=0)
         if order.direction == 'SELL' and fill_price <= limit_down:
             order.status = 'REJECTED'
+            self._record_status('rejected')
             return Fill(order_id=order.order_id, symbol=order.symbol,
                         direction=order.direction, shares=0, price=0)
 
@@ -211,6 +214,7 @@ class EventDrivenPaperBroker(BrokerAdapter):
         order.status = 'FILLED'
         order.fill_price = fill_price
         order.fill_time = datetime.now()
+        self._record_status('filled')
 
         fill = Fill(
             order_id=order.order_id,
@@ -276,8 +280,17 @@ class EventDrivenPaperBroker(BrokerAdapter):
     def cancel(self, order_id: str) -> bool:
         if order_id in self._orders:
             self._orders[order_id].status = 'CANCELLED'
+            self._record_status('cancelled')
             return True
         return False
+
+    @staticmethod
+    def _record_status(status: str) -> None:
+        try:
+            from core.metrics import get_registry
+            get_registry().record_order_status(status)
+        except Exception:
+            pass
 
     def quote(self, symbol: str) -> Dict[str, float]:
         """腾讯实时报价"""

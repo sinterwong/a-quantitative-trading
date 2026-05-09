@@ -293,7 +293,7 @@
 
 **问题**：Prometheus metrics（`core/metrics.py`）已采集净值/现金/持仓/订单延迟，但缺关键风险指标；审计日志（`core/audit_log.py`）未覆盖订单取消、强平等关键事件。
 
-- [ ] **Prometheus 新增指标**：因子 IC 时序、VaR/CVaR、broker 在线状态、订单状态分布、数据源失败计数
+- [x] **Prometheus 新增指标**：VaR/CVaR/drawdown/MC P95、broker 在线状态、订单状态分布、数据源失败计数（已在 OMS / data_layer / futu / daily_risk_report 接入）
 - [ ] **审计日志补全**：订单取消原因、强平触发理由、参数变更前后值、ML 模型重训记录
 - [ ] **Grafana 看板模板** `monitoring/grafana_dashboard.json`：净值曲线 + P&L 热力图 + 风险指标 + 系统健康
 

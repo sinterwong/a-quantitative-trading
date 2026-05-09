@@ -142,6 +142,52 @@ class MetricsRegistry:
                 registry=self.registry,
             )
 
+            # --- 风险指标（P2-18）---
+            self.var_pct = Gauge(
+                'trading_var_pct',
+                '组合 95% VaR（占权益比例）',
+                registry=self.registry,
+            )
+            self.cvar_pct = Gauge(
+                'trading_cvar_pct',
+                '组合 95% CVaR / Expected Shortfall（占权益比例）',
+                registry=self.registry,
+            )
+            self.drawdown_pct = Gauge(
+                'trading_drawdown_pct',
+                '组合从峰值的回撤比例',
+                registry=self.registry,
+            )
+            self.max_drawdown_p95 = Gauge(
+                'trading_max_drawdown_p95',
+                'Monte Carlo 模拟 P95 最大回撤',
+                registry=self.registry,
+            )
+
+            # --- Broker 状态（P2-18）---
+            self.broker_online = Gauge(
+                'trading_broker_online',
+                'Broker 连接状态（0=offline, 1=online）',
+                ['broker'],
+                registry=self.registry,
+            )
+
+            # --- 订单状态分布（P2-18）---
+            self.order_status_count = Counter(
+                'trading_order_status_total',
+                '订单状态分布',
+                ['status'],   # filled / partial / rejected / cancelled
+                registry=self.registry,
+            )
+
+            # --- 数据源失败计数（P2-18）---
+            self.data_source_failures = Counter(
+                'trading_data_source_failures_total',
+                '数据源调用失败计数',
+                ['source'],   # akshare / tencent / sina / futu
+                registry=self.registry,
+            )
+
             self._available = True
             logger.info('MetricsRegistry initialized (prometheus_client available)')
 
@@ -211,6 +257,59 @@ class MetricsRegistry:
             self.factor_ic.labels(factor_name=factor_name).set(ic_value)
         except Exception as e:
             logger.warning('set_factor_ic failed: %s', e)
+
+    # ------------------------------------------------------------------
+    # P2-18: 风险 / Broker / 订单 / 数据源
+    # ------------------------------------------------------------------
+
+    def set_risk_metrics(
+        self,
+        var_pct: Optional[float] = None,
+        cvar_pct: Optional[float] = None,
+        drawdown_pct: Optional[float] = None,
+        max_drawdown_p95: Optional[float] = None,
+    ) -> None:
+        """更新组合风险指标。任意值传 None 即跳过该项。"""
+        if not self._available:
+            return
+        try:
+            if var_pct is not None:
+                self.var_pct.set(float(var_pct))
+            if cvar_pct is not None:
+                self.cvar_pct.set(float(cvar_pct))
+            if drawdown_pct is not None:
+                self.drawdown_pct.set(float(drawdown_pct))
+            if max_drawdown_p95 is not None:
+                self.max_drawdown_p95.set(float(max_drawdown_p95))
+        except Exception as e:
+            logger.warning('set_risk_metrics failed: %s', e)
+
+    def set_broker_online(self, broker: str, online: bool) -> None:
+        """更新 broker 在线状态。"""
+        if not self._available:
+            return
+        try:
+            self.broker_online.labels(broker=broker).set(1 if online else 0)
+        except Exception as e:
+            logger.warning('set_broker_online failed: %s', e)
+
+    def record_order_status(self, status: str) -> None:
+        """订单状态计数：'filled'/'partial'/'rejected'/'cancelled'。"""
+        if not self._available:
+            return
+        try:
+            self.order_status_count.labels(status=status).inc()
+        except Exception as e:
+            logger.warning('record_order_status failed: %s', e)
+
+    def record_data_source_failure(self, source: str) -> None:
+        """数据源失败计数。source: 'akshare'/'tencent'/'sina'/'futu' 等。"""
+        if not self._available:
+            return
+        try:
+            self.data_source_failures.labels(source=source).inc()
+        except Exception as e:
+            logger.warning('record_data_source_failure failed: %s', e)
 
     def record_api_request(self, endpoint: str, method: str,
                             latency_ms: float, status_code: int) -> None:

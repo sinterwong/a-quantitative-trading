@@ -147,6 +147,7 @@ class FutuBroker(BrokerBase):
         """连接 OpenD。OpenD 未运行或 futu-api 未安装时返回 False。"""
         if not _FUTU_AVAILABLE:
             logger.warning('[FutuBroker] futu-api 未安装。运行: pip install futu-api')
+            self._publish_status(False)
             return False
 
         try:
@@ -159,10 +160,12 @@ class FutuBroker(BrokerBase):
             )
             self._connected = True
             logger.info('[FutuBroker] 连接成功 %s:%d env=%s', self.host, self.port, self.trade_env)
+            self._publish_status(True)
             return True
         except Exception as e:
             logger.error('[FutuBroker] 连接失败: %s', e)
             self._connected = False
+            self._publish_status(False)
             return False
 
     def disconnect(self) -> None:
@@ -178,6 +181,15 @@ class FutuBroker(BrokerBase):
             self._quote_ctx = None
             self._trade_ctx = None
             self._connected = False
+            self._publish_status(False)
+
+    @staticmethod
+    def _publish_status(online: bool) -> None:
+        try:
+            from core.metrics import get_registry
+            get_registry().set_broker_online('futu', online)
+        except Exception:
+            pass
 
     def is_connected(self) -> bool:
         return self._connected
