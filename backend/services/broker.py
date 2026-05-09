@@ -212,6 +212,10 @@ class PaperBroker(BrokerBase):
         price: market reference price at time of fill.
         signal_price: the signal trigger price (for slippage reference). If 0, use price.
         """
+        # P2-14: 共享滑点/撮合工具，避免与 oms.EventDrivenPaperBroker /
+        # core.brokers.simulated.SimulatedBroker 三处重复实现漂移
+        from core.brokers.fill_simulator import simulate_fill_price, slippage_bps_actual
+
         order_id = self._next_order_id()
         now_str = datetime.now().isoformat()
 
@@ -220,18 +224,14 @@ class PaperBroker(BrokerBase):
         # Use signal_price if provided, else use ref_price
         slip_ref = signal_price if signal_price > 0 else ref_price
 
-        # ── Resolve fill price ──────────────────────────────────
-        if price_type == 'market':
-            slip = random.uniform(-self.slippage_bps, self.slippage_bps) / 10_000
-            fill_price = round(ref_price * (1 + slip), 2)
-        else:
-            fill_price = ref_price  # limit order fills at ref_price
-
-        # Compute actual slippage in bps (vs signal_price)
-        if slip_ref > 0:
-            slip_bps = (fill_price - slip_ref) / slip_ref * 10_000
-        else:
-            slip_bps = 0.0
+        # ── Resolve fill price (delegated to shared helper) ───
+        fill_price = simulate_fill_price(
+            ref_price=ref_price,
+            direction=direction,
+            price_type=price_type,
+            slippage_bps=self.slippage_bps,
+        )
+        slip_bps = slippage_bps_actual(fill_price, slip_ref)
 
         time.sleep(0.5)
 
@@ -244,7 +244,7 @@ class PaperBroker(BrokerBase):
             filled_shares=shares,
             avg_price=fill_price,
             signal_price=slip_ref,
-            slippage_bps=round(slip_bps, 2),
+            slippage_bps=slip_bps,
             submitted_at=now_str,
             filled_at=datetime.now().isoformat(),
         )

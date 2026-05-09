@@ -238,10 +238,10 @@
 
 **问题**：`core/brokers/EventDrivenPaperBroker`（commit a40b1e8 改名）与 `backend/services/broker.PaperBroker` 两套并存，分工不清。
 
-- [ ] **梳理两套 PaperBroker 的差异**：调用方、状态存储、事件发射
-- [ ] **保留 `core/brokers/EventDrivenPaperBroker` 作为单一实现**，`backend/services/broker.py` 改为对外服务层薄包装
-- [ ] **迁移所有 `backend/services/broker.PaperBroker` 调用方**到新接口
-- [ ] **删除冗余实现**
+- [x] **梳理两套 PaperBroker 的差异**：分工已澄清——`backend/services/broker.PaperBroker` 是同步 PortfolioService DB 写入器（生产链路）；`core/oms.EventDrivenPaperBroker` 是事件驱动 OMS 撮合器（回测/单测）；`core/brokers/SimulatedBroker` 是 BrokerBase 接口模拟（实盘验证前的接口对齐）
+- [x] **抽取共享撮合工具** `core/brokers/fill_simulator.py`：滑点/涨跌停/佣金 4 个纯函数被三处复用，避免逻辑漂移
+- [ ] **完整结构合并**（深度重构）：保留 EventDrivenPaperBroker 为唯一实装、backend 退化为薄包装。当前评估为高风险（事件驱动 vs 同步语义不同），暂缓——已有共享工具保证滑点/佣金一致
+- [x] **新增测试** `tests/test_fill_simulator.py` 14 用例
 
 **关键文件**：`core/brokers/{paper,simulated}.py`、`backend/services/broker.py`
 **验证**：现有测试全部通过；生产 paper 模式行为不变

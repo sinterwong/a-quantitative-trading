@@ -188,28 +188,25 @@ class EventDrivenPaperBroker(BrokerAdapter):
                 commission=0,
             )
 
-        # 模拟滑点：买入稍贵（-0.05%），卖出稍便宜（+0.05%）
+        # P2-14: 沿用共享 fill_simulator（commission/limit_breach），
+        # 滑点保持原有方向化模型（买稍贵 / 卖稍便宜），不引入随机性以维持
+        # 事件驱动测试可复现
+        from core.brokers.fill_simulator import is_limit_breach, compute_commission
+
         slippage_bps = 5.0
         if order.direction == 'BUY':
             fill_price = round(last * 1.0005, 2)
         else:
             fill_price = round(last * 0.9995, 2)
 
-        # 涨跌停检查
-        limit_up = last * 1.10
-        limit_down = last * 0.90
-        if order.direction == 'BUY' and fill_price >= limit_up:
-            order.status = 'REJECTED'
-            self._record_status('rejected')
-            return Fill(order_id=order.order_id, symbol=order.symbol,
-                        direction=order.direction, shares=0, price=0)
-        if order.direction == 'SELL' and fill_price <= limit_down:
+        # 涨跌停检查（共享工具，prev_close 此处用 last 估算）
+        if is_limit_breach(order.direction, fill_price, last):
             order.status = 'REJECTED'
             self._record_status('rejected')
             return Fill(order_id=order.order_id, symbol=order.symbol,
                         direction=order.direction, shares=0, price=0)
 
-        commission = max(5.0, fill_price * order.shares * 0.0003)  # 佣金≥5元，万3
+        commission = compute_commission(fill_price, order.shares)
 
         order.status = 'FILLED'
         order.fill_price = fill_price
