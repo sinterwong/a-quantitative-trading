@@ -233,17 +233,20 @@ class Scheduler:
         except Exception as e:
             self.logger.error('[Scheduler] /analysis/run failed: %s', e)
 
-        # 每周一额外触发行业轮动
-        from datetime import datetime as _dt
-        if _dt.now().weekday() == 0:
+        # 每周一额外触发行业轮动；每周三触发配对交易扫描（P1-10）
+        now = datetime.now()
+        if now.weekday() == 0:
             self._trigger_sector_rotation()
             # 季报刷新：季度末月（3/6/9/12）25日起，或财报季首周（1/4/7/10月1-7日）
-            is_quarter_end = _dt.now().month in (3, 6, 9, 12) and _dt.now().day >= 25
-            is_earnings_season = _dt.now().month in (1, 4, 7, 10) and 1 <= _dt.now().day <= 7
+            is_quarter_end = now.month in (3, 6, 9, 12) and now.day >= 25
+            is_earnings_season = now.month in (1, 4, 7, 10) and 1 <= now.day <= 7
             if is_quarter_end or is_earnings_season:
                 label = 'quarter-end' if is_quarter_end else 'earnings-season'
                 self.logger.info('[Scheduler] %s — refreshing fundamental data', label)
                 self._refresh_fundamentals()
+
+        if now.weekday() == 2:
+            self._trigger_pairs_trading()
 
     def _trigger_sector_rotation(self):
         """每周一 15:10 后 — HTTP POST 到 /analysis/sector_rotation。"""
@@ -262,6 +265,87 @@ class Scheduler:
             self.logger.info('[Scheduler] 行业轮动信号 — 买入: %s  卖出: %s', buy, sell)
         except Exception as e:
             self.logger.error('[Scheduler] sector rotation failed: %s', e)
+
+    def _trigger_pairs_trading(self):
+        """
+        P1-10: 每周三 15:10 后 — HTTP POST 到 /analysis/pairs_trading。
+
+        从 /watchlist 读取候选标的池（≥2 个），筛选协整配对，
+        spread z-score 突破 entry_z 触发 WARNING 告警。
+        输出 JSON 到 outputs/pairs_signals/pairs_{date}.json。
+        """
+        self.logger.info('[Scheduler] Wednesday — triggering pairs trading scan')
+        import urllib.request
+        import json as _json
+        from datetime import datetime as _dt
+        from pathlib import Path
+
+        # 1. 读 watchlist 作为候选池
+        symbols = []
+        try:
+            with urllib.request.urlopen(
+                f'http://127.0.0.1:{self.api_port}/watchlist', timeout=5,
+            ) as r:
+                data = _json.loads(r.read())
+            symbols = [w['symbol'] for w in data.get('watchlist', []) if w.get('symbol')]
+        except Exception as e:
+            self.logger.warning('[Scheduler] watchlist fetch failed: %s', e)
+        if len(symbols) < 2:
+            self.logger.info('[Scheduler] pairs_trading skipped: <2 symbols in watchlist')
+            return
+
+        # 2. 调 /analysis/pairs_trading
+        try:
+            payload = _json.dumps({'symbols': symbols}).encode()
+            req = urllib.request.Request(
+                f'http://127.0.0.1:{self.api_port}/analysis/pairs_trading',
+                data=payload, method='POST',
+                headers={'Content-Type': 'application/json'},
+            )
+            with urllib.request.urlopen(req, timeout=120) as r:
+                body = r.read()
+            resp = _json.loads(body)
+        except Exception as e:
+            self.logger.error('[Scheduler] pairs_trading API failed: %s', e)
+            return
+
+        pairs = resp.get('data', {}).get('pairs', resp.get('pairs', []))
+        n_found = resp.get('data', {}).get('n_pairs_found', resp.get('n_pairs_found', 0))
+        self.logger.info('[Scheduler] pairs_trading: %d pair(s) found', n_found)
+
+        # 3. 写文件
+        try:
+            out_dir = Path(PROJ_DIR) / 'outputs' / 'pairs_signals'
+            out_dir.mkdir(parents=True, exist_ok=True)
+            today_str = _dt.now().strftime('%Y-%m-%d')
+            with open(out_dir / f'pairs_{today_str}.json', 'w', encoding='utf-8') as f:
+                _json.dump({
+                    'date': today_str, 'symbols': symbols,
+                    'pairs': pairs, 'n_pairs_found': n_found,
+                }, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.logger.warning('[Scheduler] pairs_trading write failed: %s', e)
+
+        # 4. spread |z-score| > entry_z → 告警
+        try:
+            entry_z = 2.0
+            actionable = []
+            for p in pairs or []:
+                sig = p.get('signal') or {}
+                z = float(sig.get('spread_zscore', 0))
+                if abs(z) >= entry_z:
+                    actionable.append((
+                        p.get('symbol_a', '?'), p.get('symbol_b', '?'), z,
+                        sig.get('action_a', '?'), sig.get('action_b', '?'),
+                    ))
+            if actionable:
+                from core.alerting import get_alert_manager
+                lines = ['📊 配对交易信号触发：']
+                for a, b, z, aa, ab in actionable[:5]:
+                    lines.append(f'  • {a}/{b}: z={z:+.2f} | {a}={aa} {b}={ab}')
+                get_alert_manager().send_warning('\n'.join(lines))
+        except Exception as e:
+            self.logger.warning('[Scheduler] pairs_trading alert failed: %s', e)
 
     def _refresh_fundamentals(self):
         """季报季度末 / 财报季强制刷新持仓标的基本面数据缓存。"""
