@@ -20,13 +20,10 @@ core/data_layer.py — 统一数据层
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import ssl
 import time
 import threading
-import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional
@@ -34,22 +31,6 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 logger = logging.getLogger("core.data_layer")
-
-# 清除代理（A 股接口不走代理）
-import os as _os
-for _k in list(_os.environ.keys()):
-    if "proxy" in _k.lower():
-        del _os.environ[_k]
-
-_SSL_CTX = ssl.create_default_context()
-_SSL_CTX.check_hostname = False
-_SSL_CTX.verify_mode = ssl.CERT_NONE
-
-_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Referer": "https://finance.qq.com",
-}
-
 
 # ─── 数据类 ──────────────────────────────────────────────────────────────────
 
@@ -133,135 +114,7 @@ class _TTLCache:
             return len(self._store)
 
 
-# ─── 底层 HTTP 工具 ──────────────────────────────────────────────────────────
-
-
-def _symbol_to_tencent(symbol: str) -> str:
-    """
-    标准化 symbol 为腾讯格式。
-
-    '600519.SH' → 'sh600519'
-    '000001.SZ' → 'sz000001'
-    'HK:00700'  → 'hk00700'
-    'US:AAPL'   → 'usAAPL'
-    'hkHSI'     → 'hkHSI'
-    """
-    s = symbol.strip()
-
-    # HK:xxx / US:xxx 格式
-    if s.upper().startswith("HK:"):
-        code = s[3:].strip()
-        if code.isdigit():
-            return f"hk{code.zfill(5)}"
-        return f"hk{code}"
-    if s.upper().startswith("US:"):
-        return f"us{s[3:].strip()}"
-
-    # xxx.SH / xxx.SZ 格式
-    upper = s.upper()
-    if upper.endswith(".SH"):
-        return "sh" + s[:-3].strip()
-    if upper.endswith(".SZ"):
-        return "sz" + s[:-3].strip()
-    if upper.endswith(".HK"):
-        code = s[:-3].strip()
-        if code.isdigit():
-            return f"hk{code.zfill(5)}"
-        return f"hk{code}"
-
-    # 已经是 us/hk 格式（区分大小写，保留原样）
-    if s.lower().startswith(("us", "hk")):
-        return s
-
-    # 已经是 sh/sz 格式
-    lower = s.lower()
-    if lower.startswith(("sh", "sz")):
-        return lower
-
-    return lower
-
-
-def _http_get(url: str, timeout: int = 8, encoding: str = "gbk") -> Optional[str]:
-    src = 'tencent' if 'gtimg.cn' in url else ('sina' if 'sina' in url else 'http')
-    # P2-16: 熔断检查
-    try:
-        from core.circuit_breaker import get_breaker
-        cb = get_breaker(src, failure_threshold=3, cooldown_seconds=120.0)
-        if not cb.allow():
-            logger.warning("数据源 %s 熔断中（state=%s），跳过", src, cb.state())
-            return None
-    except Exception:
-        cb = None
-
-    try:
-        req = urllib.request.Request(url, headers=_HEADERS)
-        with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as resp:
-            data = resp.read().decode(encoding, errors="replace")
-        if cb:
-            cb.on_success()
-        return data
-    except Exception as exc:
-        logger.debug("HTTP GET failed %s: %s", url, exc)
-        if cb:
-            cb.on_failure()
-        try:
-            from core.metrics import get_registry
-            get_registry().record_data_source_failure(src)
-        except Exception:
-            pass
-        return None
-
-
-def _parse_tencent_quote(symbol: str, raw_line: str) -> Optional[Quote]:
-    """解析腾讯实时行情单行（去掉 v_XXXX=" 前缀后的内容）"""
-    eq = raw_line.find('="')
-    if eq >= 0:
-        raw_line = raw_line[eq + 2:]
-    fields = raw_line.rstrip('";').split("~")
-    if len(fields) < 40:
-        return None
-    try:
-        price     = float(fields[3])  if fields[3]  not in ("", "-") else 0.0
-        prev_cls  = float(fields[4])  if fields[4]  not in ("", "-") else 0.0
-        pct       = float(fields[32]) if fields[32] not in ("", "-") else 0.0
-        high      = float(fields[33]) if len(fields) > 33 and fields[33] not in ("", "-") else price
-        low       = float(fields[34]) if len(fields) > 34 and fields[34] not in ("", "-") else price
-        vol_ratio = (float(fields[38])
-                     if len(fields) > 38 and fields[38] not in ("", "-", "0")
-                     else None)
-        return Quote(
-            symbol=symbol,
-            price=price,
-            prev_close=prev_cls,
-            pct_change=pct,
-            high=high,
-            low=low,
-            vol_ratio=vol_ratio,
-        )
-    except (ValueError, IndexError) as exc:
-        logger.debug("parse quote %s failed: %s", symbol, exc)
-        return None
-
-
-def _fetch_realtime_bulk_raw(symbols: List[str]) -> Dict[str, Quote]:
-    """腾讯批量实时行情（单次 HTTP 请求）"""
-    if not symbols:
-        return {}
-    tc_syms = [_symbol_to_tencent(s) for s in symbols]
-    url = "https://qt.gtimg.cn/q=" + ",".join(tc_syms)
-    raw = _http_get(url)
-    if not raw:
-        return {}
-    result: Dict[str, Quote] = {}
-    lines = raw.strip().split("\n")
-    for i, line in enumerate(lines):
-        if i >= len(symbols):
-            break
-        sym = symbols[i]
-        q = _parse_tencent_quote(sym, line)
-        if q:
-            result[sym] = q
-    return result
+# ─── 转换工具 ────────────────────────────────────────────────────────────────
 
 
 def _tencent_quote_to_quote(symbol: str, tq) -> Optional[Quote]:
@@ -277,88 +130,6 @@ def _tencent_quote_to_quote(symbol: str, tq) -> Optional[Quote]:
         low=tq.low,
         vol_ratio=tq.volume_ratio if tq.volume_ratio > 0 else None,
     )
-
-
-def _fetch_daily_bars_tencent(symbol: str, days: int = 60) -> Optional[pd.DataFrame]:
-    """腾讯前复权日K线 → DataFrame(date, open, high, low, close, volume)"""
-    qt = _symbol_to_tencent(symbol)
-    url = (
-        f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-        f"?_var=kline_dayqfq&param={qt},day,,,{days},qfq"
-    )
-    raw = _http_get(url, encoding="utf-8")
-    if not raw:
-        return None
-    eq = raw.find("=")
-    if eq >= 0:
-        raw = raw[eq + 1:]
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    qfq = data.get("data", {}).get(qt, {})
-    bars = qfq.get("qfqday") or qfq.get("day") or []
-    if not bars:
-        return None
-    rows = []
-    for bar in bars:
-        if len(bar) < 6:
-            continue
-        try:
-            rows.append({
-                "date":   bar[0],
-                "open":   float(bar[1]),
-                "close":  float(bar[2]),
-                "high":   float(bar[3]),
-                "low":    float(bar[4]),
-                "volume": float(bar[5]),
-            })
-        except (ValueError, IndexError):
-            continue
-    if not rows:
-        return None
-    df = pd.DataFrame(rows)
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date").reset_index(drop=True)
-    return df
-
-
-def _fetch_daily_bars_sina(symbol: str, days: int = 60) -> Optional[pd.DataFrame]:
-    """新浪日K线（降级用）→ DataFrame(date, open, high, low, close, volume)"""
-    s = symbol.upper()
-    code = ("sh" + s[:-3]) if s.endswith(".SH") else ("sz" + s[:-3])
-    url = (
-        f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php"
-        f"/CN_MarketData.getKLineData?symbol={code}&scale=240&ma=no&datalen={days}"
-    )
-    raw = _http_get(url, encoding="utf-8")
-    if not raw:
-        return None
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, list) or not data:
-        return None
-    rows = []
-    for item in data:
-        try:
-            rows.append({
-                "date":   item.get("day", ""),
-                "open":   float(item.get("open", 0)),
-                "high":   float(item.get("high", 0)),
-                "low":    float(item.get("low", 0)),
-                "close":  float(item.get("close", 0)),
-                "volume": float(item.get("volume", 0)),
-            })
-        except (ValueError, TypeError):
-            continue
-    if not rows:
-        return None
-    df = pd.DataFrame(rows)
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date").reset_index(drop=True)
-    return df
 
 
 # ─── 分钟 K 线获取（AKShare）─────────────────────────────────────────────────
