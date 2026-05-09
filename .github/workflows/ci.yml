@@ -113,13 +113,22 @@ jobs:
           python tests/test_walkforward.py
           python tests/test_data_quality.py
 
-      - name: Coverage report
+      - name: Coverage report (XML for codecov + terminal)
         run: |
-          pytest tests/ --cov=core --cov=scripts --cov=backend --cov-report=term \
+          pytest tests/ --cov=core --cov=scripts --cov=backend \
+            --cov-report=term --cov-report=xml \
             --ignore=tests/test_backtest_engine.py \
             --ignore=tests/test_walkforward.py \
             --ignore=tests/test_data_quality.py \
             -q --tb=no || true   # 覆盖率不阻断 CI
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        if: always()
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false   # codecov 不可达不阻断 CI
+          verbose: false
 
   # ---------------------------------------------------------------
   # Job 3: Windows CI - single version (syntax + unit tests)

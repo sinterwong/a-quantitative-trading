@@ -1,5 +1,10 @@
 """
-Phase 3 test: BrokerFactory + SafetyMode + Real Broker Stubs
+tests/test_broker_factory_safetymode.py — BrokerFactory + SafetyMode 守护
+（原 tests/test_legacy_phase3.py，P2-21 重命名）
+
+覆盖：
+  - BrokerFactory 单例 + create()
+  - SafetyMode.PAPER/SIMULATED 阻断真实下单
 """
 
 import sys, os
