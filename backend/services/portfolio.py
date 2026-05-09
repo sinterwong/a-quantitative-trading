@@ -23,6 +23,7 @@ import sqlite3
 import json
 import time
 import logging
+import threading
 from datetime import datetime, date
 from typing import List, Dict, Optional, Any
 from contextlib import contextmanager
@@ -40,11 +41,25 @@ DB_PATH = os.path.join(THIS_DIR, 'portfolio.db')
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    # P2-19: WAL 模式允许并发读 + 序列化写；busy_timeout 让竞争写自旋等待
+    # 而非立即抛 'database is locked'
+    try:
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA busy_timeout=5000')
+        conn.execute('PRAGMA synchronous=NORMAL')
+    except Exception:
+        pass
     return conn
+
+
+# P2-19: 进程内写锁，避免同一进程多线程同时写入 SQLite 触发 'database is locked'
+_WRITE_LOCK = threading.Lock()
 
 
 @contextmanager
 def get_cursor():
+    """Yield a write-locked cursor; commits or rolls back on exit."""
+    _WRITE_LOCK.acquire()
     conn = get_db()
     try:
         yield conn.cursor()
@@ -54,6 +69,7 @@ def get_cursor():
         raise
     finally:
         conn.close()
+        _WRITE_LOCK.release()
 
 
 def init_db():

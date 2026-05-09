@@ -446,17 +446,23 @@ class Scheduler:
         while not self._stop.is_set():
             now = datetime.now()
 
+            # P2-19: 非交易日整体休眠至次日 08:25（08:30 任务前 5 分钟），
+            # 避免无意义的 30 秒轮询。AKShare 不可用时 is_trading_day()
+            # 自动降级为周一~周五判断。
+            if not is_trading_day():
+                sleep_secs = self._seconds_until_next_check(now)
+                self.logger.info('[Scheduler] 非交易日，sleep %.0f 秒（约 %.1f 小时）',
+                                 sleep_secs, sleep_secs / 3600)
+                if self._stop.wait(timeout=sleep_secs):
+                    return
+                continue
+
             # ── 检查每个定时任务 ──
             for target_hour, target_min, method_name in self.DAILY_TASKS:
                 target = now.replace(hour=target_hour, minute=target_min,
                                      second=0, microsecond=0)
                 # 触发窗口：目标时间 ± 60 秒（防止时钟漂移丢任务）
                 if abs((now - target).total_seconds()) < 60:
-                    if not is_trading_day():
-                        self.logger.info('[Scheduler] %02d:%02d — 非交易日，跳过 %s',
-                                         target_hour, target_min, method_name)
-                        continue
-
                     self.logger.info('[Scheduler] >>> %02d:%02d 触发 %s',
                                      target_hour, target_min, method_name)
                     handler = getattr(self, method_name, None)
@@ -472,6 +478,15 @@ class Scheduler:
             else:
                 # 没有任务触发：休息 30 秒再检查
                 time.sleep(30)
+
+    @staticmethod
+    def _seconds_until_next_check(now: datetime) -> float:
+        """非交易日休眠秒数：到次日 08:25。"""
+        from datetime import timedelta
+        next_check = (now + timedelta(days=1)).replace(
+            hour=8, minute=25, second=0, microsecond=0)
+        delta = (next_check - now).total_seconds()
+        return max(60.0, delta)
 
     def start(self) -> threading.Thread:
         t = threading.Thread(target=self._run_loop, daemon=True, name='Scheduler')

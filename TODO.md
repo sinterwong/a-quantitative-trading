@@ -306,10 +306,10 @@
 
 **问题**：当前 Scheduler 仅按周一~周五运行，非交易日（节假日 + 周末调班）会空转 5 分钟轮询；15:00 afternoon_report 与 15:10 日终分析存在 portfolio.db 写入并发风险。
 
-- [ ] **接入 AKShare 交易日历**：`tool_trade_date_hist_sina()` 缓存为本地 JSON
-- [ ] **Scheduler 启动时检查当日是否交易日**，非交易日 sleep 至次日 08:30
-- [ ] **portfolio.db 写入加事务锁**：使用 SQLite 的 `BEGIN EXCLUSIVE`，避免多写者竞态
-- [ ] **新增测试**：mock 节假日，断言 Scheduler 不触发盘中任务
+- [x] **接入 AKShare 交易日历**：`tool_trade_date_hist_sina()` 模块级集合缓存（已存在）
+- [x] **Scheduler 非交易日 sleep 至次日 08:25**：`_seconds_until_next_check()` 计算休眠秒数，避免 30 秒空转
+- [x] **portfolio.db 写入并发安全**：启用 WAL + busy_timeout=5000 + 进程内 `_WRITE_LOCK` 写互斥
+- [x] **新增测试** `tests/test_scheduler_holiday_lock.py`：mock 节假日 / WAL 模式 / 并发写不丢失
 
 **关键文件**：`backend/main.py`、`backend/services/portfolio.py`
 **验证**：测试通过；2026 年五一节假日期间无任务触发
