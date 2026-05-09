@@ -36,6 +36,23 @@ from .data_fetch_exceptions import DataFetchError, RateLimitError, DataSourceUna
 
 logger = logging.getLogger('fetcher_manager')
 
+
+def _is_hk_code(stock_code: str) -> bool:
+    """判断是否为港股代码"""
+    s = stock_code.strip().upper()
+    return s.startswith(("HK",)) or s.endswith(".HK")
+
+
+def _fetcher_supports(fetcher_name: str, is_hk: bool) -> bool:
+    """判断 fetcher 是否支持给定市场"""
+    if is_hk:
+        # 港股：仅 TencentHKFetcher 和 AkshareFetcher 支持
+        return fetcher_name in ("TencentHKFetcher", "AkshareFetcher")
+    else:
+        # A 股：排除 TencentHKFetcher
+        return fetcher_name != "TencentHKFetcher"
+
+
 # ─── 全局 FetcherManager 单例 ──────────────────────────────────────────────
 
 _global_manager: Optional['DataFetcherManager'] = None
@@ -104,13 +121,13 @@ class DataFetcherManager:
 
     def _auto_register(self) -> None:
         """自动发现并注册所有可用的 fetcher"""
-        from .fetchers import TencentFetcher, SinaFetcher, AkshareFetcher
+        from .fetchers import TencentFetcher, TencentHKFetcher, SinaFetcher, AkshareFetcher
 
         # 按 priority 顺序注册
         # 始终按固定顺序，便于排查问题
         registered: Dict[str, bool] = {}
 
-        for fetcher_cls in [TencentFetcher, SinaFetcher, AkshareFetcher]:
+        for fetcher_cls in [TencentFetcher, TencentHKFetcher, SinaFetcher, AkshareFetcher]:
             name = fetcher_cls.name
             if name in registered:
                 continue
@@ -161,7 +178,14 @@ class DataFetcherManager:
         if start_date is None:
             start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
 
-        for fetcher in self._fetchers:
+        # 根据股票代码筛选适用的 fetcher
+        is_hk = _is_hk_code(stock_code)
+        fetchers_to_try = [
+            f for f in self._fetchers
+            if _fetcher_supports(f.name, is_hk)
+        ]
+
+        for fetcher in fetchers_to_try:
             if not self._circuit_breaker.is_available(fetcher.name):
                 logger.info("[FetcherManager] %s 熔断中，跳过", fetcher.name)
                 errors.append((fetcher.name, "熔断中"))

@@ -1,34 +1,11 @@
 """
 基本面数据获取模块 (S2-T4)
 从腾讯财经实时行情中提取 PE、PB、股息率等指标。
+
+使用 core.tencent_quote_source 统一数据源，消除重复的 HTTP 代码。
 """
 
 from typing import Optional
-import urllib.request
-import ssl
-
-
-def _fetch_tencent_fields(symbol: str) -> Optional[list]:
-    """
-    获取腾讯财经实时行情字段列表。
-    """
-    # Normalize: 600036.SH -> sh600036, 000001.SZ -> sz000001
-    sym = symbol.upper().replace('.SH', '').replace('.SZ', '')
-    if symbol.upper().endswith('.SH'):
-        sym = 'sh' + symbol.replace('.SH', '')
-    elif symbol.upper().endswith('.SZ'):
-        sym = 'sz' + symbol.replace('.SZ', '')
-    else:
-        sym = 'sh' + symbol  # default SH
-    url = 'http://qt.gtimg.cn/q=%s' % sym
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            raw = r.read().decode('gbk', errors='replace')
-        fields = raw.split('~')
-        return fields if len(fields) > 45 else None
-    except Exception:
-        return None
 
 
 def fetch_fundamentals(symbol: str) -> Optional[dict]:
@@ -46,27 +23,23 @@ def fetch_fundamentals(symbol: str) -> Optional[dict]:
             name (str): 股票名称
         None if data unavailable.
     """
-    fields = _fetch_tencent_fields(symbol)
-    if not fields:
-        return None
-
     try:
-        pe = float(fields[39]) if fields[39].strip() else 0.0
-        pb = float(fields[46]) if fields[46].strip() else 0.0
-        dy = float(fields[38]) if fields[38].strip() else 0.0
-        mc = float(fields[44]) if fields[44].strip() else 0.0
-        price = float(fields[3]) if fields[3].strip() else 0.0
-        name = fields[1]
+        from core.tencent_quote_source import TencentQuoteDataSource
+        src = TencentQuoteDataSource()
+        q = src.fetch_quote(symbol)
+        if q is None or not q.is_valid:
+            return None
+
         return {
             'symbol': symbol,
-            'name': name,
-            'pe': pe,
-            'pb': pb,
-            'dividend_yield': dy,
-            'market_cap': mc,  # 亿元
-            'price': price,
+            'name': q.name,
+            'pe': q.pe_ttm,
+            'pb': q.pb,
+            'dividend_yield': q.dividend_yield,
+            'market_cap': q.market_cap,  # 亿元
+            'price': q.price,
         }
-    except (ValueError, IndexError):
+    except Exception:
         return None
 
 

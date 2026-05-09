@@ -20,13 +20,10 @@ core/data_layer.py — 统一数据层
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import ssl
 import time
 import threading
-import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional
@@ -34,22 +31,6 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 logger = logging.getLogger("core.data_layer")
-
-# 清除代理（A 股接口不走代理）
-import os as _os
-for _k in list(_os.environ.keys()):
-    if "proxy" in _k.lower():
-        del _os.environ[_k]
-
-_SSL_CTX = ssl.create_default_context()
-_SSL_CTX.check_hostname = False
-_SSL_CTX.verify_mode = ssl.CERT_NONE
-
-_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Referer": "https://finance.qq.com",
-}
-
 
 # ─── 数据类 ──────────────────────────────────────────────────────────────────
 
@@ -64,6 +45,16 @@ class Quote:
     high: float
     low: float
     vol_ratio: Optional[float] = None   # 量比
+    # ── 腾讯 88 字段补充 ──
+    pe_ttm: Optional[float] = None      # 市盈率（TTM）
+    pb: Optional[float] = None           # 市净率
+    turnover_rate: Optional[float] = None  # 换手率（%）
+    market_cap: Optional[float] = None   # 总市值（亿元）
+    float_cap: Optional[float] = None   # 流通市值（亿元）
+    high_52w: Optional[float] = None    # 52W 高
+    low_52w: Optional[float] = None     # 52W 低
+    limit_up: Optional[float] = None    # 涨停价
+    limit_down: Optional[float] = None  # 跌停价
     timestamp: datetime = field(default_factory=datetime.now)
 
     @property
@@ -73,7 +64,7 @@ class Quote:
 
     @property
     def is_limit_up(self) -> bool:
-        """是否涨停（普通 A 股阈值 9.9%）"""
+        """是否涨停（默认普通 A 股 9.9%，ST/创业板/科创板需调用 check_limit_status）"""
         return self.pct_change >= 9.9
 
     @property
@@ -133,182 +124,32 @@ class _TTLCache:
             return len(self._store)
 
 
-# ─── 底层 HTTP 工具 ──────────────────────────────────────────────────────────
+# ─── 转换工具 ────────────────────────────────────────────────────────────────
 
 
-def _symbol_to_tencent(symbol: str) -> str:
-    """'600519.SH' → 'sh600519'"""
-    s = symbol.upper()
-    if s.endswith(".SH"):
-        return "sh" + s[:-3]
-    if s.endswith(".SZ"):
-        return "sz" + s[:-3]
-    return symbol.lower()
-
-
-def _http_get(url: str, timeout: int = 8, encoding: str = "gbk") -> Optional[str]:
-    src = 'tencent' if 'gtimg.cn' in url else ('sina' if 'sina' in url else 'http')
-    # P2-16: 熔断检查
-    try:
-        from core.circuit_breaker import get_breaker
-        cb = get_breaker(src, failure_threshold=3, cooldown_seconds=120.0)
-        if not cb.allow():
-            logger.warning("数据源 %s 熔断中（state=%s），跳过", src, cb.state())
-            return None
-    except Exception:
-        cb = None
-
-    try:
-        req = urllib.request.Request(url, headers=_HEADERS)
-        with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as resp:
-            data = resp.read().decode(encoding, errors="replace")
-        if cb:
-            cb.on_success()
-        return data
-    except Exception as exc:
-        logger.debug("HTTP GET failed %s: %s", url, exc)
-        if cb:
-            cb.on_failure()
-        try:
-            from core.metrics import get_registry
-            get_registry().record_data_source_failure(src)
-        except Exception:
-            pass
+def _tencent_quote_to_quote(symbol: str, tq) -> Optional[Quote]:
+    """将 TencentQuote 转换为 data_layer.Quote"""
+    if not tq or not tq.is_valid:
         return None
-
-
-def _parse_tencent_quote(symbol: str, raw_line: str) -> Optional[Quote]:
-    """解析腾讯实时行情单行（去掉 v_XXXX=" 前缀后的内容）"""
-    eq = raw_line.find('="')
-    if eq >= 0:
-        raw_line = raw_line[eq + 2:]
-    fields = raw_line.rstrip('";').split("~")
-    if len(fields) < 40:
-        return None
-    try:
-        price     = float(fields[3])  if fields[3]  not in ("", "-") else 0.0
-        prev_cls  = float(fields[4])  if fields[4]  not in ("", "-") else 0.0
-        pct       = float(fields[32]) if fields[32] not in ("", "-") else 0.0
-        high      = float(fields[33]) if len(fields) > 33 and fields[33] not in ("", "-") else price
-        low       = float(fields[34]) if len(fields) > 34 and fields[34] not in ("", "-") else price
-        vol_ratio = (float(fields[38])
-                     if len(fields) > 38 and fields[38] not in ("", "-", "0")
-                     else None)
-        return Quote(
-            symbol=symbol,
-            price=price,
-            prev_close=prev_cls,
-            pct_change=pct,
-            high=high,
-            low=low,
-            vol_ratio=vol_ratio,
-        )
-    except (ValueError, IndexError) as exc:
-        logger.debug("parse quote %s failed: %s", symbol, exc)
-        return None
-
-
-def _fetch_realtime_bulk_raw(symbols: List[str]) -> Dict[str, Quote]:
-    """腾讯批量实时行情（单次 HTTP 请求）"""
-    if not symbols:
-        return {}
-    tc_syms = [_symbol_to_tencent(s) for s in symbols]
-    url = "https://qt.gtimg.cn/q=" + ",".join(tc_syms)
-    raw = _http_get(url)
-    if not raw:
-        return {}
-    result: Dict[str, Quote] = {}
-    lines = raw.strip().split("\n")
-    for i, line in enumerate(lines):
-        if i >= len(symbols):
-            break
-        sym = symbols[i]
-        q = _parse_tencent_quote(sym, line)
-        if q:
-            result[sym] = q
-    return result
-
-
-def _fetch_daily_bars_tencent(symbol: str, days: int = 60) -> Optional[pd.DataFrame]:
-    """腾讯前复权日K线 → DataFrame(date, open, high, low, close, volume)"""
-    qt = _symbol_to_tencent(symbol)
-    url = (
-        f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-        f"?_var=kline_dayqfq&param={qt},day,,,{days},qfq"
+    return Quote(
+        symbol=symbol,
+        price=tq.price,
+        prev_close=tq.prev_close,
+        pct_change=tq.pct_change,
+        high=tq.high,
+        low=tq.low,
+        vol_ratio=tq.volume_ratio if tq.volume_ratio > 0 else None,
+        # ── 腾讯 88 字段映射 ──
+        pe_ttm=tq.pe_ttm if tq.pe_ttm and tq.pe_ttm > 0 else None,
+        pb=tq.pb if tq.pb and tq.pb > 0 else None,
+        turnover_rate=tq.turnover_rate if tq.turnover_rate and tq.turnover_rate > 0 else None,
+        market_cap=tq.market_cap if tq.market_cap and tq.market_cap > 0 else None,
+        float_cap=tq.float_cap if tq.float_cap and tq.float_cap > 0 else None,
+        high_52w=tq.high_52w if tq.high_52w and tq.high_52w > 0 else None,
+        low_52w=tq.low_52w if tq.low_52w and tq.low_52w > 0 else None,
+        limit_up=tq.limit_up if tq.limit_up and tq.limit_up > 0 else None,
+        limit_down=tq.limit_down if tq.limit_down and tq.limit_down > 0 else None,
     )
-    raw = _http_get(url, encoding="utf-8")
-    if not raw:
-        return None
-    eq = raw.find("=")
-    if eq >= 0:
-        raw = raw[eq + 1:]
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    qfq = data.get("data", {}).get(qt, {})
-    bars = qfq.get("qfqday") or qfq.get("day") or []
-    if not bars:
-        return None
-    rows = []
-    for bar in bars:
-        if len(bar) < 6:
-            continue
-        try:
-            rows.append({
-                "date":   bar[0],
-                "open":   float(bar[1]),
-                "close":  float(bar[2]),
-                "high":   float(bar[3]),
-                "low":    float(bar[4]),
-                "volume": float(bar[5]),
-            })
-        except (ValueError, IndexError):
-            continue
-    if not rows:
-        return None
-    df = pd.DataFrame(rows)
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date").reset_index(drop=True)
-    return df
-
-
-def _fetch_daily_bars_sina(symbol: str, days: int = 60) -> Optional[pd.DataFrame]:
-    """新浪日K线（降级用）→ DataFrame(date, open, high, low, close, volume)"""
-    s = symbol.upper()
-    code = ("sh" + s[:-3]) if s.endswith(".SH") else ("sz" + s[:-3])
-    url = (
-        f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php"
-        f"/CN_MarketData.getKLineData?symbol={code}&scale=240&ma=no&datalen={days}"
-    )
-    raw = _http_get(url, encoding="utf-8")
-    if not raw:
-        return None
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, list) or not data:
-        return None
-    rows = []
-    for item in data:
-        try:
-            rows.append({
-                "date":   item.get("day", ""),
-                "open":   float(item.get("open", 0)),
-                "high":   float(item.get("high", 0)),
-                "low":    float(item.get("low", 0)),
-                "close":  float(item.get("close", 0)),
-                "volume": float(item.get("volume", 0)),
-            })
-        except (ValueError, TypeError):
-            continue
-    if not rows:
-        return None
-    df = pd.DataFrame(rows)
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date").reset_index(drop=True)
-    return df
 
 
 # ─── 分钟 K 线获取（AKShare）─────────────────────────────────────────────────
@@ -511,6 +352,22 @@ class DataLayer:
         """
         self._cache = _TTLCache()
         self._parquet = ParquetCache() if use_parquet_cache else None
+        self._tencent_src = None  # 延迟初始化
+        self._quote_manager = None  # 延迟初始化
+
+    def _get_tencent_source(self):
+        """延迟初始化 TencentQuoteDataSource"""
+        if self._tencent_src is None:
+            from core.tencent_quote_source import TencentQuoteDataSource
+            self._tencent_src = TencentQuoteDataSource(cache_ttl=self.QUOTE_TTL)
+        return self._tencent_src
+
+    def _get_quote_manager(self):
+        """延迟初始化 QuoteSourceManager"""
+        if self._quote_manager is None:
+            from core.quote_source_manager import QuoteSourceManager
+            self._quote_manager = QuoteSourceManager()
+        return self._quote_manager
 
     # ── 日K线 ────────────────────────────────────────────────────────────────
 
@@ -544,10 +401,8 @@ class DataLayer:
 
         # 网络抓取（缓存过旧或不存在时）
         if df is None:
-            df_net = _fetch_daily_bars_tencent(symbol, max(days, 365))
-            if df_net is None or df_net.empty:
-                logger.info("Tencent bars failed for %s, trying Sina", symbol)
-                df_net = _fetch_daily_bars_sina(symbol, max(days, 365))
+            mgr = self._get_quote_manager()
+            df_net = mgr.fetch_daily_kline(symbol, days=max(days, 365))
 
             if df_net is not None and not df_net.empty:
                 # 转换为 DatetimeIndex
@@ -580,7 +435,7 @@ class DataLayer:
         adjust: str = 'qfq',
     ) -> pd.DataFrame:
         """
-        获取分钟 K 线（通过 AKShare，免费，约 1 年历史）。
+        获取分钟 K 线（新浪 A 股 / 腾讯港股，AKShare 兜底）。
 
         Args:
             symbol: 标的代码，如 '510300' 或 '510300.SH'
@@ -588,17 +443,22 @@ class DataLayer:
             adjust: 复权方式 'qfq'|'hfq'|''
 
         Returns:
-            DataFrame，DatetimeIndex，列：open, high, low, close, volume
+            DataFrame，列：datetime, open, high, low, close, volume
         """
         cache_key = f"minute:{symbol}:{period}:{adjust}"
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
 
-        df = _fetch_minute_bars_akshare(symbol, period=period, adjust=adjust)
+        mgr = self._get_quote_manager()
+        df = mgr.fetch_minute_kline(symbol, period=f'{period}m', limit=200)
+
         if df is None or df.empty:
-            logger.warning("分钟 K 线获取失败: %s", symbol)
-            df = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+            # 最后兜底：AKShare
+            df = _fetch_minute_bars_akshare(symbol, period=period, adjust=adjust)
+            if df is None or df.empty:
+                logger.warning("分钟 K 线获取失败: %s", symbol)
+                df = pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
 
         # 分钟数据缓存 5 分钟（交易时间内需要较频繁刷新）
         self._cache.set(cache_key, df, 300)
@@ -613,8 +473,8 @@ class DataLayer:
 
     def get_realtime_bulk(self, symbols: List[str]) -> Dict[str, Quote]:
         """
-        批量实时行情（腾讯单次 HTTP 请求）。
-        对缓存命中的标的不重复请求。
+        批量实时行情（腾讯 qt.gtimg.cn）。
+        支持 A 股 / 港股 / 美股 / 指数，对缓存命中的标的不重复请求。
         """
         if not symbols:
             return {}
@@ -630,10 +490,14 @@ class DataLayer:
                 missing.append(sym)
 
         if missing:
-            fresh = _fetch_realtime_bulk_raw(missing)
-            for sym, q in fresh.items():
-                self._cache.set(f"quote:{sym}", q, self.QUOTE_TTL)
-                cached_result[sym] = q
+            # 使用统一的 TencentQuoteDataSource（支持全市场）
+            src = self._get_tencent_source()
+            fresh_quotes = src.fetch_quotes(missing)
+            for sym, tq in fresh_quotes.items():
+                q = _tencent_quote_to_quote(sym, tq)
+                if q:
+                    self._cache.set(f"quote:{sym}", q, self.QUOTE_TTL)
+                    cached_result[sym] = q
 
         return cached_result
 
@@ -648,7 +512,7 @@ class DataLayer:
         snap = NorthFlowSnapshot()
         try:
             import sys as _sys
-            _backend = _os.path.join(_os.path.dirname(__file__), "..", "backend")
+            _backend = os.path.join(os.path.dirname(__file__), "..", "backend")
             if _backend not in _sys.path:
                 _sys.path.insert(0, _backend)
             from services.data_cache import cached_kamt  # type: ignore

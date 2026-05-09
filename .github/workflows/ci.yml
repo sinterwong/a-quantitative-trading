@@ -28,8 +28,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install pandas numpy requests flask werkzeug pyyaml pyarrow
-          pip install scipy lightgbm xgboost joblib reportlab matplotlib
-          pip install flake8 pytest pytest-cov
+          pip install scipy lightgbm "xgboost<2.1" joblib reportlab matplotlib
 
       - name: Syntax check (全仓库 py_compile via git ls-files)
         run: |
@@ -92,8 +91,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install pytest pytest-cov pandas numpy requests flask werkzeug pyyaml pyarrow
-          pip install scipy lightgbm xgboost joblib reportlab matplotlib
-          pip install mypy types-requests
+          pip install scipy lightgbm "xgboost<2.1" joblib reportlab matplotlib
 
       - name: Mypy type check (core 重点模块)
         run: |

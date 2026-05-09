@@ -1074,6 +1074,78 @@ def analyze_hk_stock_endpoint():
 
 
 # ============================================================
+# Sector Comparison
+# ============================================================
+
+@app.route('/analysis/sector/compare', methods=['POST'])
+def sector_compare():
+    """
+    POST /analysis/sector/compare
+
+    行业板块横向对比：给定行业名称或股票列表，返回同行业个股的估值对比。
+
+    Body（两种模式）:
+      行业模式:
+        {
+          "sector": "白酒",           // 必填，行业名称
+          "base_symbol": "603369.SH"   // 可选，基准股票
+        }
+
+      自定义模式:
+        {
+          "symbols": ["603369.SH","000858.SZ","600519.SH"],  // 必填，股票列表
+          "sector_name": "白酒",       // 可选，板块名称（用于展示）
+          "base_symbol": "603369.SH"    // 可选，基准股票
+        }
+
+    支持的行业: 白酒、银行、房地产、医药、电力设备、电子、计算机、
+               国防军工、食品饮料、非银金融、煤炭、有色金属、化工、建筑、交通运输
+
+    Returns:
+      {
+        "sector_name": "白酒",
+        "stock_count": 4,
+        "avg_pe": 22.5,
+        "avg_pb": 4.2,
+        "stocks": [
+          {
+            "symbol": "603369.SH", "name": "今世缘",
+            "price": 28.13, "pct_change": 2.11,
+            "pe": 14.96, "pb": 3.47,
+            "pe_percentile": 15.2, "pb_percentile": 8.1,
+            "is_base": true
+          },
+          ...
+        ],
+        "warnings": []
+      }
+    """
+    try:
+        from services.sector_comparison import compare_sector, compare_symbols
+        body = request.get_json(silent=True) or {}
+
+        sector = body.get('sector')
+        symbols = body.get('symbols')
+        sector_name = body.get('sector_name', sector or '自定义')
+        base_symbol = body.get('base_symbol')
+
+        if symbols:
+            # 自定义模式
+            result = compare_symbols(symbols, sector_name, base_symbol)
+        elif sector:
+            # 行业模式
+            result = compare_sector(sector, base_symbol)
+        else:
+            return err('body 必须包含 sector 或 symbols 字段', 422)
+
+        return ok(**result.to_dict())
+    except ValueError as exc:
+        return err(str(exc), 422)
+    except Exception as e:
+        return err(str(e) + '\n' + traceback.format_exc(), 500)
+
+
+# ============================================================
 # Monthly Performance
 # ============================================================
 

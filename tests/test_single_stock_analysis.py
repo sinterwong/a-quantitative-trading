@@ -186,8 +186,8 @@ class TestRecommendation(unittest.TestCase):
             fundamentals={'roe_ttm': -5.0, 'revenue_yoy': -0.30},
             risk={},
         )
-        # 0.5 - 0.15(roe) - 0.10(rev) = 0.25 < threshold 0.5 → HOLD
-        self.assertEqual(rec_with_neg_roe['action'], 'HOLD')
+        # ROE < 0 → 硬红线触发 → SELL（不受综合得分左右）
+        self.assertEqual(rec_with_neg_roe['action'], 'SELL')
         self.assertIn('ROE', rec_with_neg_roe['reasoning'])
 
     def test_high_vol_discount(self):

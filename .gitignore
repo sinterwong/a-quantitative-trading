@@ -51,6 +51,9 @@ skills/
 # LLM response cache
 .llm_cache/
 
+.vscode/
+outputs/
+
 # Temporary
 *.tmp
 *.bak

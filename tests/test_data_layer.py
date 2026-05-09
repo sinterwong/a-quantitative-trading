@@ -33,13 +33,12 @@ from core.data_layer import (
     Quote,
     NorthFlowSnapshot,
     _TTLCache,
-    _symbol_to_tencent,
-    _parse_tencent_quote,
     DataLayer,
     BacktestDataLayer,
     get_data_layer,
     reset_data_layer,
 )
+from core.quote_data_source import normalize_to_tencent
 
 # ─── 测试框架（最小实现，无外部依赖）────────────────────────────────────────
 
@@ -117,30 +116,6 @@ def _make_bar_df(n: int = 60, start: str = "2024-01-02") -> pd.DataFrame:
         "volume": (np.random.rand(n) * 1e6 + 1e5).astype(int),
     })
 
-
-def _make_tencent_raw_line(
-    symbol: str = "600519.SH",
-    price: float = 1800.0,
-    prev_close: float = 1780.0,
-    pct: float = 1.12,
-    high: float = 1820.0,
-    low: float = 1760.0,
-    vol_ratio: float = 1.5,
-) -> str:
-    """构造腾讯行情原始行（含 v_XXXXXX=" 前缀），共 45 个 ~ 分隔字段"""
-    fields = ["-"] * 45
-    fields[0]  = "1"
-    fields[1]  = "贵州茅台"
-    fields[2]  = symbol.replace(".SH", "").replace(".SZ", "")
-    fields[3]  = str(price)
-    fields[4]  = str(prev_close)
-    fields[32] = str(pct)
-    fields[33] = str(high)
-    fields[34] = str(low)
-    fields[38] = str(vol_ratio)
-    raw = "~".join(fields)
-    tc = ("sh" if symbol.endswith(".SH") else "sz") + symbol[:-3]
-    return f'v_{tc}="{raw}"'
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -246,45 +221,19 @@ class TestTTLCache:
         assert not errors, f"线程安全异常: {errors}"
 
 
-class TestSymbolToTencent:
+class TestNormalizeToTencent:
     def test_sh(self):
-        assert _symbol_to_tencent("600519.SH") == "sh600519"
+        assert normalize_to_tencent("600519.SH") == "sh600519"
 
     def test_sz(self):
-        assert _symbol_to_tencent("000001.SZ") == "sz000001"
+        assert normalize_to_tencent("000001.SZ") == "sz000001"
 
     def test_lowercase_suffix(self):
-        assert _symbol_to_tencent("510310.sh") == "sh510310"
+        assert normalize_to_tencent("510310.sh") == "sh510310"
 
     def test_etf_sh(self):
-        assert _symbol_to_tencent("510310.SH") == "sh510310"
+        assert normalize_to_tencent("510310.SH") == "sh510310"
 
-
-class TestParseTencentQuote:
-    def test_valid_line(self):
-        raw = _make_tencent_raw_line("600519.SH", price=1800.0, prev_close=1780.0,
-                                     pct=1.12, high=1820.0, low=1760.0, vol_ratio=1.5)
-        q = _parse_tencent_quote("600519.SH", raw)
-        assert q is not None
-        assert q.symbol == "600519.SH"
-        assert abs(q.price - 1800.0) < 0.01
-        assert abs(q.prev_close - 1780.0) < 0.01
-        assert abs(q.pct_change - 1.12) < 0.01
-        assert abs(q.high - 1820.0) < 0.01
-        assert abs(q.low - 1760.0) < 0.01
-        assert q.vol_ratio is not None
-        assert abs(q.vol_ratio - 1.5) < 0.01
-
-    def test_too_few_fields_returns_none(self):
-        q = _parse_tencent_quote("000001.SZ", 'v_sz000001="a~b~c"')
-        assert q is None
-
-    def test_returns_quote_on_zero_price(self):
-        """价格为 0 是合法解析结果（业务层过滤），不应崩溃"""
-        raw = _make_tencent_raw_line("600519.SH", price=0.0, prev_close=0.0,
-                                     pct=0.0, high=0.0, low=0.0, vol_ratio=0.0)
-        q = _parse_tencent_quote("600519.SH", raw)
-        assert q is not None
 
 
 class TestDataLayerCache:
@@ -294,18 +243,58 @@ class TestDataLayerCache:
         return Quote(symbol, price=5.0, prev_close=4.9,
                      pct_change=2.04, high=5.1, low=4.8, vol_ratio=1.2)
 
+    def _make_tencent_quote(self, symbol: str = "510310.SH"):
+        """构造一个 QuoteData mock 对象"""
+        from core.quote_data_source import QuoteData
+        return QuoteData(
+            symbol=symbol, name="测试", code=symbol.split(".")[0],
+            market="A", price=5.0, prev_close=4.9, open=5.0,
+            high=5.1, low=4.8, avg_price=5.0,
+            change=0.1, pct_change=2.04,
+            volume=100000, amount=500000, turnover_rate=1.0,
+            bid1_price=4.99, bid1_vol=100, ask1_price=5.01, ask1_vol=100,
+            pe_ttm=0.0, pb=0.0, dividend_yield=0.0,
+            market_cap=0.0, float_cap=0.0,
+            limit_up=0.0, limit_down=0.0, amplitude=0.0,
+            high_52w=0.0, low_52w=0.0,
+            volume_ratio=1.2, currency="CNY", timestamp="2024-01-01",
+        )
+
+    def _mock_tencent_source(self, quote_map):
+        """构造 mock TencentQuoteDataSource，返回指定的 quote_map"""
+        mock_source = type("MockSource", (), {})()
+        mock_source.fetch_quotes = lambda syms: {
+            s: q for s, q in quote_map.items() if s in syms
+        }
+        return mock_source
+
+    def _mock_quote_manager(self, bars_df=None, fetch_kline_side_effect=None):
+        """构造 mock QuoteSourceManager"""
+        mock_mgr = type("MockMgr", (), {})()
+        if fetch_kline_side_effect:
+            mock_mgr.fetch_daily_kline = fetch_kline_side_effect
+        elif bars_df is not None:
+            mock_mgr.fetch_daily_kline = lambda sym, days=60, adjust="qfq": bars_df
+        else:
+            mock_mgr.fetch_daily_kline = lambda sym, days=60, adjust="qfq": pd.DataFrame()
+        mock_mgr.fetch_minute_kline = lambda sym, period="15m", limit=100: pd.DataFrame()
+        return mock_mgr
+
     def test_get_realtime_bulk_caches_result(self):
         """相同标的第二次调用命中缓存，不触发 HTTP"""
         layer = DataLayer()
         sym = "510310.SH"
-        fake = {sym: self._make_quote(sym)}
+        tq = self._make_tencent_quote(sym)
         call_count = [0]
 
-        def fake_fetch(syms):
+        def counting_fetch_quotes(syms):
             call_count[0] += 1
-            return fake
+            return {sym: tq}
 
-        with patch("core.data_layer._fetch_realtime_bulk_raw", side_effect=fake_fetch):
+        mock_source = type("MockSource", (), {})()
+        mock_source.fetch_quotes = counting_fetch_quotes
+
+        with patch.object(layer, "_get_tencent_source", return_value=mock_source):
             layer.get_realtime_bulk([sym])
             layer.get_realtime_bulk([sym])
 
@@ -314,19 +303,24 @@ class TestDataLayerCache:
     def test_get_realtime_bulk_partial_cache(self):
         """A已缓存，B未缓存，只请求B"""
         layer = DataLayer()
-        q_a = self._make_quote("510310.SH")
-        q_b = self._make_quote("600900.SH")
+        tq_a = self._make_tencent_quote("510310.SH")
+        tq_b = self._make_tencent_quote("600900.SH")
 
-        with patch("core.data_layer._fetch_realtime_bulk_raw",
-                   return_value={"510310.SH": q_a}):
+        # 第一次只返回 A
+        mock_source_1 = type("MockSource", (), {})()
+        mock_source_1.fetch_quotes = lambda syms: {"510310.SH": tq_a}
+        with patch.object(layer, "_get_tencent_source", return_value=mock_source_1):
             layer.get_realtime_bulk(["510310.SH"])
 
+        # 第二次只应请求 B
         request_args = []
-        def capture(syms):
+        def capture_quotes(syms):
             request_args.append(list(syms))
-            return {"600900.SH": q_b}
+            return {"600900.SH": tq_b}
 
-        with patch("core.data_layer._fetch_realtime_bulk_raw", side_effect=capture):
+        mock_source_2 = type("MockSource", (), {})()
+        mock_source_2.fetch_quotes = capture_quotes
+        with patch.object(layer, "_get_tencent_source", return_value=mock_source_2):
             result = layer.get_realtime_bulk(["510310.SH", "600900.SH"])
 
         assert request_args == [["600900.SH"]], "只应请求未缓存的 B"
@@ -335,43 +329,28 @@ class TestDataLayerCache:
 
     def test_get_bars_caches_result(self):
         """get_bars 第二次调用不触发 HTTP"""
-        layer = DataLayer()
+        layer = DataLayer(use_parquet_cache=False)
         df = _make_bar_df(60)
         call_count = [0]
 
-        def fake_fetch(sym, days):
+        def fake_fetch(sym, days=60, adjust="qfq"):
             call_count[0] += 1
             return df
 
-        with patch("core.data_layer._fetch_daily_bars_tencent", side_effect=fake_fetch):
+        mock_mgr = self._mock_quote_manager(fetch_kline_side_effect=fake_fetch)
+        with patch.object(layer, "_get_quote_manager", return_value=mock_mgr):
             layer.get_bars("510310.SH", days=60)
             layer.get_bars("510310.SH", days=60)
 
         assert call_count[0] == 1
 
-    def test_get_bars_fallback_to_sina(self):
-        """腾讯失败时降级到新浪"""
+    def test_get_bars_fallback_returns_empty_df(self):
+        """QuoteSourceManager 返回空时，最终返回空 DataFrame"""
         layer = DataLayer()
-        df = _make_bar_df(30)
-        sina_called = [False]
-
-        def fake_sina(sym, days):
-            sina_called[0] = True
-            return df
-
-        with patch("core.data_layer._fetch_daily_bars_tencent", return_value=None), \
-             patch("core.data_layer._fetch_daily_bars_sina", side_effect=fake_sina):
+        mock_mgr = self._mock_quote_manager(bars_df=pd.DataFrame())
+        with patch.object(layer, "_get_quote_manager", return_value=mock_mgr):
             result = layer.get_bars("600900.SH", days=30)
 
-        assert sina_called[0], "腾讯失败后应调用新浪"
-        assert not result.empty
-
-    def test_get_bars_both_fail_returns_empty_df(self):
-        """两源都失败时返回空 DataFrame（不抛异常）"""
-        layer = DataLayer()
-        with patch("core.data_layer._fetch_daily_bars_tencent", return_value=None), \
-             patch("core.data_layer._fetch_daily_bars_sina", return_value=None):
-            result = layer.get_bars("UNKNOWN.SH", days=30)
         assert isinstance(result, pd.DataFrame)
         assert result.empty
 
@@ -379,7 +358,8 @@ class TestDataLayerCache:
         """返回 DataFrame 必须含标准列"""
         layer = DataLayer()
         df = _make_bar_df(10)
-        with patch("core.data_layer._fetch_daily_bars_tencent", return_value=df):
+        mock_mgr = self._mock_quote_manager(bars_df=df)
+        with patch.object(layer, "_get_quote_manager", return_value=mock_mgr):
             result = layer.get_bars("510310.SH", days=10)
         required = {"date", "open", "high", "low", "close", "volume"}
         assert required.issubset(set(result.columns))
@@ -388,14 +368,17 @@ class TestDataLayerCache:
         """invalidate(sym) 后再次请求触发 HTTP"""
         layer = DataLayer()
         sym = "510310.SH"
-        q = self._make_quote(sym)
+        tq = self._make_tencent_quote(sym)
         call_count = [0]
 
-        def fake_fetch(syms):
+        def counting_fetch_quotes(syms):
             call_count[0] += 1
-            return {sym: q}
+            return {sym: tq}
 
-        with patch("core.data_layer._fetch_realtime_bulk_raw", side_effect=fake_fetch):
+        mock_source = type("MockSource", (), {})()
+        mock_source.fetch_quotes = counting_fetch_quotes
+
+        with patch.object(layer, "_get_tencent_source", return_value=mock_source):
             layer.get_realtime_bulk([sym])
             layer.invalidate(sym)
             layer.get_realtime_bulk([sym])
@@ -406,11 +389,15 @@ class TestDataLayerCache:
         """invalidate() 清全部缓存"""
         layer = DataLayer()
         sym = "510310.SH"
-        q = self._make_quote(sym)
+        tq = self._make_tencent_quote(sym)
         df = _make_bar_df(10)
 
-        with patch("core.data_layer._fetch_realtime_bulk_raw", return_value={sym: q}), \
-             patch("core.data_layer._fetch_daily_bars_tencent", return_value=df):
+        mock_source = type("MockSource", (), {})()
+        mock_source.fetch_quotes = lambda syms: {sym: tq}
+        mock_mgr = self._mock_quote_manager(bars_df=df)
+
+        with patch.object(layer, "_get_tencent_source", return_value=mock_source), \
+             patch.object(layer, "_get_quote_manager", return_value=mock_mgr):
             layer.get_realtime_bulk([sym])
             layer.get_bars(sym, days=10)
 
@@ -421,8 +408,10 @@ class TestDataLayerCache:
     def test_get_realtime_delegates_to_bulk(self):
         """get_realtime(sym) 等同 get_realtime_bulk([sym])[sym]"""
         layer = DataLayer()
-        q = self._make_quote("600519.SH")
-        with patch("core.data_layer._fetch_realtime_bulk_raw", return_value={"600519.SH": q}):
+        tq = self._make_tencent_quote("600519.SH")
+        mock_source = type("MockSource", (), {})()
+        mock_source.fetch_quotes = lambda syms: {"600519.SH": tq}
+        with patch.object(layer, "_get_tencent_source", return_value=mock_source):
             result = layer.get_realtime("600519.SH")
         assert result is not None
         assert result.symbol == "600519.SH"
@@ -430,7 +419,9 @@ class TestDataLayerCache:
     def test_get_realtime_returns_none_on_miss(self):
         """找不到标的时返回 None 不崩溃"""
         layer = DataLayer()
-        with patch("core.data_layer._fetch_realtime_bulk_raw", return_value={}):
+        mock_source = type("MockSource", (), {})()
+        mock_source.fetch_quotes = lambda syms: {}
+        with patch.object(layer, "_get_tencent_source", return_value=mock_source):
             result = layer.get_realtime("NOTEXIST.SH")
         assert result is None
 
@@ -581,8 +572,7 @@ def run_all():
         TestQuote,
         TestNorthFlowSnapshot,
         TestTTLCache,
-        TestSymbolToTencent,
-        TestParseTencentQuote,
+        TestNormalizeToTencent,
         TestDataLayerCache,
         TestBacktestDataLayer,
         TestGlobalSingleton,

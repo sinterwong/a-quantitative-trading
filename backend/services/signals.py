@@ -53,15 +53,6 @@ def _get_northbound_check():
 
 # 北向资金阈值（亿元）
 NORTH_BUY_BOOST_THRESHOLD = 50.0  # 北向净流入 > 50亿 → RSI_BUY 信号强化
-def _get_fundamentals_check():
-    global _fundamentals_check
-    if _fundamentals_check is None:
-        try:
-            from services.fundamentals import check_fundamentals_filter as f
-            _fundamentals_check = f
-        except Exception:
-            pass
-    return _fundamentals_check
 
 # A股盘中时间段（UTC+8）
 MARKET_MORNING_START    = (9, 35)   # 9:35 开盘后可检查
@@ -258,35 +249,14 @@ def _fetch_history_sina(symbol: str, days: int = 6) -> Optional[list[dict]]:
     2. 计算 5 日均量
     返回 [{date, close, volume}, ...]，最近日期在最后。
     """
-    if '.SH' in symbol:
-        code = 'sh' + symbol.replace('.SH', '')
-    else:
-        code = 'sz' + symbol.replace('.SZ', '')
-    url = f'https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={code}&scale=240&ma=no&datalen={days}'
     try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'Mozilla/5.0',
-            'Referer': 'https://finance.sina.com.cn',
-        })
-        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
-            content = resp.read().decode('utf-8')
-            data = json.loads(content)
-            if not data or not isinstance(data, list):
-                return None
-            result = []
-            for item in data:
-                try:
-                    result.append({
-                        'date':   item.get('day', ''),
-                        'close':  float(item.get('close', 0)),
-                        'volume': float(item.get('volume', 0)),
-                    })
-                except (ValueError, TypeError):
-                    continue
-            return result if len(result) >= 2 else None
+        from core.sina_quote_source import get_sina_source
+        src = get_sina_source()
+        df = src.fetch_daily_kline(symbol, days=days)
+        if df.empty or len(df) < 2:
+            return None
+        return [{'date': str(r['date']), 'close': r['close'], 'volume': r['volume']}
+                for _, r in df.iterrows()]
     except Exception:
         return None
 
@@ -530,7 +500,7 @@ def _compute_avg_volume_ratio(symbol: str) -> Optional[float]:
     if not hist or len(hist) < 5:
         return None
     # hist 最近5天（去掉今天，今天K线可能还不完整）
-    recent = hist[-5:-1] if len(hist) > 1 else hist[-4:]
+    recent = hist[:-1][-5:] if len(hist) > 1 else hist[-4:]
     if len(recent) < 4:
         return None
     avg_vol = sum(d['volume'] for d in recent) / len(recent)
@@ -550,40 +520,14 @@ def _fetch_minute_bars(symbol: str, scale: int = 15,
     datalen: 返回的BAR数量（最多约100）
     返回 [{time, close, volume}, ...]，时间升序。
     """
-    upper = symbol.upper()
-    if upper.endswith('.SH'):
-        code = 'sh' + upper[:-3]
-    elif upper.endswith('.SZ'):
-        code = 'sz' + upper[:-3]
-    else:
-        return None
-    url = (f'https://money.finance.sina.com.cn/quotes_service/api/json_v2.php'
-           f'/CN_MarketData.getKLineData?symbol={code}&scale={scale}'
-           f'&ma=no&datalen={datalen}')
     try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'Mozilla/5.0',
-            'Referer': 'https://finance.sina.com.cn',
-        })
-        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
-            content = resp.read().decode('utf-8')
-            data = json.loads(content)
-            if not data or not isinstance(data, list):
-                return None
-            result = []
-            for item in data:
-                try:
-                    result.append({
-                        'time':  item.get('day', ''),
-                        'close': float(item.get('close', 0)),
-                        'volume': float(item.get('volume', 0)),
-                    })
-                except (ValueError, TypeError):
-                    continue
-            return result if len(result) >= 5 else None
+        from core.sina_quote_source import get_sina_source
+        src = get_sina_source()
+        df = src.fetch_minute_kline(symbol, period=f'{scale}m', limit=datalen)
+        if df.empty or len(df) < 5:
+            return None
+        return [{'time': str(r['datetime']), 'close': r['close'], 'volume': r['volume']}
+                for _, r in df.iterrows()]
     except Exception:
         return None
 
@@ -763,7 +707,9 @@ def evaluate_signal(symbol: str,
     if limit_signal in ('LIMIT_UP', 'LIMIT_RISK_UP', 'WATCH_LIMIT_UP'):
         # 检查是否已有持仓
         has_position = any(
-            (p.get('symbol') == symbol or p.get('symbol') == symbol.replace('.SH', '.SZ'))
+            (p.get('symbol') == symbol
+             or p.get('symbol') == symbol.replace('.SH', '.SZ')
+             or p.get('symbol') == symbol.replace('.SZ', '.SH'))
             for p in (positions or [])
             if p.get('shares', 0) > 0
         )
@@ -774,7 +720,7 @@ def evaluate_signal(symbol: str,
                 symbol=symbol, signal='WATCH_SELL',
                 price=price, pct=pct, prev_rsi=prev_rsi,
                 volume_ratio=vol_ratio, day_chg=day_chg or 0.0,
-                reason=(f'涨停持仓预警！{vol_note}，持仓者注意止盈｜RSI={prev_rsi:.0f}｜现价{price}'),
+                reason=(f'涨停持仓预警！{vol_note}，持仓者注意止盈｜RSI={prev_rsi:.0f if prev_rsi is not None else "N/A"}｜现价{price}'),
                 emitted_at=datetime.now().strftime('%H:%M:%S'),
             )
         # 无持仓 → 禁止追涨
@@ -794,7 +740,9 @@ def evaluate_signal(symbol: str,
     if limit_signal in ('LIMIT_DOWN', 'LIMIT_RISK_DOWN', 'WATCH_LIMIT_DOWN'):
         # 检查是否已有持仓
         has_position = any(
-            (p.get('symbol') == symbol or p.get('symbol') == symbol.replace('.SH', '.SZ'))
+            (p.get('symbol') == symbol
+             or p.get('symbol') == symbol.replace('.SH', '.SZ')
+             or p.get('symbol') == symbol.replace('.SZ', '.SH'))
             for p in (positions or [])
             if p.get('shares', 0) > 0
         )
@@ -805,7 +753,7 @@ def evaluate_signal(symbol: str,
                 symbol=symbol, signal='RSI_SELL',
                 price=price, pct=pct, prev_rsi=prev_rsi,
                 volume_ratio=vol_ratio, day_chg=day_chg or 0.0,
-                reason=(f'{urgency.get(limit_signal, "")}跌停逃生！尽快减仓｜RSI={prev_rsi:.0f}｜现价{price}'),
+                reason=(f'{urgency.get(limit_signal, "")}跌停逃生！尽快减仓｜RSI={prev_rsi:.0f if prev_rsi is not None else "N/A"}｜现价{price}'),
                 emitted_at=datetime.now().strftime('%H:%M:%S'),
             )
         # 无持仓 → 禁止抄底
@@ -872,6 +820,7 @@ def evaluate_signal(symbol: str,
             if nb_fetch:
                 try:
                     nb_data = nb_fetch()
+                    from services.northbound import record_today_north_from_kamt
                     record_today_north_from_kamt(nb_data)
                     if nb_data:
                         net_cny = nb_data.get('net_north_cny', 0)
@@ -880,12 +829,12 @@ def evaluate_signal(symbol: str,
                             from services.northbound import get_north_flow_direction
                             direction = get_north_flow_direction(threshold_yi=NORTH_BUY_BOOST_THRESHOLD)
                             if direction['strength'] == 2:
-                                north_boost = (f'|北向持续共振({direction["days"]}日)+{direction["trend_yi"]:.0f}亿')
+                                north_boost = (f'｜北向持续共振({direction["days"]}日)+{direction["trend_yi"]:.0f}亿')
                             elif direction['strength'] == 1:
-                                north_boost = f'|北向脉冲+{net_billions:.0f}亿'
+                                north_boost = f'｜北向脉冲+{net_billions:.0f}亿'
                             if north_boost:
-                                reason = reason.replace('|现价{price}',
-                                                     f'{north_boost}|现价{price}')
+                                reason = reason.replace(f'｜现价{price}',
+                                                     f'{north_boost}｜现价{price}')
                 except Exception:
                     pass
 
@@ -918,7 +867,7 @@ def evaluate_signal(symbol: str,
             symbol=symbol, signal='VOLATILE',
             price=price, pct=pct, prev_rsi=prev_rsi,
             volume_ratio=vol_ratio, day_chg=day_chg or 0.0,
-            reason=f"当日波动{'%.1f'%(day_chg*100)}%（RSI={prev_rsi:.0f}）｜现价{price}",
+            reason=f"当日波动{'%.1f'%(day_chg*100)}%（RSI={prev_rsi:.0f if prev_rsi is not None else 'N/A'}）｜现价{price}",
             emitted_at=datetime.now().strftime('%H:%M:%S'),
         )
 
