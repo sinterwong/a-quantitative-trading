@@ -152,6 +152,17 @@ data:
   fallback_source: sina
   request_timeout: 10
 
+# ─── 算法执行（VWAP/TWAP）── P1-7 ──────────────────────────
+execution:
+  enable_algo_routing: true        # 大单自动拆分
+  algo_threshold_amount: 500000    # 50 万元 → 触发算法路由
+  algo_threshold_shares: 10000     # 1 万股 → 触发算法路由
+  algo_method: TWAP                # TWAP | VWAP | NONE
+  algo_duration_minutes: 30        # 拆单总时长
+  algo_slice_interval: 5           # 子单间隔（分钟）
+  impact_permanent_coeff: 5.0      # Almgren-Chriss 永久冲击系数（bps）
+  impact_temporary_coeff: 5.0      # Almgren-Chriss 临时冲击系数（bps）
+
 # ─── 通知 ──────────────────────────────────────────────────
 alerts:
   feishu_webhook: ""     # 飞书 Webhook URL（留空则禁用）

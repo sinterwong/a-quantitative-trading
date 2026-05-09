@@ -187,12 +187,29 @@ class TestCheckNewPositionsWithScore:
         monitor._calc_shares.return_value = 100
         monitor._can_trade.return_value = True
         monitor._broker = MagicMock()
-        monitor._broker.submit_order.return_value = MagicMock(status='filled', avg_price=15.0)
+        # OrderResult-shape mock：avg_price 必须是 float（被 f'.2f' 格式化）
+        from backend.services.broker import OrderResult
+        monitor._broker.submit_order.return_value = OrderResult(
+            order_id='M-1', status='filled', symbol='000001.SZ',
+            direction='BUY', submitted_shares=100, filled_shares=100,
+            avg_price=15.0, signal_price=15.0, slippage_bps=0.0,
+            submitted_at='', filled_at='',
+        )
         monitor._deliver_alert = MagicMock()
         monitor._llm_review_signal.return_value = (True, 'OK', 0.8, 'full')
 
-        # 直接调用方法
+        # P1-7: 绑定真实 _submit_with_routing + 低阈值 EC，确保走单笔路径
         from backend.services.intraday_monitor import IntradayMonitor
+        monitor._submit_with_routing = IntradayMonitor._submit_with_routing.__get__(monitor)
+        monitor._algo_config = lambda: type('EC', (), {
+            'enable_algo_routing': True,
+            'algo_threshold_amount': 1e12,  # 远大于 100 股测试单
+            'algo_threshold_shares': 1_000_000,
+            'algo_method': 'TWAP',
+            'algo_duration_minutes': 30,
+            'algo_slice_interval': 5,
+        })()
+
         IntradayMonitor._check_new_positions(monitor, datetime.now())
 
         # 验证：下单被调用

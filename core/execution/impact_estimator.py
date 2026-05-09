@@ -33,13 +33,35 @@ class ImpactEstimator:
     """
     市场冲击估算器（静态方法集合）。
 
-    模型参数（可通过子类或 monkey-patch 调整）：
+    模型参数：
       PERMANENT_COEFF : 永久冲击系数（默认 5.0 bps，对应 sqrt 项）
       TEMPORARY_COEFF : 临时冲击系数（默认 5.0 bps，对应线性项）
+
+    P1-7：支持从 config/trading.yaml execution 节点加载系数。
+    调用 ImpactEstimator.load_from_config() 在启动时同步。
     """
 
     PERMANENT_COEFF: float = 5.0   # bps
     TEMPORARY_COEFF: float = 5.0   # bps
+
+    @classmethod
+    def load_from_config(cls) -> bool:
+        """
+        从 trading.yaml execution 节点同步系数。
+        失败时保留默认值，不抛异常。
+
+        Returns
+        -------
+        True 表示成功更新，False 表示降级到默认值。
+        """
+        try:
+            from core.config import load_config
+            cfg = load_config()
+            cls.PERMANENT_COEFF = float(cfg.execution.impact_permanent_coeff)
+            cls.TEMPORARY_COEFF = float(cfg.execution.impact_temporary_coeff)
+            return True
+        except Exception:
+            return False
 
     @classmethod
     def estimate(

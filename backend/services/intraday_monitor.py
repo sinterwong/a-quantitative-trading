@@ -372,6 +372,146 @@ class IntradayMonitor:
         """检查是否允许执行实单(Broker下单)。simulation模式返回False。"""
         return self._trading_mode == 'live'
 
+    # ── 算法路由（P1-7）─────────────────────────────────────
+
+    def _algo_config(self):
+        """读取 trading.yaml execution 节点。失败时返回内联默认值。"""
+        try:
+            from core.config import load_config
+            return load_config().execution
+        except Exception:
+            class _Default:
+                enable_algo_routing = True
+                algo_threshold_amount = 500_000.0
+                algo_threshold_shares = 10_000
+                algo_method = 'TWAP'
+                algo_duration_minutes = 30
+                algo_slice_interval = 5
+            return _Default()
+
+    def _submit_with_routing(
+        self, symbol: str, direction: str, shares: int,
+        price: float, price_type: str = 'market',
+    ):
+        """
+        智能路由（P1-7）：
+        - 订单金额 < threshold 且 股数 < shares_threshold → 直接走 self._broker.submit_order
+        - 否则 → 用 TWAPExecutor / VWAPExecutor 生成 N 个子单同步执行，聚合返回
+
+        所有路径都通过 self._broker 撮合（PaperBroker 即时成交），保持持仓口径一致。
+        每个子单按 sleep(0) 顺序执行 — 真实 Futu 接入后将是 N×interval 的真实拆单。
+        """
+        ec = self._algo_config()
+
+        # 估算订单金额
+        order_value = shares * (price or 0.0)
+
+        if (
+            not getattr(ec, 'enable_algo_routing', True)
+            or getattr(ec, 'algo_method', 'TWAP') == 'NONE'
+            or (order_value < ec.algo_threshold_amount
+                and shares < ec.algo_threshold_shares)
+        ):
+            return self._broker.submit_order(
+                symbol=symbol, direction=direction,
+                shares=shares, price=price, price_type=price_type,
+            )
+
+        # 大单：拆单
+        try:
+            method = (getattr(ec, 'algo_method', 'TWAP') or 'TWAP').upper()
+            if method == 'VWAP':
+                from core.execution.vwap_executor import VWAPExecutor
+                executor = VWAPExecutor(
+                    symbol=symbol, direction=direction,
+                    total_shares=shares,
+                    duration_minutes=ec.algo_duration_minutes,
+                    reference_price=price,
+                    slice_interval=ec.algo_slice_interval,
+                )
+            else:
+                from core.execution.twap_executor import TWAPExecutor
+                executor = TWAPExecutor(
+                    symbol=symbol, direction=direction,
+                    total_shares=shares,
+                    duration_minutes=ec.algo_duration_minutes,
+                    reference_price=price,
+                    slice_interval=ec.algo_slice_interval,
+                )
+            slices = executor.generate_slices()
+        except Exception as exc:
+            logger.warning('algo routing failed (fallback to single): %s', exc)
+            return self._broker.submit_order(
+                symbol=symbol, direction=direction,
+                shares=shares, price=price, price_type=price_type,
+            )
+
+        if not slices:
+            return self._broker.submit_order(
+                symbol=symbol, direction=direction,
+                shares=shares, price=price, price_type=price_type,
+            )
+
+        # 同步执行子单（PaperBroker 即时撮合）
+        children = []
+        total_filled = 0
+        total_value = 0.0
+        for sl in slices:
+            sl_shares = (sl.target_shares // 100) * 100
+            if sl_shares < 100:
+                continue
+            try:
+                r = self._broker.submit_order(
+                    symbol=symbol, direction=direction,
+                    shares=sl_shares, price=price, price_type=price_type,
+                )
+            except Exception as exc:
+                logger.warning('algo child order error %s slice=%d: %s',
+                               symbol, len(children), exc)
+                continue
+            children.append(r)
+            if getattr(r, 'status', '') == 'filled':
+                total_filled += r.filled_shares
+                total_value += r.filled_shares * r.avg_price
+
+        if not children:
+            return self._broker.submit_order(
+                symbol=symbol, direction=direction,
+                shares=shares, price=price, price_type=price_type,
+            )
+
+        # 聚合 OrderResult
+        from backend.services.broker import OrderResult
+        avg_price = total_value / total_filled if total_filled > 0 else (price or 0.0)
+        signal_price = price or 0.0
+        slip_bps = (
+            (avg_price - signal_price) / signal_price * 10_000
+            if signal_price > 0 else 0.0
+        )
+        first = children[0]
+        last = children[-1]
+
+        agg = OrderResult(
+            order_id=f'ALGO-{first.order_id}',
+            status='filled' if total_filled >= shares * 0.99 else 'partial',
+            symbol=symbol,
+            direction=direction,
+            submitted_shares=shares,
+            filled_shares=total_filled,
+            avg_price=round(avg_price, 4),
+            signal_price=signal_price,
+            slippage_bps=round(slip_bps, 2),
+            submitted_at=getattr(first, 'submitted_at', ''),
+            filled_at=getattr(last, 'filled_at', ''),
+        )
+
+        logger.info(
+            'algo route %s %s %d shares → %d children, fill avg=%.3f slip=%.2fbps',
+            method, symbol, shares, len(children), avg_price, slip_bps,
+        )
+
+        return agg
+
     # ── Internal ───────────────────────────────────────────
 
     def _run(self):
@@ -688,7 +828,7 @@ class IntradayMonitor:
                     logger.info('Simulation mode: skipped BUY %s %d @ %.2f', sym, shares, price)
                     continue
 
-                result = self._broker.submit_order(
+                result = self._submit_with_routing(
                     symbol=sym, direction='BUY',
                     shares=shares, price=price, price_type='market',
                 )
@@ -807,7 +947,7 @@ class IntradayMonitor:
                 )
                 logger.info('Simulation mode: skipped %s %s %d @ %.2f', direction, alert.symbol, shares, alert.price)
                 return None
-            result = self._broker.submit_order(
+            result = self._submit_with_routing(
                 symbol=alert.symbol,
                 direction=direction,
                 shares=shares,
@@ -1421,7 +1561,7 @@ class IntradayMonitor:
                 continue
 
             try:
-                result = self._broker.submit_order(
+                result = self._submit_with_routing(
                     symbol=sym,
                     direction='SELL',
                     shares=sell_shares,

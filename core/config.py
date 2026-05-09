@@ -128,6 +128,35 @@ class AlertsConfig:
 
 
 @dataclass
+class ExecutionConfig:
+    """算法执行（VWAP/TWAP）配置 — P1-7"""
+    enable_algo_routing: bool = True
+    """超过 algo_threshold 的订单自动路由到 VWAP/TWAP 拆单。"""
+
+    algo_threshold_amount: float = 500_000.0
+    """订单金额（元）超过此值触发算法路由。50 万元起对 A 股小盘股已具备明显冲击。"""
+
+    algo_threshold_shares: int = 10_000
+    """订单股数超过此值（OR 关系）触发算法路由。"""
+
+    algo_method: str = 'TWAP'
+    """'TWAP' | 'VWAP' | 'NONE'。NONE 时即使超阈值也走单笔。"""
+
+    algo_duration_minutes: int = 30
+    """拆单总时长（分钟）。"""
+
+    algo_slice_interval: int = 5
+    """子单时间间隔（分钟）。"""
+
+    impact_permanent_coeff: float = 5.0
+    """Almgren-Chriss 永久冲击系数（bps）。
+    历史校准方法：用过去 30 个交易日实际成交滑点回归。当前为保守默认值。"""
+
+    impact_temporary_coeff: float = 5.0
+    """Almgren-Chriss 临时冲击系数（bps）。"""
+
+
+@dataclass
 class TradingConfig:
     """
     顶层配置对象。
@@ -138,6 +167,7 @@ class TradingConfig:
     runner: RunnerConfig = field(default_factory=RunnerConfig)
     data: DataConfig = field(default_factory=DataConfig)
     alerts: AlertsConfig = field(default_factory=AlertsConfig)
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     strategies: Dict[str, StrategyConfig] = field(default_factory=dict)
     live_symbols: List[LiveSymbolConfig] = field(default_factory=list)
     env: str = 'dev'
@@ -211,6 +241,7 @@ def _parse(raw: Dict[str, Any], env: str) -> TradingConfig:
     runner = _parse_runner(raw.get('runner', {}))
     data = _parse_data(raw.get('data', {}))
     alerts = _parse_alerts(raw.get('alerts', {}))
+    execution = _parse_execution(raw.get('execution', {}))
     strategies = _parse_strategies(raw.get('strategies', {}))
     live_symbols = _parse_live_symbols(raw.get('live_symbols', []))
 
@@ -220,6 +251,7 @@ def _parse(raw: Dict[str, Any], env: str) -> TradingConfig:
         runner=runner,
         data=data,
         alerts=alerts,
+        execution=execution,
         strategies=strategies,
         live_symbols=live_symbols,
         env=env,
@@ -278,6 +310,19 @@ def _parse_alerts(d: Dict) -> AlertsConfig:
     return AlertsConfig(
         feishu_webhook=str(d.get('feishu_webhook', '')),
         log_only=bool(d.get('log_only', True)),
+    )
+
+
+def _parse_execution(d: Dict) -> ExecutionConfig:
+    return ExecutionConfig(
+        enable_algo_routing=bool(d.get('enable_algo_routing', True)),
+        algo_threshold_amount=float(d.get('algo_threshold_amount', 500_000.0)),
+        algo_threshold_shares=int(d.get('algo_threshold_shares', 10_000)),
+        algo_method=str(d.get('algo_method', 'TWAP')),
+        algo_duration_minutes=int(d.get('algo_duration_minutes', 30)),
+        algo_slice_interval=int(d.get('algo_slice_interval', 5)),
+        impact_permanent_coeff=float(d.get('impact_permanent_coeff', 5.0)),
+        impact_temporary_coeff=float(d.get('impact_temporary_coeff', 5.0)),
     )
 
 
