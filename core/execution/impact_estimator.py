@@ -47,13 +47,36 @@ class ImpactEstimator:
     @classmethod
     def load_from_config(cls) -> bool:
         """
-        从 trading.yaml execution 节点同步系数。
-        失败时保留默认值，不抛异常。
+        从配置同步系数。优先级（高 → 低）：
+          1. outputs/tca_calibration.json（P1-12 反馈闭环写出）
+          2. config/trading.yaml execution.impact_*_coeff
+          3. 类默认值
 
         Returns
         -------
         True 表示成功更新，False 表示降级到默认值。
         """
+        # 1. 反馈调整结果（最高优先级）
+        try:
+            import json
+            import os
+            cal_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                'outputs', 'tca_calibration.json',
+            )
+            if os.path.exists(cal_path):
+                with open(cal_path, encoding='utf-8') as f:
+                    cal = json.load(f)
+                perm = cal.get('impact_permanent_coeff')
+                temp = cal.get('impact_temporary_coeff')
+                if perm is not None and temp is not None:
+                    cls.PERMANENT_COEFF = float(perm)
+                    cls.TEMPORARY_COEFF = float(temp)
+                    return True
+        except Exception:
+            pass
+
+        # 2. trading.yaml
         try:
             from core.config import load_config
             cfg = load_config()

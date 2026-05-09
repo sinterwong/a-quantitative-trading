@@ -157,6 +157,7 @@ class Scheduler:
         (15,  0, '_trigger_afternoon_report'),  # 收盘晚报
         (15, 10, '_trigger_analysis'),          # 日终选股分析
         (15, 30, '_trigger_daily_risk_report'), # CVaR + 蒙特卡洛压力测试（P0-5）
+        (15, 45, '_trigger_daily_tca'),         # TCA 反馈闭环（P1-12）
         (16,  0, '_trigger_daily_ops_report'),  # 每日运营报告
     ]
 
@@ -322,6 +323,21 @@ class Scheduler:
                 )
         except Exception as e:
             self.logger.error('[Scheduler] daily risk report failed: %s', e)
+
+    def _trigger_daily_tca(self):
+        """15:45 — TCA 反馈闭环（P1-12）。"""
+        self.logger.info('[Scheduler] 15:45 — triggering daily TCA report')
+        try:
+            sys.path.insert(0, PROJ_DIR)
+            from scripts.daily_tca import run_report
+            summary = run_report(api_port=self.api_port, enable_alert=True)
+            n = summary.get('n_trades', 0)
+            avg_is = summary.get('avg_is_bps', 0.0)
+            self.logger.info(
+                '[Scheduler] TCA done — n_trades=%d avg_is=%.2f bps', n, avg_is,
+            )
+        except Exception as e:
+            self.logger.error('[Scheduler] daily TCA failed: %s', e)
 
     def _trigger_daily_ops_report(self):
         """16:00 — DailyOpsReporter 运营报告。"""
