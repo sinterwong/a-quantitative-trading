@@ -16,17 +16,39 @@ core/pipeline_factory.py — 生产用因子流水线工厂
   - 滚动 IC 加权（update_freq_days=21 天更新一次）
   - 因子衰减保护：连续 3 次 IC<0 自动清零，IC 转正后以 0.5x 权重复活
   - FactorCorrelationAnalyzer 在首次构建时检测高相关因子对并记录日志
+
+加载策略（P0-2）：
+  - 每个因子独立 try-except，单个失败不影响其它因子
+  - MIN_FACTORS_REQUIRED 守卫：成功因子数 < 阈值时按 strict 决定是否 raise
+  - FactorPipeline.run() 内部会按 _entries 总权重自动归一化（即使部分因子缺失）
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional, Type
 
 logger = logging.getLogger('core.pipeline_factory')
 
+# 至少需要加载多少个因子才算 pipeline 健康
+# 4 个技术因子是 must-have：RSI + MACDTrend + Bollinger + ATR
+MIN_FACTORS_REQUIRED = 4
 
-def build_pipeline(symbol: str = ''):
+
+def _safe_add(pipeline, factor_cls: Type, *, weight: float,
+              params: Optional[Dict[str, Any]] = None,
+              label: str = '') -> bool:
+    """单因子细粒度加载：失败时仅记日志，返回 True/False。"""
+    try:
+        pipeline.add(factor_cls, weight=weight, params=params or {})
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('因子加载失败（已跳过）%s: %s',
+                       label or factor_cls.__name__, exc)
+        return False
+
+
+def build_pipeline(symbol: str = '', strict: bool = True):
     """
     构建并返回生产用 DynamicWeightPipeline 实例。
 
@@ -35,10 +57,18 @@ def build_pipeline(symbol: str = ''):
     symbol : str
         默认标的代码，写入 Factor.symbol（对 Signal.symbol 赋值）。
         在 StrategyRunner 内部，每个标的调用时会通过 factor.set_symbol() 覆盖。
+    strict : bool
+        True 时（默认）成功因子数 < MIN_FACTORS_REQUIRED 抛 RuntimeError；
+        False 仅记日志（用于离线/测试场景，可容忍依赖缺失）。
 
     Returns
     -------
     DynamicWeightPipeline
+
+    Raises
+    ------
+    RuntimeError
+        strict=True 且成功加载因子数 < MIN_FACTORS_REQUIRED 时抛出。
     """
     from core.factor_pipeline import DynamicWeightPipeline
     from core.factors.price_momentum import RSIFactor, ATRFactor, BollingerFactor
@@ -51,44 +81,76 @@ def build_pipeline(symbol: str = ''):
         recovery_rate=0.5,      # IC 转正后以 50% 等权重复活
     )
 
-    # ── 技术层 ──────────────────────────────────────────────
-    pipeline.add(RSIFactor,       weight=0.20, params={'symbol': symbol})
-    pipeline.add(MACDTrendFactor, weight=0.20, params={'symbol': symbol})
-    pipeline.add(BollingerFactor, weight=0.15, params={'symbol': symbol})
-    pipeline.add(ATRFactor,       weight=0.10, params={'symbol': symbol})
+    loaded_count = 0
+    sym_param = {'symbol': symbol}
 
-    # ── 基本面层（无数据时因子返回全零，不影响整体权重归一化）──
+    # ── 技术层（must-have）──────────────────────────────────
+    for cls, w in [
+        (RSIFactor,       0.20),
+        (MACDTrendFactor, 0.20),
+        (BollingerFactor, 0.15),
+        (ATRFactor,       0.10),
+    ]:
+        if _safe_add(pipeline, cls, weight=w, params=sym_param):
+            loaded_count += 1
+
+    # ── 基本面层（每因子独立 try-except，单个失败不影响其它）──
     try:
         from core.factors.fundamental import (
             PEPercentileFactor,
             ROEMomentumFactor,
             ShareholderConcentrationFactor,
         )
-        pipeline.add(PEPercentileFactor,             weight=0.10, params={'symbol': symbol})
-        pipeline.add(ROEMomentumFactor,              weight=0.10, params={'symbol': symbol})
-        pipeline.add(ShareholderConcentrationFactor, weight=0.05, params={'symbol': symbol})
-    except Exception as exc:
-        logger.warning('基本面因子加载失败（已跳过）: %s', exc)
+        for cls, w in [
+            (PEPercentileFactor,             0.10),
+            (ROEMomentumFactor,              0.10),
+            (ShareholderConcentrationFactor, 0.05),
+        ]:
+            if _safe_add(pipeline, cls, weight=w, params=sym_param):
+                loaded_count += 1
+    except ImportError as exc:
+        logger.warning('基本面因子模块导入失败（整层跳过）: %s', exc)
 
-    # ── 宏观层（从 DataLayer 获取月度数据，网络失败时自动降级）──
+    # ── 宏观层（每因子独立加载，无数据时自动降级）──────────────
     try:
         from core.data_layer import get_data_layer
         from core.factors.macro import PMIFactor, M2GrowthFactor
         dl = get_data_layer()
-        pmi_data = dl.get_macro_data('PMI')
-        m2_data  = dl.get_macro_data('M2')
-        pipeline.add(PMIFactor,      weight=0.05,
-                     params={'pmi_data': pmi_data})
-        pipeline.add(M2GrowthFactor, weight=0.05,
-                     params={'m2_data': m2_data})
-    except Exception as exc:
-        logger.warning('宏观因子加载失败（已降级）: %s', exc)
+        pmi_data, m2_data = None, None
+        try:
+            pmi_data = dl.get_macro_data('PMI')
+        except Exception as exc:  # noqa: BLE001
+            logger.warning('PMI 数据获取失败: %s', exc)
+        try:
+            m2_data = dl.get_macro_data('M2')
+        except Exception as exc:  # noqa: BLE001
+            logger.warning('M2 数据获取失败: %s', exc)
+
+        if _safe_add(pipeline, PMIFactor, weight=0.05,
+                     params={'pmi_data': pmi_data}, label='PMIFactor'):
+            loaded_count += 1
+        if _safe_add(pipeline, M2GrowthFactor, weight=0.05,
+                     params={'m2_data': m2_data}, label='M2GrowthFactor'):
+            loaded_count += 1
+    except ImportError as exc:
+        logger.warning('宏观因子模块导入失败（整层跳过）: %s', exc)
+
+    # ── 健康守卫：成功因子数不达标时抛错 ──────────────────────
+    if loaded_count < MIN_FACTORS_REQUIRED:
+        msg = (f'pipeline 仅加载 {loaded_count} 个因子，低于阈值 '
+               f'{MIN_FACTORS_REQUIRED}，拒绝启动以避免信号失真')
+        if strict:
+            logger.error(msg)
+            raise RuntimeError(msg)
+        logger.error('%s（strict=False，继续运行但信号质量不可信）', msg)
 
     # ── 因子相关性检测（仅日志，不阻断启动）──────────────────
     try:
         names = pipeline.factor_names
-        logger.info('DynamicWeightPipeline 构建完成 | 因子数: %d | 因子: %s',
-                    len(names), names)
+        logger.info(
+            'DynamicWeightPipeline 构建完成 | 加载因子数: %d | 因子: %s',
+            len(names), names,
+        )
     except Exception:
         pass
 
