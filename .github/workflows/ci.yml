@@ -28,46 +28,27 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install pandas numpy requests flask werkzeug pyyaml pyarrow
-          pip install flake8 pytest
+          pip install scipy lightgbm xgboost joblib reportlab matplotlib
+          pip install flake8 pytest pytest-cov
 
-      - name: Syntax check (py_compile)
+      - name: Syntax check (全仓库 py_compile via git ls-files)
         run: |
-          # core 模块（Phase 1 新增）
-          python -m py_compile core/backtest_engine.py
-          python -m py_compile core/walkforward.py
-          python -m py_compile core/data_quality.py
-          python -m py_compile core/data_layer.py
-          python -m py_compile core/factors/base.py
-          python -m py_compile core/event_bus.py
-          python -m py_compile core/portfolio.py
-          python -m py_compile core/oms.py
-          # scripts
-          python -m py_compile scripts/dynamic_selector.py
-          python -m py_compile scripts/stock_data_only.py
-          python -m py_compile scripts/walkforward_job.py
-          python -m py_compile scripts/quant/data_loader.py
-          python -m py_compile scripts/quant/signal_generator.py
-          python -m py_compile scripts/quant/backtest.py
-          python -m py_compile scripts/quant/portfolio_engine_v3.py
-          python -m py_compile scripts/quant/walkforward.py
-          python -m py_compile scripts/quant/news_quality.py
-          python -m py_compile scripts/quant/monte_carlo.py
-          python -m py_compile scripts/quant/benchmark.py
-          # backend
-          python -m py_compile backend/services/portfolio.py
-          python -m py_compile backend/services/broker.py
-          python -m py_compile backend/services/signals.py
-          python -m py_compile backend/services/intraday_monitor.py
-          python -m py_compile backend/services/report_sender.py
-          python -m py_compile backend/services/strategy_loader.py
-          python -m py_compile backend/services/walkforward_persistence.py
-          # strategies
-          python -m py_compile strategies/__init__.py
-          python -m py_compile strategies/base.py
-          python -m py_compile strategies/rsi_strategy.py
-          python -m py_compile strategies/macd_strategy.py
-          python -m py_compile strategies/bollinger_strategy.py
-          python -m py_compile streamlit_app.py
+          # P2-21: 替代散点检查为全量编译，避免遗漏新文件
+          python - <<'PY'
+          import subprocess, sys
+          out = subprocess.check_output(['git', 'ls-files', '*.py']).decode().splitlines()
+          fails = []
+          for p in out:
+              try:
+                  subprocess.check_call([sys.executable, '-m', 'py_compile', p])
+              except subprocess.CalledProcessError:
+                  fails.append(p)
+          if fails:
+              print('FAILED to compile:')
+              for f in fails: print('  ', f)
+              sys.exit(1)
+          print(f'compiled {len(out)} files')
+          PY
 
       - name: Flake8 lint (core modules — errors only, E/W 级别)
         run: |
@@ -77,8 +58,18 @@ jobs:
             --extend-ignore=E501,W503,W504,E203 \
             --count
 
-      - name: Run unit tests (portable, no pytest required)
+      - name: Run pytest (full suite)
+        run: |
+          # P2-21: 跑完整 pytest，替代 run_tests.py 的自定义框架（仍保留兼容）
+          pytest tests/ -q --tb=short \
+            --ignore=tests/test_backtest_engine.py \
+            --ignore=tests/test_walkforward.py \
+            --ignore=tests/test_data_quality.py
+          # 上面三个用自定义 check() 框架，由 test-quality job 单独跑
+
+      - name: Run unit tests (legacy run_tests.py)
         run: python tests/run_tests.py
+        continue-on-error: true   # 已被 pytest 覆盖，仅做兼容性回归
 
   # ---------------------------------------------------------------
   # Job 2: Linux - pytest + mypy (重点模块类型检查)
@@ -100,7 +91,8 @@ jobs:
       - name: Install tools
         run: |
           pip install --upgrade pip
-          pip install pytest pandas numpy requests flask werkzeug pyyaml pyarrow
+          pip install pytest pytest-cov pandas numpy requests flask werkzeug pyyaml pyarrow
+          pip install scipy lightgbm xgboost joblib reportlab matplotlib
           pip install mypy types-requests
 
       - name: Mypy type check (core 重点模块)
@@ -120,6 +112,14 @@ jobs:
           python tests/test_backtest_engine.py
           python tests/test_walkforward.py
           python tests/test_data_quality.py
+
+      - name: Coverage report
+        run: |
+          pytest tests/ --cov=core --cov=scripts --cov=backend --cov-report=term \
+            --ignore=tests/test_backtest_engine.py \
+            --ignore=tests/test_walkforward.py \
+            --ignore=tests/test_data_quality.py \
+            -q --tb=no || true   # 覆盖率不阻断 CI
 
   # ---------------------------------------------------------------
   # Job 3: Windows CI - single version (syntax + unit tests)
