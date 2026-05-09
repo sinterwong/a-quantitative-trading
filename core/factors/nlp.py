@@ -267,18 +267,56 @@ class NewsSentimentFactor(Factor):
         """
         计算日频情感因子值（z-score）。
 
-        优先级：sentiment_data（外部注入）> API 获取 > 全零降级
+        优先级（P1-9 升级）：
+          sentiment_data（外部注入）
+          → outputs/nlp_sentiment/{symbol}.parquet（批处理生成）
+          → API 实时获取（需 use_api=True）
+          → 全零降级
         """
         # 方式一：使用外部注入的情感数据
         if self._sentiment_data is not None and not self._sentiment_data.empty:
             return self._evaluate_from_series(data)
 
-        # 方式二：实时 API 获取
+        # 方式二（P1-9）：从批处理 Parquet 缓存读取
+        cached = self._load_parquet_cache()
+        if cached is not None and not cached.empty:
+            self._sentiment_data = cached
+            return self._evaluate_from_series(data)
+
+        # 方式三：实时 API 获取（不推荐生产用，延迟 + 成本）
         if self.use_api and self.symbol:
             return self._evaluate_from_api(data)
 
-        # 方式三：降级为零
+        # 方式四：降级为零
         return pd.Series(0.0, index=data.index)
+
+    def _load_parquet_cache(self) -> Optional[pd.Series]:
+        """
+        从 outputs/nlp_sentiment/{symbol}.parquet 加载预计算的日频情感序列。
+
+        返回 None 表示文件不存在或读取失败。
+        """
+        if not self.symbol:
+            return None
+        try:
+            from pathlib import Path as _P
+            cache_path = (
+                _P(__file__).resolve().parent.parent.parent
+                / 'outputs' / 'nlp_sentiment' / f'{self.symbol}.parquet'
+            )
+            if not cache_path.exists():
+                return None
+            df = pd.read_parquet(cache_path)
+            if df.empty or 'score' not in df.columns:
+                return None
+            # date 列可能是 index 或 column
+            if 'date' in df.columns:
+                df = df.set_index('date')
+            df.index = pd.to_datetime(df.index)
+            return df['score'].astype(float)
+        except Exception as exc:
+            logger.warning('parquet cache load failed for %s: %s', self.symbol, exc)
+            return None
 
     def _evaluate_from_series(self, data: pd.DataFrame) -> pd.Series:
         """从外部注入的情感 Series 计算因子值。"""
