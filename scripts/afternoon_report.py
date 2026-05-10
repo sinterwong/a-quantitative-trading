@@ -21,6 +21,9 @@ for _k in list(os.environ.keys()):
     if 'proxy' in _k.lower():
         del os.environ[_k]
 
+from dotenv import load_dotenv
+load_dotenv()  # 自动从当前目录向上查找 .env
+
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 Q_DIR    = os.path.dirname(THIS_DIR)
 BK_DIR   = os.path.join(Q_DIR, 'backend')
@@ -279,9 +282,9 @@ def feishu_push(text: str):
         if not token:
             return
 
-        msg_url = 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id'
+        msg_url = 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id'
         msg_body = {
-            'receive_id': os.environ.get('FEISHU_USER_OPEN_ID', ''),
+            'receive_id': os.environ.get('FEISHU_CHAT_ID', ''),
             'msg_type': 'text',
             'content': json.dumps({'text': text})
         }
