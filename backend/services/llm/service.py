@@ -419,7 +419,7 @@ class LLMService:
                 response = self.provider.chat(
                     messages,
                     temperature=0.1,
-                    max_tokens=1024,
+                    max_tokens=4096,
                 )
                 return response.content
 
@@ -637,7 +637,7 @@ class LLMService:
             last_error = None
             for attempt in range(self.max_retries + 1):
                 try:
-                    response = self.provider.chat(messages, temperature=0.1, max_tokens=1024)
+                    response = self.provider.chat(messages, temperature=0.1, max_tokens=4096)
                     raw = response.content
                     break
                 except Exception as e:

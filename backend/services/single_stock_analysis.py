@@ -663,7 +663,7 @@ def _try_llm_summary(report: AnalysisReport) -> Dict[str, Any]:
         resp = provider.chat([
             {'role': 'system', 'content': _LLM_SYSTEM_PROMPT},
             {'role': 'user', 'content': user_msg},
-        ], max_tokens=400, temperature=0.2)
+        ], max_tokens=4096, temperature=0.2)
 
         content = (resp.content or '').strip()
         # 尝试解析为 JSON

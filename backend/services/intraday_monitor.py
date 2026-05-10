@@ -1089,7 +1089,7 @@ class IntradayMonitor:
             ]
 
             # 调用 LLM(通过 provider.chat)
-            resp = self._llm.provider.chat(messages, max_tokens=512, temperature=0.3)
+            resp = self._llm.provider.chat(messages, max_tokens=4096, temperature=0.3)
             content = resp.content.strip()
 
             # 解析 JSON

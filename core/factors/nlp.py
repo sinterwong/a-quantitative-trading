@@ -112,20 +112,17 @@ def _fetch_news_eastmoney(symbol: str, n: int = 20) -> List[str]:
 
 def _score_with_claude(
     headlines: List[str],
-    model: str = 'claude-haiku-4-5-20251001',
     api_key: Optional[str] = None,
 ) -> float:
     """
-    调用 Claude API 对新闻标题列表进行情感打分。
+    调用 MiniMax API 对新闻标题列表进行情感打分。
 
     Parameters
     ----------
     headlines : List[str]
         新闻标题列表
-    model : str
-        Claude 模型 ID
     api_key : str or None
-        Anthropic API Key（None 时从环境变量读取）
+        MiniMax API Key（None 时从环境变量 MINIMAX_API_KEY 读取）
 
     Returns
     -------
@@ -134,14 +131,20 @@ def _score_with_claude(
     if not headlines:
         return 0.0
 
-    key = api_key or os.environ.get('ANTHROPIC_API_KEY', '')
+    key = api_key or os.environ.get('MINIMAX_API_KEY', '')
     if not key:
-        logger.debug('[NewsSentimentFactor] 未设置 ANTHROPIC_API_KEY，跳过 LLM 打分')
+        logger.debug('[NewsSentimentFactor] 未设置 MINIMAX_API_KEY，跳过 LLM 打分')
         return 0.0
 
     try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=key)
+        import sys as _sys
+        _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # core/
+        _backend_path = os.path.join(_repo_root, 'backend')
+        if _backend_path not in _sys.path:
+            _sys.path.insert(0, _backend_path)
+        from services.llm.factory import create_provider
+
+        provider = create_provider()
 
         headlines_text = '\n'.join(f'- {h}' for h in headlines[:10])
         prompt = (
@@ -151,13 +154,8 @@ def _score_with_claude(
             f"请只返回 JSON 格式：{{\"score\": <-1到1的小数>, \"reason\": \"<简短理由>\"}}"
         )
 
-        message = client.messages.create(
-            model=model,
-            max_tokens=128,
-            messages=[{'role': 'user', 'content': prompt}],
-        )
-
-        response_text = message.content[0].text.strip()
+        resp = provider.chat([{'role': 'user', 'content': prompt}], max_tokens=4096, temperature=0.2)
+        response_text = (resp.content or '').strip()
         # 解析 JSON
         if '{' in response_text and '}' in response_text:
             json_str = response_text[response_text.index('{'):response_text.rindex('}') + 1]

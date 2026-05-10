@@ -127,7 +127,7 @@ def _fetch_llm_market_narrative(sentiment: Dict) -> str:
     try:
         resp = llm.provider.chat(
             [{'role': 'user', 'content': prompt}],
-            max_tokens=512,
+            max_tokens=4096,
             temperature=0.3,
         )
         summary = resp.content.strip() if resp.content else ''
