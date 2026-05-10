@@ -36,7 +36,7 @@ class MiniMaxProvider(LLMProvider):
         self,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
-        timeout: int = 30,
+        timeout: int = 500,
         max_retries: int = 3,
     ):
         """
