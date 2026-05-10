@@ -28,7 +28,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install pandas numpy requests flask werkzeug pyyaml pyarrow
-          pip install scipy lightgbm "xgboost<2.1" joblib reportlab matplotlib flake8 pytest pytest-cov
+          pip install scipy lightgbm "xgboost<2.1" joblib reportlab matplotlib flake8 pytest pytest-cov scikit-learn prometheus_client
 
       - name: Syntax check (全仓库 py_compile via git ls-files)
         run: |
