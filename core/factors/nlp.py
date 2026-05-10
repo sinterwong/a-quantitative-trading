@@ -1,20 +1,20 @@
 """
 core/factors/nlp.py — 新闻情感 LLM 因子
 
-使用 Claude API 对股票相关新闻标题进行情感打分，转换为 Factor 接口。
+使用 MiniMax API 对股票相关新闻标题进行情感打分，转换为 Factor 接口。
 
 数据来源：
   - 东方财富新闻（AKShare stock_news_em()）
   - 同花顺财经新闻（AKShare stock_news_ths()，可选）
 
 情感打分：
-  - 调用 Anthropic Claude API（claude-haiku-4-5 模型，速度快成本低）
+  - 调用 MiniMax API（MiniMax-M2 模型）
   - Prompt：返回 JSON {"score": <-1到1>, "reason": "..."}
   - 多条新闻打分取加权平均（近期新闻权重更高）
 
 缓存策略：
-  - 新闻列表缓存 TTL = 4 小时（内存 + 本地 JSON）
-  - 情感评分缓存 TTL = 24 小时（本地 JSON）
+  - LLMService 内部缓存（单条新闻 TTL）
+  - 新闻情感评分缓存 TTL = 24 小时（本地 JSON）
   - 无 API Key 时优雅降级（返回全零）
 
 注意：
@@ -235,7 +235,7 @@ class NewsSentimentFactor(Factor):
         外部注入的日频情感得分（index=日期，值=[-1,1]）。
         若提供，跳过 API 获取直接使用。
     use_api : bool
-        是否调用 Claude API 实时获取（需 ANTHROPIC_API_KEY）。
+        是否调用 MiniMax API 实时获取（需 MINIMAX_API_KEY）。
         False = 仅使用 sentiment_data（无数据则全零）。
     window : int
         滚动均值平滑窗口（默认 5 天，减少单日噪声）
