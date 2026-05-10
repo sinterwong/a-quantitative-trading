@@ -142,29 +142,39 @@ def _score_with_claude(
         _backend_path = os.path.join(_repo_root, 'backend')
         if _backend_path not in _sys.path:
             _sys.path.insert(0, _backend_path)
-        from services.llm.factory import create_provider
+        from services.llm.factory import create_llm_service
 
-        provider = create_provider()
+        llm = create_llm_service()
 
-        headlines_text = '\n'.join(f'- {h}' for h in headlines[:10])
-        prompt = (
-            f"请分析以下中国A股市场新闻标题的情感倾向，"
-            f"并给出一个 -1 到 1 之间的分数（1=极度利好，-1=极度利空，0=中性）。\n\n"
-            f"新闻标题：\n{headlines_text}\n\n"
-            f"请只返回 JSON 格式：{{\"score\": <-1到1的小数>, \"reason\": \"<简短理由>\"}}"
-        )
+        scores: List[float] = []
+        for i, headline in enumerate(headlines[:10]):
+            try:
+                # 近期新闻权重更高（指数衰减）
+                recency_weight = 0.5 ** (i * 0.3)
+                result = llm.analyze_news(headline.strip(), timeout=10)
+                sentiment = getattr(result, 'sentiment', 'neutral')
+                confidence = getattr(result, 'confidence', 0.5)
+                # 映射: bullish→+1, bearish→-1, neutral→0，乘以 confidence
+                if sentiment == 'bullish':
+                    raw_score = confidence
+                elif sentiment == 'bearish':
+                    raw_score = -confidence
+                else:
+                    raw_score = 0.0
+                scores.append(raw_score * recency_weight)
+            except Exception as e:
+                logger.debug('[NewsSentimentFactor] 单条新闻分析失败: %s', e)
+                continue
 
-        resp = provider.chat([{'role': 'user', 'content': prompt}], max_tokens=4096, temperature=0.2)
-        response_text = (resp.content or '').strip()
-        # 解析 JSON
-        if '{' in response_text and '}' in response_text:
-            json_str = response_text[response_text.index('{'):response_text.rindex('}') + 1]
-            data = json.loads(json_str)
-            score = float(data.get('score', 0.0))
-            return float(np.clip(score, -1.0, 1.0))
+        if not scores:
+            return 0.0
+
+        # 加权平均
+        avg = float(np.mean(scores))
+        return float(np.clip(avg, -1.0, 1.0))
 
     except Exception as e:
-        logger.warning('[NewsSentimentFactor] Claude API 调用失败: %s', e)
+        logger.warning('[NewsSentimentFactor] LLMService 调用失败: %s', e)
 
     return 0.0
 
