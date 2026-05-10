@@ -328,45 +328,42 @@ class TestAnalyzeAShare(unittest.TestCase):
 
 class TestAnalyzeHkShare(unittest.TestCase):
 
-    def _make_snap(self):
-        from core.hk_data_source import HKStockSnapshot
-        from datetime import datetime
-        return HKStockSnapshot(
-            timestamp=datetime.now(), symbol='hk00700', name='腾讯控股',
-            last=350.0, open=348.0, high=352.0, low=346.0, prev_close=347.0,
-            change=3.0, change_pct=0.86, volume=1_000_000, amount=350_000_000.0,
-            high_52w=400.0, low_52w=280.0, mkt_cap=3_300_000_000_000.0,
+    def _make_quote(self):
+        from core.quote_data_source import QuoteData
+        return QuoteData(
+            symbol='hk00700', name='腾讯控股', market='HK',
+            price=350.0, open=348.0, high=352.0, low=346.0, prev_close=347.0,
+            change=3.0, pct_change=0.86, volume=1_000_000, amount=350_000_000.0,
+            high_52w=400.0, low_52w=280.0, market_cap=3_300_000_000_000.0,
+            source='tencent',
         )
 
     def test_normalizes_symbol(self):
         from backend.services import single_stock_analysis as ssa
         from backend.services.single_stock_analysis import AnalysisRequest
 
-        # mock 网络访问
-        fake_ds = MagicMock()
-        fake_ds.fetch_latest = MagicMock(return_value=self._make_snap())
-        fake_ds.fetch_history = MagicMock(return_value=pd.DataFrame())
+        fake_mgr = MagicMock()
+        fake_mgr.fetch_quote = MagicMock(return_value=self._make_quote())
+        fake_mgr.fetch_daily_kline = MagicMock(return_value=pd.DataFrame())
 
-        with patch('core.hk_data_source.HKStockDataSource', return_value=fake_ds):
+        with patch('core.quote_source_manager.get_quote_manager', return_value=fake_mgr):
             req = AnalysisRequest(symbol='HK:00700', include_regime=True)
             report = ssa.analyze_hk_share(req)
 
         self.assertEqual(report.symbol, 'hk00700')
         self.assertEqual(report.market, 'HK')
         self.assertIn('腾讯', report.snapshot['name'])
-        # 港股 regime 返回 N/A 而非错误
         self.assertEqual(report.regime['regime'], 'N/A')
 
     def test_no_history_falls_back_to_52w_risk(self):
         from backend.services import single_stock_analysis as ssa
         from backend.services.single_stock_analysis import AnalysisRequest
 
-        snap = self._make_snap()
-        fake_ds = MagicMock()
-        fake_ds.fetch_latest = MagicMock(return_value=snap)
-        fake_ds.fetch_history = MagicMock(return_value=pd.DataFrame())
+        fake_mgr = MagicMock()
+        fake_mgr.fetch_quote = MagicMock(return_value=self._make_quote())
+        fake_mgr.fetch_daily_kline = MagicMock(return_value=pd.DataFrame())
 
-        with patch('core.hk_data_source.HKStockDataSource', return_value=fake_ds):
+        with patch('core.quote_source_manager.get_quote_manager', return_value=fake_mgr):
             req = AnalysisRequest(symbol='HK:00700')
             report = ssa.analyze_hk_share(req)
 

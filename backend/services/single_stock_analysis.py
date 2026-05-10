@@ -407,46 +407,52 @@ def analyze_hk_share(req: AnalysisRequest) -> AnalysisReport:
         as_of=datetime.now().isoformat(timespec='seconds'),
     )
 
-    # 1) 港股快照（新浪 HK 实时）
+    # 1) 港股实时快照（QuoteSourceManager 路由：腾讯主 → 新浪备）
     snap = None
     try:
-        from core.hk_data_source import HKStockDataSource
-        ds = HKStockDataSource(symbol=sym)
-        snap = ds.fetch_latest()
-        if snap is not None:
+        from core.quote_source_manager import get_quote_manager
+        mgr = get_quote_manager()
+        q = mgr.fetch_quote(sym)
+        if q is not None and q.price > 0:
+            snap = q
             report.snapshot = {
-                'name': snap.name,
-                'last': snap.last,
-                'open': snap.open,
-                'high': snap.high,
-                'low': snap.low,
-                'prev_close': snap.prev_close,
-                'change': snap.change,
-                'change_pct': snap.change_pct,
-                'volume': snap.volume,
-                'amount': snap.amount,
-                'high_52w': snap.high_52w,
-                'low_52w': snap.low_52w,
-                'mkt_cap': snap.mkt_cap,
-                'currency': 'HKD',
+                'name': q.name,
+                'last': q.price,
+                'open': q.open,
+                'high': q.high,
+                'low': q.low,
+                'prev_close': q.prev_close,
+                'change': q.change,
+                'change_pct': q.pct_change,
+                'volume': q.volume,
+                'amount': q.amount,
+                'high_52w': q.high_52w,
+                'low_52w': q.low_52w,
+                'mkt_cap': q.market_cap,
+                'pe_ttm': q.pe_ttm or None,
+                'pb': q.pb or None,
+                'turnover_rate': q.turnover_rate or None,
+                'float_cap': q.float_cap or None,
+                'volume_ratio': q.volume_ratio or None,
+                'currency': q.currency or 'HKD',
             }
         else:
             report.warnings.append('hk_snapshot_unavailable')
     except Exception as exc:
         report.warnings.append(f'hk_data_error: {exc}')
 
-    # 2) 历史 K 线（新浪 HK 经常返回 null）
+    # 2) 历史日K（QuoteSourceManager 路由：腾讯主 → 新浪备）
     df = None
     try:
-        from core.hk_data_source import HKStockDataSource
-        ds = HKStockDataSource(symbol=sym)
-        df = ds.fetch_history(days=max(req.lookback_days, 60), freq='day')
+        from core.quote_source_manager import get_quote_manager
+        mgr = get_quote_manager()
+        df = mgr.fetch_daily_kline(sym, days=max(req.lookback_days, 60), adjust='qfq')
         if df is None or df.empty:
             report.warnings.append('hk_history_unavailable')
     except Exception as exc:
         report.warnings.append(f'hk_history_error: {exc}')
 
-    current_price = (snap.last if snap is not None else 0.0) or 0.0
+    current_price = (snap.price if snap else 0.0) or 0.0
 
     # 3) 技术因子（仅技术层，HK 无基本面/宏观对接）
     if df is not None and not df.empty:

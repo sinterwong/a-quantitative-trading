@@ -218,50 +218,89 @@ class HKStockDataSource:
 
     def fetch_history(self, days: int = 5, freq: str = 'day') -> pd.DataFrame:
         """
-        获取历史 K 线。
+        获取历史 K 线，优先腾讯，备灾新浪。
+
         freq: 'day' (日K) | '60'/'30'/'15'/'5'/'1' (分钟K)
 
         注意：新浪港股历史K线接口对部分标的返回 null，
-        此时返回空 DataFrame（需用 A 股或专有数据源补充）。
+        优先使用腾讯接口；腾讯也失败才降级新浪。
         """
-        code = self.symbol.replace('hk', '').upper()
-        url = (
-            f'https://money.finance.sina.com.cn/quotes_service/api/json_v2.php'
-            f'/CN_MarketData.getKLineData'
-            f'?symbol=hk{code.lower()}'
-            f'&scale={freq}'
-            f'&ma=no&datalen={days}'
-        )
+        code = self.symbol.replace('hk', '').lower()
+
+        # ── 优先：腾讯日K（前复权）──────────────────────────────────────────
         try:
+            from datetime import date, timedelta
+            end_dt = date.today().strftime('%Y-%m-%d')
+            start_dt = (date.today() - timedelta(days=days * 2)).strftime('%Y-%m-%d')
+            url = (
+                f'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get'
+                f'?_var=kline_dayqfq&param=hk{code},day,{start_dt},{end_dt},{days},qfq'
+            )
             headers = {'User-Agent': 'Mozilla/5.0'}
             resp = requests.get(url, headers=headers, timeout=10)
             raw = resp.text.strip()
-            # 新浪对港股常返回 'null'（字符串）
+            if raw and '=' in raw:
+                import json as _json
+                j = _json.loads(raw[raw.index('=') + 1:])
+                day_key = None
+                for k in ['day', 'qfqday']:
+                    if k in j.get('data', {}).get(f'hk{code}', {}):
+                        day_key = k
+                        break
+                if day_key:
+                    bars = j['data'][f'hk{code}'][day_key]
+                    rows = []
+                    for bar in bars:
+                        if isinstance(bar, list) and len(bar) >= 6:
+                            rows.append({
+                                'day':    bar[0],
+                                'open':   float(bar[1]),
+                                'high':   float(bar[3]),
+                                'low':    float(bar[4]),
+                                'close':  float(bar[2]),
+                                'volume': float(bar[5]),
+                            })
+                    if rows:
+                        df = pd.DataFrame(rows)
+                        df['day'] = pd.to_datetime(df['day'])
+                        df = df.set_index('day').sort_index()
+                        # 取最近 days 条
+                        return df.tail(days).reset_index()
+        except Exception as e:
+            print(f"[HKStock] Tencent history fetch error for {self.symbol}: {e}")
+
+        # ── 备灾：新浪港股历史K线 ───────────────────────────────────────────
+        try:
+            url = (
+                f'https://money.finance.sina.com.cn/quotes_service/api/json_v2.php'
+                f'/CN_MarketData.getKLineData'
+                f'?symbol=hk{code}&scale={freq}&ma=no&datalen={days}'
+            )
+            resp = requests.get(url, headers=headers, timeout=10)
+            raw = resp.text.strip()
             if raw == 'null' or raw == '' or raw.startswith('null'):
                 print(f"[HKStock] Sina HK history unavailable for {self.symbol} (returned null)")
                 return pd.DataFrame()
             data = resp.json()
             if not data or not isinstance(data, list):
-                print(f"[HKStock] No history data for {self.symbol}, freq={freq}")
                 return pd.DataFrame()
-
             rows = []
             for bar in data:
                 if not isinstance(bar, dict):
                     continue
                 rows.append({
-                    'day': bar.get('day'),
-                    'open': float(bar.get('open', 0)),
-                    'high': float(bar.get('high', 0)),
-                    'low': float(bar.get('low', 0)),
-                    'close': float(bar.get('close', 0)),
+                    'day':    bar.get('day'),
+                    'open':   float(bar.get('open', 0)),
+                    'high':   float(bar.get('high', 0)),
+                    'low':    float(bar.get('low', 0)),
+                    'close':  float(bar.get('close', 0)),
                     'volume': float(bar.get('volume', 0)),
                 })
             df = pd.DataFrame(rows)
             if not df.empty:
                 df['day'] = pd.to_datetime(df['day'])
                 df = df.set_index('day').sort_index()
-            return df
+            return df.reset_index()
         except Exception as e:
             print(f"[HKStock] fetch_history error for {self.symbol}: {e}")
             return pd.DataFrame()
