@@ -12,7 +12,6 @@ akshare 实测稳定性差,只在无替代方案的数据类型上保留:
 from __future__ import annotations
 
 import logging
-from typing import Dict, Optional
 
 import pandas as pd
 

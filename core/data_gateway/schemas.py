@@ -11,7 +11,6 @@ data_gateway.merge 维护的旁路记录。这避免数据类知道数据源。
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
 
 
 @dataclass

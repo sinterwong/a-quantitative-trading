@@ -19,7 +19,6 @@ import logging
 import random
 import re
 import threading
-import time
 from typing import Any, Dict, Optional, Union
 
 import requests
