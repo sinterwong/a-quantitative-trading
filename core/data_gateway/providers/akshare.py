@@ -418,6 +418,10 @@ class AkshareProvider(Provider):
         quarterly = quarterly[~quarterly.index.duplicated(keep="last")]
 
         # 年频 → 日频（前向填充）
+        #
+        # 经济假设：最新一期年报覆盖整个自然年，1 个数据点复制 252 个交易日。
+        # 这适合趋势类因子（ROE/EPS 趋势），但不适合事件驱动类因子——
+        # 真实场景中年报发布后数据应立即更新，这是当前实现的已知局限。
         start_dt = pd.Timestamp(start) if start else quarterly.index.min()
         end_dt = pd.Timestamp(end) if end else pd.Timestamp.now()
         daily_idx = pd.bdate_range(start=start_dt, end=end_dt)

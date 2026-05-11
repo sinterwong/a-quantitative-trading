@@ -455,8 +455,24 @@ def analyze_hk_share(req: AnalysisRequest) -> AnalysisReport:
     try:
         from core.data_gateway import get_gateway
         fund = get_gateway().fundamentals(sym)
-        if fund and (fund.eps_ttm > 0 or fund.roe_ttm > 0 or fund.pe_ttm > 0
-                     or fund.revenue_yoy != 0 or fund.profit_yoy != 0):
+
+        # 区分"有 YoY 增长数据"和"只有绝对值"两种情况
+        has_yoy_data = (
+            (fund.revenue_yoy or 0) != 0
+            or (fund.profit_yoy or 0) != 0
+        )
+        has_absolute_data = (
+            fund.eps_ttm > 0 or fund.roe_ttm > 0
+            or fund.pe_ttm > 0 or fund.pb > 0
+        )
+
+        if fund and (has_yoy_data or has_absolute_data):
+            note = 'PE/PB 来自 AkShare 财报（腾讯 88 字段已在 snapshot 中）'
+            if has_yoy_data and not has_absolute_data:
+                note += ' | 仅 YoY 数据，绝对估值指标为空'
+            elif has_absolute_data and not has_yoy_data:
+                note += ' | 仅绝对估值指标，YoY 增长数据为空'
+
             report.fundamentals = {
                 'pe_ttm': fund.pe_ttm or _safe_float(None),
                 'pb': fund.pb or _safe_float(None),
@@ -466,8 +482,10 @@ def analyze_hk_share(req: AnalysisRequest) -> AnalysisReport:
                 'profit_yoy': fund.profit_yoy or _safe_float(None),
                 'dividend_yield': fund.dividend_yield or _safe_float(None),
                 'as_of_date': str(fund.timestamp.date()) if fund.timestamp else None,
-                'note': 'PE/PB 来自 AkShare 财报（腾讯 88 字段已在 snapshot 中）',
+                'note': note,
             }
+        elif fund:
+            report.warnings.append('hk_fundamentals_limited: only_zero_metrics available')
         else:
             report.warnings.append('hk_fundamentals_unavailable')
     except Exception as exc:
