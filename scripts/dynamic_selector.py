@@ -510,7 +510,11 @@ class DynamicStockSelectorV2:
                 elif std_sym.startswith('sz'):
                     code = std_sym[2:]
                     market = 'SZ'
+                elif std_sym.startswith('hk'):
+                    code = std_sym[2:]
+                    market = 'HK'
                 else:
+                    # 兜底：无法识别时保留原样
                     code = std_sym
                     market = 'SH'
                 result.append({

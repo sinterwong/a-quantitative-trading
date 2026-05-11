@@ -40,29 +40,6 @@ __all__ = [
 # ─── 统一行情数据类 ──────────────────────────────────────────────────────────
 
 
-# 字段来源优先级：同名字段，哪个源的数据更可靠就优先取谁
-# 数值越大优先级越高
-_FIELD_PRIORITY: Dict[str, int] = {
-    # 价格/涨跌：两家都有，按 accuracy 选（这里统一给 1，两源等价）
-    'price': 1, 'prev_close': 1, 'open': 1, 'high': 1, 'low': 1,
-    'change': 1, 'pct_change': 1,
-    # 成交相关：腾讯更完整，优先腾讯
-    'amount': 2, 'volume': 1, 'turnover_rate': 2, 'volume_ratio': 2,
-    'avg_price': 1,
-    # 盘口：腾讯有完整五档，新浪没有；优先腾讯
-    'bid1_price': 2, 'bid1_vol': 2, 'ask1_price': 2, 'ask1_vol': 2,
-    # 基本面：腾讯字段更全，优先腾讯
-    'pe_ttm': 2, 'pb': 2, 'dividend_yield': 2,
-    'market_cap': 2, 'float_cap': 2,
-    # 限制/振幅：腾讯有，新浪无
-    'limit_up': 2, 'limit_down': 2, 'amplitude': 2,
-    # 52w：腾讯有，新浪无
-    'high_52w': 2, 'low_52w': 2,
-    # 元数据
-    'currency': 1, 'timestamp': 1,
-}
-
-
 def _default_for_field(field_name: str):
     """返回各字段的默认值（用于判断是否真的"无数据"）"""
     return '' if field_name in ('currency', 'timestamp', 'symbol', 'name', 'code', 'market') else 0.0
@@ -196,10 +173,13 @@ class QuoteData:
             result_fields[fname] = chosen
             result_sources[fname] = chosen_src
 
-        # symbol / market / source 以 self 为准
+        # symbol / market 以 self 为准；source 标注主次来源（不用累积字符串）
         result_fields['symbol'] = self.symbol or other.symbol
         result_fields['market'] = self.market or other.market
-        result_fields['source'] = f"{priority}+{other.source}" if self.source != other.source else self.source
+        if self.source and other.source and self.source != other.source:
+            result_fields['source'] = f"{priority}({self._get_origin()})+{other.source}"
+        else:
+            result_fields['source'] = self.source or other.source or priority
 
         merged = QuoteData(**result_fields)
         merged._field_sources = result_sources
@@ -208,6 +188,23 @@ class QuoteData:
     def field_source(self, field_name: str) -> str:
         """查询某个字段的数据来源（未记录则返回 self.source）"""
         return self._field_sources.get(field_name, self.source)
+
+    def _get_origin(self) -> str:
+        """
+        从 source 字符串提取"原始单一来源"标识。
+
+        source 可能是：
+          - 单一来源:  'tencent'             → 返回 'tencent'
+          - 合并来源:  'tencent(sina)+sina'  → 返回 'sina'（括号内是备源）
+
+        用于 merge() 中避免 source 字符串无限嵌套累积。
+        """
+        src = self.source or ''
+        lpar = src.rfind('(')
+        rpar = src.rfind(')')
+        if lpar >= 0 and rpar >= 0 and rpar > lpar:
+            return src[lpar + 1:rpar]
+        return src
 
 
 # ─── 板块数据类 ──────────────────────────────────────────────────────────────

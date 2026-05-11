@@ -18,7 +18,6 @@ eastmoney_sector_source.py — 东方财富板块数据源
 设计原则：
   - 封禁感知：对 ConnectionResetError / RemoteDisconnected / BrokenPipeError
     直接返回空列表，不重试（封禁期间重试无意义，只会在每个板块浪费 3×7s）
-  - 熔断器：连续 3 次失败后冷却 120s
   - 文件缓存：板块排名缓存 1 小时，避免每次爬取
   - 标准化输出：统一 SectorData / SectorConstituentData 格式
 
@@ -98,7 +97,11 @@ def _get(bk_code: str) -> Optional[dict]:
         text = resp.text
         # JSONP 回调格式: jQueryxxx({...})
         if text.startswith('jQuery'):
-            text = text[text.index('(') + 1: text.rindex(')')]
+            try:
+                text = text[text.index('(') + 1: text.rindex(')')]
+            except ValueError:
+                logger.warning("[EM] JSONP 解析失败，响应格式不符预期: %s", text[:100])
+                return None
         return json.loads(text)
     except (ConnectionResetError, RemoteDisconnected) as e:
         logger.warning("[EM] 网络层错误（疑似封禁）: %s — %s", bk_code, e)
@@ -138,8 +141,7 @@ class EastmoneySectorSource:
     name: str = 'eastmoney_sector'
 
     def __init__(self):
-        self._session = requests.Session()
-        self._session.headers.update(_HEADERS)
+        pass
 
     def fetch_sector_rankings(self, limit: int = 100) -> List[SectorData]:
         """
