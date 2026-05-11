@@ -71,10 +71,9 @@ class AkshareProvider(Provider):
         return pd.DataFrame()
 
     def fetch_fundamentals(self, symbol: str) -> Optional[Fundamentals]:
-        """从 stock_financial_abstract 提取基本面快照。
+        """从 stock_financial_abstract（A股）或 stock_hk_financial_indicator_em（港股）提取基本面快照。
 
-        akshare 1.18.60 财报摘要接口不含 PE/PB，pe_ttm/pb 留 0，
-        由 gateway 层通过腾讯实时行情补充（见 gateway.fundamentals()）。
+        pe_ttm/pb 由 gateway 层通过腾讯实时行情补充（见 gateway.fundamentals()）。
         """
         try:
             import akshare as ak
@@ -82,6 +81,111 @@ class AkshareProvider(Provider):
             logger.debug("akshare 未安装,跳过 fundamentals 请求")
             return None
 
+        # 区分 A 股和港股
+        if self._is_hk_symbol(symbol):
+            return self._fetch_hk_fundamentals(symbol, ak)
+
+        # A 股路径（原逻辑）
+        return self._fetch_a_share_fundamentals(symbol, ak)
+
+    def _is_hk_symbol(self, symbol: str) -> bool:
+        """判断是否为港股代码。"""
+        s = symbol.strip().upper()
+        return (
+            s.startswith("HK")
+            or s.endswith(".HK")
+            or s.startswith("HK:")
+            or (s.isdigit() and len(s) <= 5)
+        )
+
+    def _fetch_hk_fundamentals(self, symbol: str, ak) -> Optional[Fundamentals]:
+        """通过 stock_hk_financial_indicator_em 获取港股基本面快照。"""
+        # 提取纯数字代码（akshare HK 接口不接受 HK:/hk 前缀）
+        code = self._normalize_hk_code(symbol)
+
+        try:
+            raw = ak.stock_hk_financial_indicator_em(symbol=code)
+            if raw is None or raw.empty:
+                return None
+        except Exception as exc:
+            raise ProviderError(f"akshare._fetch_hk_fundamentals({symbol}): {exc}") from exc
+
+        if len(raw) == 0:
+            return None
+
+        row = raw.iloc[0]
+
+        def gv(col: str, default: float = 0.0) -> float:
+            try:
+                v = row[col]
+                if v is None:
+                    return default
+                f = float(v)
+                return f if f == f else default
+            except (TypeError, ValueError):
+                return default
+
+        # 字段映射（均来自 stock_hk_financial_indicator_em）
+        eps_ttm = gv("基本每股收益(元)")
+        bps = gv("每股净资产(元)")
+        roe_ttm = gv("股东权益回报率(%)")
+        revenue_ttm = gv("营业总收入", 0.0)
+        profit_ttm = gv("净利润", 0.0)
+        revenue_qoq = gv("营业总收入滚动环比增长(%)")
+        profit_qoq = gv("净利润滚动环比增长(%)")
+        pe_ttm = gv("市盈率")
+        pb = gv("市净率")
+        dividend_yield = gv("股息率TTM(%)", 0.0)
+
+        # 有意义的数据才返回
+        if eps_ttm <= 0 and roe_ttm <= 0 and profit_ttm == 0:
+            return None
+
+        return Fundamentals(
+            symbol=symbol,
+            name=str(row.get("简称", row.get("SECURITY_NAME_ABBR", ""))),
+            eps_ttm=eps_ttm,
+            bps=bps,
+            roe_ttm=roe_ttm,
+            revenue_ttm=revenue_ttm,
+            profit_ttm=profit_ttm,
+            revenue_yoy=revenue_qoq,
+            profit_yoy=profit_qoq,
+            pe_ttm=pe_ttm,
+            pb=pb,
+            dividend_yield=dividend_yield,
+            # 以下字段本接口不可得
+            pe_static=0.0,
+            ps_ttm=0.0,
+            ocf_to_profit=0.0,
+            market_cap=0.0,
+            float_cap=0.0,
+            industry="",
+            sector="",
+            timestamp=pd.Timestamp.now(),
+        )
+
+    @staticmethod
+    def _normalize_hk_code(symbol: str) -> str:
+        """将各类港股代码格式统一为 5 位带前导零的纯数字（akshare HK 接口格式）。
+
+        akshare stock_hk_* 接口只认 5 位带前导零的代码（如 "00700"），
+        不接受 hk00700 / HK:00700 / 00700.HK / 700 等格式。
+        """
+        s = symbol.strip().upper()
+        # 剥掉市场前缀
+        for prefix in ("HK:", "HK"):
+            if s.startswith(prefix):
+                s = s[len(prefix):]
+                break
+        # 剥掉 .HK 后缀
+        if s.endswith(".HK"):
+            s = s[:-3]
+        # 补前导零到 5 位（港股代码固定 5 位）
+        return s.zfill(5)
+
+    def _fetch_a_share_fundamentals(self, symbol: str, ak) -> Optional[Fundamentals]:
+        """通过 stock_financial_abstract 获取 A 股基本面快照。"""
         try:
             code = symbol.replace(".SH", "").replace(".SZ", "").replace(".", "")
             raw = ak.stock_financial_abstract(symbol=code)
@@ -95,7 +199,6 @@ class AkshareProvider(Provider):
             return None
         latest_col = raw.columns[2]
 
-        # 按 [选项, 指标] 双键查找值
         def get_val(option: str, indicator: str, default: float = 0.0) -> float:
             rows = raw[(raw["选项"] == option) & (raw["指标"] == indicator)]
             if rows.empty:
@@ -114,7 +217,7 @@ class AkshareProvider(Provider):
         revenue_yoy = get_val("成长能力", "营业总收入增长率", 0.0)
         profit_yoy = get_val("成长能力", "归属母公司净利润增长率", 0.0)
 
-        # OCF/净利润（现金流质量）= 经营现金流量净额 / 归母净利润
+        # OCF/净利润（现金流质量）
         ocf_net = get_val("常用指标", "经营现金流量净额", 0.0)
         if profit_ttm > 0:
             ocf_to_profit = ocf_net / profit_ttm
@@ -123,7 +226,7 @@ class AkshareProvider(Provider):
 
         # 报告期
         try:
-            period_str = str(latest_col).strip()  # e.g. "20260331"
+            period_str = str(latest_col).strip()
             report_ts = pd.Timestamp(
                 year=int(period_str[:4]), month=int(period_str[4:6]), day=1
             )
@@ -131,7 +234,6 @@ class AkshareProvider(Provider):
             report_ts = pd.Timestamp.now()
 
         if eps_ttm <= 0 and roe_ttm <= 0:
-            # 无可用财务数据
             return None
 
         return Fundamentals(
@@ -146,6 +248,14 @@ class AkshareProvider(Provider):
             ocf_to_profit=ocf_to_profit,
             pe_ttm=0.0,   # 腾讯实时行情补充，见 gateway.fundamentals()
             pb=0.0,       # 腾讯实时行情补充，见 gateway.fundamentals()
+            pe_static=0.0,
+            ps_ttm=0.0,
+            bps=0.0,
+            dividend_yield=0.0,
+            market_cap=0.0,
+            float_cap=0.0,
+            industry="",
+            sector="",
             timestamp=report_ts,
         )
 
@@ -199,16 +309,23 @@ class AkshareProvider(Provider):
     def fetch_fundamentals_history(
         self, symbol: str, start: str | None = None, end: str | None = None,
     ) -> pd.DataFrame:
-        """从 stock_financial_analysis_indicator_em 获取财务历史，转换为日频 DataFrame。
+        """从 stock_financial_analysis_indicator_em（A 股）或
+        stock_financial_hk_analysis_indicator_em（港股）获取财务历史时序。
 
-        列映射：
-          ROEJQ            → roe_ttm      （加权 ROE，%）
-          EPSJB            → eps_ttm      （每股收益 TTM，元/股）
-          NETPROFITRPHBZC  → profit_yoy   （净利润同比增长，%）
-          TOTALOPERATEREVE → _revenue     （营业总收入，用于自算营收 YoY）
+        列映射（A股）：
+          ROEJQ            → roe_ttm
+          EPSJB            → eps_ttm
+          NETPROFITRPHBZC  → profit_yoy
+          TOTALOPERATEREVE → _revenue（自算营收 YoY）
+
+        列映射（港股）：
+          ROE_AVG          → roe_ttm
+          EPS_TTM          → eps_ttm
+          HOLDER_PROFIT_YOY → profit_yoy
+          OPERATE_INCOME_YOY → revenue_yoy
 
         注意：pe_ttm / pb / ocf_to_profit / holder_num 在此数据源中不可得，
-        对应因子将降级为零，这是已知数据层限制。
+        对应因子在 financial_data 缺失这些字段时返回零值，这是已知数据层限制。
         """
         try:
             import akshare as ak
@@ -216,6 +333,90 @@ class AkshareProvider(Provider):
             logger.debug("akshare 未安装,跳过 fundamentals_history 请求")
             return pd.DataFrame()
 
+        if self._is_hk_symbol(symbol):
+            return self._fetch_hk_fundamentals_history(symbol, ak, start, end)
+        return self._fetch_a_share_fundamentals_history(symbol, ak, start, end)
+
+    def _fetch_hk_fundamentals_history(
+        self, symbol: str, ak, start: str | None, end: str | None,
+    ) -> pd.DataFrame:
+        """通过 stock_financial_hk_analysis_indicator_em 获取港股财务历史（年频）。"""
+        code_raw = symbol.upper()
+        code = self._normalize_hk_code(code_raw)
+
+        try:
+            df = ak.stock_financial_hk_analysis_indicator_em(symbol=code)
+        except Exception as exc:
+            raise ProviderError(
+                f"akshare._fetch_hk_fundamentals_history({symbol}): {exc}"
+            ) from exc
+
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        return self._normalize_hk_indicator_em(df, start, end)
+
+    @staticmethod
+    def _normalize_hk_indicator_em(
+        df: pd.DataFrame, start: str | None, end: str | None,
+    ) -> pd.DataFrame:
+        """将 stock_financial_hk_analysis_indicator_em DataFrame 标准化为日频时序。"""
+        import numpy as np
+
+        df = df.copy()
+
+        # 优先使用 REPORT_DATE，否则尝试 FISCAL_YEAR
+        date_col = None
+        for col in ("REPORT_DATE", "FISCAL_YEAR", "START_DATE"):
+            if col in df.columns:
+                date_col = col
+                break
+        if date_col is None:
+            return pd.DataFrame()
+
+        df.index = pd.to_datetime(df[date_col], errors="coerce")
+        df = df[~df.index.isna()].sort_index()
+        if df.empty:
+            return pd.DataFrame()
+
+        result = {}
+
+        # ROE（%，年频加权）
+        if "ROE_AVG" in df.columns:
+            result["roe_ttm"] = pd.to_numeric(df["ROE_AVG"], errors="coerce")
+
+        # EPS TTM（元/股）
+        if "EPS_TTM" in df.columns:
+            result["eps_ttm"] = pd.to_numeric(df["EPS_TTM"], errors="coerce")
+
+        # 归母净利润 YoY（AkShare 直接提供）
+        if "HOLDER_PROFIT_YOY" in df.columns:
+            result["profit_yoy"] = pd.to_numeric(df["HOLDER_PROFIT_YOY"], errors="coerce")
+
+        # 营收 YoY（AkShare 直接提供）
+        if "OPERATE_INCOME_YOY" in df.columns:
+            result["revenue_yoy"] = pd.to_numeric(df["OPERATE_INCOME_YOY"], errors="coerce")
+
+        if not result:
+            return pd.DataFrame()
+
+        quarterly = pd.DataFrame(result).sort_index()
+        quarterly = quarterly[~quarterly.index.duplicated(keep="last")]
+
+        # 年频 → 日频（前向填充）
+        start_dt = pd.Timestamp(start) if start else quarterly.index.min()
+        end_dt = pd.Timestamp(end) if end else pd.Timestamp.now()
+        daily_idx = pd.bdate_range(start=start_dt, end=end_dt)
+
+        daily = quarterly.reindex(daily_idx)
+        daily = daily.ffill()
+
+        return daily
+
+    def _fetch_a_share_fundamentals_history(
+        self, symbol: str, ak, start: str | None, end: str | None,
+    ) -> pd.DataFrame:
+        """从 stock_financial_analysis_indicator_em 获取 A 股财务历史，转换为日频 DataFrame。"""
         code_raw = symbol.upper()
         if not code_raw.endswith((".SH", ".SZ")):
             code_raw = code_raw + ".SH"
