@@ -49,6 +49,18 @@ jobs:
           print(f'compiled {len(out)} files')
           PY
 
+      - name: Guard — 旧 data_source 模块禁止回流
+        run: |
+          # 这些模块已迁移到 core/data_gateway/providers/*,任何 import 都意味着
+          # 引入了应通过 gateway 走的网络出口。一旦命中就 CI 失败。
+          # 锚定行首(允许缩进),避免匹配到文档字符串里的描述性文字
+          if grep -rnE '^\s*(from\s+core\.(quote_data_source|quote_source_manager|tencent_quote_source|sina_quote_source|eastmoney_sector_source|hk_data_source|symbol_utils)|import\s+core\.(quote_data_source|quote_source_manager|tencent_quote_source|sina_quote_source|eastmoney_sector_source|hk_data_source|symbol_utils))' \
+              --include='*.py' core/ backend/ scripts/ tests/ ; then
+            echo "ERROR: 禁止 import 已删除的旧数据源模块。请改用 core.data_gateway。"
+            exit 1
+          fi
+          echo "OK: 无旧 data_source 模块回流"
+
       - name: Flake8 lint (core modules — errors only, E/W 级别)
         run: |
           # 只检查 core/ 新增模块，忽略行长(E501)和复杂度警告

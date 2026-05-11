@@ -430,9 +430,8 @@ class _TencentMarketSource(DataSource):
             return self._cache
 
         try:
-            from core.tencent_quote_source import TencentQuoteDataSource
-            src = TencentQuoteDataSource(cache_ttl=30)
-            q = src.fetch_quote(self.symbol)
+            from core.data_gateway import get_gateway
+            q = get_gateway().quote(self.symbol)
             if q and q.is_valid:
                 result = {
                     'symbol': self.symbol,
@@ -440,7 +439,7 @@ class _TencentMarketSource(DataSource):
                     'close': q.price,
                     'prev_close': q.prev_close,
                     'change_pct': q.pct_change,
-                    'source': 'tencent',
+                    'source': 'gateway',
                 }
                 self._cache = result
                 self._cache_time = now
@@ -452,9 +451,8 @@ class _TencentMarketSource(DataSource):
 
     def fetch_history(self, days: int = 5) -> pd.DataFrame:
         try:
-            from core.tencent_quote_source import TencentQuoteDataSource
-            src = TencentQuoteDataSource()
-            return src.fetch_kline(self.symbol, period="day", limit=days)
+            from core.data_gateway import get_gateway
+            return get_gateway().kline(self.symbol, interval="daily", days=days)
         except Exception as e:
             logger.debug("[_TencentMarketSource] fetch_history failed for %s: %s", self.symbol, e)
             return pd.DataFrame()

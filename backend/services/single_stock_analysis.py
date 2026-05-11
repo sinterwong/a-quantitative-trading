@@ -410,9 +410,9 @@ def analyze_hk_share(req: AnalysisRequest) -> AnalysisReport:
     # 1) 港股实时快照（QuoteSourceManager 路由：腾讯主 → 新浪备）
     snap = None
     try:
-        from core.quote_source_manager import get_quote_manager
-        mgr = get_quote_manager()
-        q = mgr.fetch_quote(sym)
+        from core.data_gateway import get_gateway
+        mgr = get_gateway()
+        q = mgr.quote(sym)
         if q is not None and q.price > 0:
             snap = q
             report.snapshot = {
@@ -441,12 +441,11 @@ def analyze_hk_share(req: AnalysisRequest) -> AnalysisReport:
     except Exception as exc:
         report.warnings.append(f'hk_data_error: {exc}')
 
-    # 2) 历史日K（QuoteSourceManager 路由：腾讯主 → 新浪备）
+    # 2) 历史日K(data_gateway 自动路由 + failover)
     df = None
     try:
-        from core.quote_source_manager import get_quote_manager
-        mgr = get_quote_manager()
-        df = mgr.fetch_daily_kline(sym, days=max(req.lookback_days, 60), adjust='qfq')
+        from core.data_gateway import get_gateway
+        df = get_gateway().kline(sym, interval="daily", days=max(req.lookback_days, 60), adjust='qfq')
         if df is None or df.empty:
             report.warnings.append('hk_history_unavailable')
     except Exception as exc:

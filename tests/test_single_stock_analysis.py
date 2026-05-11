@@ -329,24 +329,23 @@ class TestAnalyzeAShare(unittest.TestCase):
 class TestAnalyzeHkShare(unittest.TestCase):
 
     def _make_quote(self):
-        from core.quote_data_source import QuoteData
-        return QuoteData(
+        from core.data_gateway.schemas import Quote
+        return Quote(
             symbol='hk00700', name='腾讯控股', market='HK',
             price=350.0, open=348.0, high=352.0, low=346.0, prev_close=347.0,
             change=3.0, pct_change=0.86, volume=1_000_000, amount=350_000_000.0,
             high_52w=400.0, low_52w=280.0, market_cap=3_300_000_000_000.0,
-            source='tencent',
         )
 
     def test_normalizes_symbol(self):
         from backend.services import single_stock_analysis as ssa
         from backend.services.single_stock_analysis import AnalysisRequest
 
-        fake_mgr = MagicMock()
-        fake_mgr.fetch_quote = MagicMock(return_value=self._make_quote())
-        fake_mgr.fetch_daily_kline = MagicMock(return_value=pd.DataFrame())
+        fake_gw = MagicMock()
+        fake_gw.quote = MagicMock(return_value=self._make_quote())
+        fake_gw.kline = MagicMock(return_value=pd.DataFrame())
 
-        with patch('core.quote_source_manager.get_quote_manager', return_value=fake_mgr):
+        with patch('core.data_gateway.get_gateway', return_value=fake_gw):
             req = AnalysisRequest(symbol='HK:00700', include_regime=True)
             report = ssa.analyze_hk_share(req)
 
@@ -359,11 +358,11 @@ class TestAnalyzeHkShare(unittest.TestCase):
         from backend.services import single_stock_analysis as ssa
         from backend.services.single_stock_analysis import AnalysisRequest
 
-        fake_mgr = MagicMock()
-        fake_mgr.fetch_quote = MagicMock(return_value=self._make_quote())
-        fake_mgr.fetch_daily_kline = MagicMock(return_value=pd.DataFrame())
+        fake_gw = MagicMock()
+        fake_gw.quote = MagicMock(return_value=self._make_quote())
+        fake_gw.kline = MagicMock(return_value=pd.DataFrame())
 
-        with patch('core.quote_source_manager.get_quote_manager', return_value=fake_mgr):
+        with patch('core.data_gateway.get_gateway', return_value=fake_gw):
             req = AnalysisRequest(symbol='HK:00700')
             report = ssa.analyze_hk_share(req)
 

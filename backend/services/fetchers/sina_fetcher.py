@@ -61,13 +61,13 @@ class SinaFetcher(BaseFetcher):
         """
         通过新浪财经接口获取日线历史数据。
 
-        委托给 core.sina_quote_source.SinaQuoteDataSource 统一处理。
+        统一走 data_gateway,gateway 自动路由到 SinaProvider(若失败会
+        failover 到 TencentProvider,行为与原 fetcher 链对等)。
         """
         self._rate_limit_sleep()
 
-        from core.sina_quote_source import get_sina_source
-        src = get_sina_source()
-        df = src.fetch_daily_kline(stock_code, days=6000)
+        from core.data_gateway import get_gateway
+        df = get_gateway().kline(stock_code, interval="daily", days=6000)
 
         if df.empty:
             raise DataFetchError(

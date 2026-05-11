@@ -128,51 +128,75 @@ class TestGlobalRegistry(unittest.TestCase):
         self.assertEqual(states['a'], 'closed')
 
 
-class TestQuoteSourceManagerIntegration(unittest.TestCase):
-    """QuoteSourceManager 熔断器集成验证。"""
+class TestDataGatewayBreakerIntegration(unittest.TestCase):
+    """DataGateway 与 circuit_breaker 集成验证。"""
 
     def setUp(self):
         from core.circuit_breaker import _REGISTRY, reset_all
         reset_all()
         _REGISTRY.clear()
 
-    def test_short_circuit_when_open(self):
-        """熔断器 open 时，QuoteSourceManager 跳过该源，返回空结果"""
-        from core.quote_source_manager import QuoteSourceManager
+    def test_open_breaker_filters_provider(self):
+        """熔断器 open 时,gateway._candidates_for 不再返回该 provider。"""
+        from core.data_gateway.capabilities import Capability, Market
+        from core.data_gateway.gateway import DataGateway
+        from core.data_gateway.health import HealthTracker
+        from core.data_gateway.providers.base import Provider
+        from core.data_gateway.capabilities import ProviderCapability
         from core.circuit_breaker import get_breaker
 
+        class _P(Provider):
+            name = "p_open"
+            def declare(self):
+                return ProviderCapability(
+                    capabilities=frozenset({Capability.QUOTE}),
+                    markets=frozenset({Market.A}),
+                    priority_hint=0.8,
+                )
+
+        gw = DataGateway(health=HealthTracker(warmup_count=1))
+        gw.register_provider(_P())
+
         # 手动触发熔断
-        cb = get_breaker('tencent_quote', failure_threshold=2, cooldown_seconds=10.0)
+        cb = get_breaker('gw_p_open_quote', failure_threshold=2, cooldown_seconds=10.0)
         cb.on_failure()
         cb.on_failure()
         self.assertEqual(cb.state(), 'open')
 
-        mgr = QuoteSourceManager()
-        # US 市场只有 tencent，无 sina 备源，tencent 熔断后应返回 None
-        result = mgr.fetch_quote('usAAPL')
-        self.assertIsNone(result)
+        # candidates 应为空
+        cands = gw._candidates_for(Capability.QUOTE, Market.A)
+        self.assertEqual(cands, [])
 
-    def test_failure_recorded_into_breaker(self):
-        """数据源异常应记录到熔断器"""
-        from core.quote_source_manager import QuoteSourceManager
+    def test_provider_error_records_to_breaker(self):
+        """provider 抛 ProviderError 时累计触发熔断。"""
+        from core.data_gateway.capabilities import (
+            Capability, Market, ProviderCapability,
+        )
+        from core.data_gateway.gateway import DataGateway
+        from core.data_gateway.health import HealthTracker
+        from core.data_gateway.providers.base import Provider, ProviderError
         from core.circuit_breaker import get_breaker
 
-        # 创建一个会抛异常的 mock 数据源
-        failing_source = type("FailingSource", (), {})()
-        failing_source.fetch_quote = lambda sym: (_ for _ in ()).throw(ConnectionError("boom"))
-        failing_source.fetch_quotes = lambda syms: (_ for _ in ()).throw(ConnectionError("boom"))
-        failing_source.fetch_daily_kline = lambda sym, days=120, adjust="qfq": (_ for _ in ()).throw(ConnectionError("boom"))
-        failing_source.fetch_minute_kline = lambda sym, period="15m", limit=100: (_ for _ in ()).throw(ConnectionError("boom"))
-        failing_source.supported_markets = lambda: ['A']
+        class _Failing(Provider):
+            name = "failing"
+            def declare(self):
+                return ProviderCapability(
+                    capabilities=frozenset({Capability.QUOTE}),
+                    markets=frozenset({Market.A}),
+                    priority_hint=0.8,
+                )
+            def fetch_quote(self, sym):
+                raise ProviderError("boom")
 
-        mgr = QuoteSourceManager(tencent=failing_source)
+        gw = DataGateway(health=HealthTracker(warmup_count=1))
+        gw.register_provider(_Failing())
+        cb = get_breaker(
+            "gw_failing_quote", failure_threshold=3, cooldown_seconds=10.0,
+        )
 
-        cb = get_breaker('tencent_quote', failure_threshold=3, cooldown_seconds=10.0)
-
-        # 触发 3 次失败
         for _ in range(3):
-            mgr.fetch_quote('sh510300')
-
+            gw.invalidate_cache()
+            gw.quote("sh510300")
         self.assertEqual(cb.state(), 'open')
 
 
