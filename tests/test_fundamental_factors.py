@@ -412,13 +412,13 @@ class TestFundamentalDataManager(unittest.TestCase):
         self.assertTrue(pd.api.types.is_datetime64_any_dtype(result.index))
 
     def test_invalidate_calls_gateway_clear(self):
-        """invalidate() 正确清除 gateway 缓存"""
+        """invalidate() 正确清除 gateway 缓存（符号级精确清除）"""
         from core.fundamental_data import FundamentalDataManager
         with patch('core.fundamental_data.get_gateway') as mock_gw:
             mgr = FundamentalDataManager()
             mgr.invalidate('000001.SZ')
 
-        mock_gw.return_value.invalidate_cache.assert_called_once()
+        mock_gw.return_value.invalidate_fundamentals_history.assert_called_once_with('000001.SZ')
 
 
 # ---------------------------------------------------------------------------

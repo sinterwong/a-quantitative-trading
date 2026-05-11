@@ -508,6 +508,18 @@ class DataGateway:
     def invalidate_cache(self) -> None:
         self._cache.clear()
 
+    def invalidate_fundamentals_history(self, symbol: str) -> None:
+        """清除指定标的的基本面历史缓存（精确清除，不影响其他标的缓存）。"""
+        # fundamentals_history 缓存键格式：fundamentals_history:{symbol}:{start}:{end}
+        # 用 prefix 匹配清除该标的所有变体缓存键
+        prefix = f"fundamentals_history:{symbol}:"
+        self._cache._store.pop(prefix, None)  # exact match (no start/end)
+        # 清除所有以该 prefix 开头的键（不同 start/end 组合）
+        with self._cache._lock:
+            to_remove = [k for k in self._cache._store if k.startswith(prefix)]
+            for k in to_remove:
+                self._cache._store.pop(k, None)
+
 
 # ─── 默认注册 + 单例 ──────────────────────────────────────────────────────────
 

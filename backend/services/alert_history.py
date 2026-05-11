@@ -58,6 +58,7 @@ def init_alerts():
             )
         """)
         # ── Schema migrations（新增列兼容旧数据库）──────────────
+        # 精确区分"列已存在"（跳过）和其他错误（向上传播）
         for col, dtype in [
             ('type',        'TEXT NOT NULL DEFAULT "MANUAL"'),
             ('symbol',      'TEXT NOT NULL DEFAULT ""'),
@@ -69,8 +70,9 @@ def init_alerts():
         ]:
             try:
                 conn.execute(f"ALTER TABLE alerts ADD COLUMN {col} {dtype}")
-            except Exception:
-                pass  # column already exists
+            except Exception as exc:
+                if 'duplicate column' not in str(exc).lower():
+                    raise  # re-raise permission/disk/grammar errors
 
         # 索引加速查询（表/列不存在时跳过）
         for idx_sql in [

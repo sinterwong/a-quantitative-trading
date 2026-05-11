@@ -94,8 +94,8 @@ class FundamentalDataManager:
             return pd.DataFrame()
 
     def invalidate(self, symbol: str) -> None:
-        """清除指定标的的缓存（委托 DataGateway 清除）"""
+        """清除指定标的的缓存（委托 DataGateway 精确清除该标的基本面历史缓存）。"""
         try:
-            get_gateway().invalidate_cache()
+            get_gateway().invalidate_fundamentals_history(symbol)
         except Exception:
             pass

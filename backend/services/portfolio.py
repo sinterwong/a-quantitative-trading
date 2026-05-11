@@ -110,17 +110,19 @@ def init_db():
             )
         ''')
 
-        # Add slippage_bps column if upgrading from older schema (no migration needed)
+        # Add slippage_bps column if upgrading from older schema
         try:
             cur.execute('ALTER TABLE trades ADD COLUMN slippage_bps REAL')
-        except Exception:
-            pass  # column already exists
+        except Exception as exc:
+            if 'duplicate column' not in str(exc).lower():
+                raise
 
         # Add trade_id column if upgrading from older schema (pre-trade_id era)
         try:
             cur.execute("ALTER TABLE trades ADD COLUMN trade_id TEXT NOT NULL DEFAULT ''")
-        except Exception:
-            pass  # column already exists or other error
+        except Exception as exc:
+            if 'duplicate column' not in str(exc).lower():
+                raise
 
         # signals
         cur.execute('''
@@ -186,8 +188,9 @@ def init_db():
         ]:
             try:
                 cur.execute(f"ALTER TABLE orders ADD COLUMN {col} {dtype}")
-            except Exception:
-                pass  # column already exists
+            except Exception as exc:
+                if 'duplicate column' not in str(exc).lower():
+                    raise
 
         # Add columns to existing positions table if missing (migration)
         for col, dtype in [
@@ -196,8 +199,9 @@ def init_db():
         ]:
             try:
                 cur.execute(f'ALTER TABLE positions ADD COLUMN {col} {dtype}')
-            except Exception:
-                pass  # column already exists
+            except Exception as exc:
+                if 'duplicate column' not in str(exc).lower():
+                    raise
 
         # Add columns to existing daily_meta table if missing (migration)
         for col, dtype in [
@@ -210,8 +214,9 @@ def init_db():
         ]:
             try:
                 cur.execute(f"ALTER TABLE daily_meta ADD COLUMN {col} {dtype}")
-            except Exception:
-                pass  # column already exists
+            except Exception as exc:
+                if 'duplicate column' not in str(exc).lower():
+                    raise
 
 
 # ============================================================
