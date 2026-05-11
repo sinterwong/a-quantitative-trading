@@ -451,7 +451,47 @@ def analyze_hk_share(req: AnalysisRequest) -> AnalysisReport:
 
     current_price = (snap.price if snap else 0.0) or 0.0
 
-    # 3) 技术因子（仅技术层，HK 无基本面/宏观对接）
+    # 3) 基本面（营收/净利/ROE/Akshare 港股财报）
+    try:
+        from core.data_gateway import get_gateway
+        fund = get_gateway().fundamentals(sym)
+
+        # 区分"有 YoY 增长数据"和"只有绝对值"两种情况
+        has_yoy_data = (
+            (fund.revenue_yoy or 0) != 0
+            or (fund.profit_yoy or 0) != 0
+        )
+        has_absolute_data = (
+            fund.eps_ttm > 0 or fund.roe_ttm > 0
+            or fund.pe_ttm > 0 or fund.pb > 0
+        )
+
+        if fund and (has_yoy_data or has_absolute_data):
+            note = 'PE/PB 来自 AkShare 财报（腾讯 88 字段已在 snapshot 中）'
+            if has_yoy_data and not has_absolute_data:
+                note += ' | 仅 YoY 数据，绝对估值指标为空'
+            elif has_absolute_data and not has_yoy_data:
+                note += ' | 仅绝对估值指标，YoY 增长数据为空'
+
+            report.fundamentals = {
+                'pe_ttm': fund.pe_ttm or _safe_float(None),
+                'pb': fund.pb or _safe_float(None),
+                'roe_ttm': fund.roe_ttm or _safe_float(None),
+                'eps_ttm': fund.eps_ttm or _safe_float(None),
+                'revenue_yoy': fund.revenue_yoy or _safe_float(None),
+                'profit_yoy': fund.profit_yoy or _safe_float(None),
+                'dividend_yield': fund.dividend_yield or _safe_float(None),
+                'as_of_date': str(fund.timestamp.date()) if fund.timestamp else None,
+                'note': note,
+            }
+        elif fund:
+            report.warnings.append('hk_fundamentals_limited: only_zero_metrics available')
+        else:
+            report.warnings.append('hk_fundamentals_unavailable')
+    except Exception as exc:
+        report.warnings.append(f'hk_fundamentals_error: {exc}')
+
+    # 4) 技术因子（仅技术层，HK 无 Regime / 宏观）
     if df is not None and not df.empty:
         try:
             from core.factor_pipeline import FactorPipeline
@@ -501,7 +541,7 @@ def analyze_hk_share(req: AnalysisRequest) -> AnalysisReport:
     else:
         report.warnings.append('pipeline_skipped: no_history')
 
-    # 4) 风险指标
+    # 5) 风险指标
     if df is not None and not df.empty and current_price > 0:
         report.risk = _compute_risk_metrics(df, current_price)
     elif snap is not None and snap.high_52w and snap.low_52w:
