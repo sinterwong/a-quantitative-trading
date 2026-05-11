@@ -449,169 +449,110 @@ class DynamicStockSelectorV2:
         return []
 
     def fetch_sectors(self) -> List[Dict]:
-        """获取板块行情+资金流向，依次尝试：文件缓存 -> 东方财富 -> 失败"""
+        """获取板块行情+资金流向，通过 QuoteSourceManager 统一数据源"""
         if self._sectors_fetched and self.sectors_raw:
             return self.sectors_raw
 
-        # 1. 文件缓存（1小时内有效）
+        # 通过 QuoteSourceManager → EastmoneySectorSource 获取板块排名
+        try:
+            from core.quote_source_manager import get_quote_manager
+            sectors = get_quote_manager().fetch_sector_rankings(limit=100)
+            if sectors:
+                # 转换为原有 dict 格式（兼容现有 calc_sector_scores_from_bk）
+                self.sectors_raw = []
+                for s in sectors:
+                    self.sectors_raw.append({
+                        'f12': s.bk_code,
+                        'f14': s.name,
+                        'f3': s.change_pct,
+                        'f62': s.net_flow,
+                        'f20': s.amount,
+                        '_source': 'eastmoney',
+                    })
+                self._last_source = 'eastmoney'
+                _write_file_cache('sectors.json', self.sectors_raw)
+                self._sectors_fetched = True
+                _log('INFO', f'fetch_sectors: eastmoney ok ({len(self.sectors_raw)} sectors)')
+                return self.sectors_raw
+        except Exception as e:
+            _log('WARNING', f'fetch_sectors: QuoteSourceManager failed: {e}')
+
+        # 文件缓存兜底
         cached = _read_file_cache('sectors.json', max_age_seconds=3600)
         if cached:
             self.sectors_raw = cached
             self._sectors_fetched = True
             self._last_source = 'cache'
-            _log('INFO', 'fetch_sectors: using file cache (' + str(len(cached)) + ' sectors)')
+            _log('INFO', f'fetch_sectors: using file cache ({len(cached)} sectors)')
             return self.sectors_raw
 
-        # 2. 东方财富主数据源
-        url = (
-            'https://push2.eastmoney.com/api/qt/clist/get'
-            '?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3'
-            '&fs=m:90+t:2+f:!50'
-            '&fields=f2,f3,f4,f5,f6,f7,f12,f14,f62'
-        )
-        raw = get(url, {'Referer': 'https://quote.eastmoney.com/'})
-        if raw:
-            try:
-                data = json.loads(raw)
-                sectors = data.get('data', {}).get('diff', []) if isinstance(data.get('data'), dict) else []
-                if sectors:
-                    self.sectors_raw = sectors
-                    self._last_source = 'eastmoney'
-                    _write_file_cache('sectors.json', self.sectors_raw)
-                    self._sectors_fetched = True
-                    _log('INFO', 'fetch_sectors: eastmoney API ok (' + str(len(sectors)) + ' sectors)')
-                    return self.sectors_raw
-            except Exception as e:
-                _log('WARNING', 'fetch_sectors: eastmoney parse failed: ' + str(e))
-        else:
-            _log('WARNING', 'fetch_sectors: eastmoney API returned empty (rate limited or network error)')
-
-
-        # 3. Sina 财经板块数据（东方财富限流时的备用）
-        try:
-            import ssl as _ssl, urllib.request as _urllib, re as _re, json as _json
-            _ctx = _ssl.create_default_context()
-            _ctx.check_hostname = False
-            _ctx.verify_mode = _ssl.CERT_NONE
-            _sina_url = 'https://vip.stock.finance.sina.com.cn/q/view/newFLJK.php?param=class'
-            _req = _urllib.Request(_sina_url, headers={'User-Agent': 'Mozilla/5.0'})
-            with _urllib.urlopen(_req, context=_ctx, timeout=8) as _resp:
-                _raw = _resp.read().decode('gbk', errors='replace')
-            _m = _re.search(r'= ({.+?})', _raw, _re.DOTALL)
-            if _m:
-                _sina_data = _json.loads(_m.group(1))
-                _sina_sectors = []
-                for _k, _v in _sina_data.items():
-                    _parts = _v.split(',')
-                    if len(_parts) < 7:
-                        continue
-                    try:
-                        _change_pct = float(_parts[4])
-                    except (ValueError, IndexError):
-                        _change_pct = 0.0
-                    try:
-                        _amount = float(_parts[6])
-                    except (ValueError, IndexError):
-                        _amount = 0.0
-                    _synth_bk = 'SINA_' + _k.replace('gn_', 'GN')
-                    _sina_sectors.append({
-                        'f12': _synth_bk,
-                        'f14': _parts[1],
-                        'f3': _change_pct,
-                        'f6': _amount,
-                        'f62': 0,
-                        '_source': 'sina'
-                    })
-                if _sina_sectors:
-                    self.sectors_raw = _sina_sectors
-                    self._last_source = 'sina'
-                    _write_file_cache('sectors.json', self.sectors_raw)
-                    self._sectors_fetched = True
-                    _log('INFO', 'fetch_sectors: Sina ok (%d sectors)' % len(_sina_sectors))
-                    return self.sectors_raw
-        except Exception as _e:
-            _log('WARNING', 'fetch_sectors: Sina fallback failed: %s' % str(_e))
-
-        # 3. 无备用数据源，依赖文件缓存；标记失败状态
         self._sectors_fetched = True
         self._last_source = 'failed'
         _log('WARNING', 'fetch_sectors: all sources failed, returning empty list')
         return []
 
     def fetch_sector_constituents(self, bk_code: str, top_n: int = 5) -> List[Dict]:
-        """获取板块成分股（按涨幅排序，取前N），带实例缓存"""
-        # 缓存检查
+        """获取板块成分股（按涨幅排序，取前N），通过 QuoteSourceManager"""
         cache_key = f'{bk_code}:{top_n}'
         if cache_key in self._constituent_cache:
             return self._constituent_cache[cache_key]
-        
-        url = (
-            f'https://push2.eastmoney.com/api/qt/clist/get'
-            f'?pn=1&pz={top_n}&po=1&np=1&fltt=2&invt=2&fid=f3'
-            f'&fs=b:{bk_code}'
-            f'&fields=f2,f3,f4,f5,f6,f12,f14'
-        )
-        raw = get(url, {'Referer': 'https://quote.eastmoney.com/'})
-        if not raw:
-            return []
 
         try:
-            data = json.loads(raw)
-            items = data.get('data', {}).get('diff', []) if isinstance(data.get('data'), dict) else []
+            from core.quote_source_manager import get_quote_manager
+            constituents = get_quote_manager().fetch_sector_constituents(bk_code, limit=top_n)
             result = []
-            for item in items:
-                code = item.get('f12', '')
-                # 跳过指数（5位数代码）
-                if not code or len(code) != 6:
-                    continue
-                market = 'SH' if code.startswith(('6', '5')) else 'SZ'
+            for c in constituents:
+                std_sym = c.symbol
+                # 提取纯代码和交易所后缀
+                if std_sym.startswith('sh'):
+                    code = std_sym[2:]
+                    market = 'SH'
+                elif std_sym.startswith('sz'):
+                    code = std_sym[2:]
+                    market = 'SZ'
+                else:
+                    code = std_sym
+                    market = 'SH'
                 result.append({
                     'code': code,
                     'full_code': f'{code}.{market}',
-                    'name': item.get('f14', ''),
-                    'price': safe_float(item.get('f2')),
-                    'change_pct': safe_float(item.get('f3')),
-                    'amount': safe_float(item.get('f6')),
+                    'name': c.name,
+                    'price': c.price,
+                    'change_pct': c.change_pct,
+                    'amount': c.amount,
                 })
-            # 缓存结果
             self._constituent_cache[cache_key] = result
             return result
-        except Exception:
+        except Exception as e:
+            _log('WARNING', f'fetch_sector_constituents({bk_code}): {e}')
             return []
 
     def fetch_etf_price(self, code: str) -> Optional[Dict]:
-        """获取单只ETF/股票实时价格"""
-        # code: 512480.SH -> sh512480
+        """获取单只ETF/股票实时价格（通过 QuoteSourceManager 字段级合并）"""
+        # code: '512480.SH' → 'sh512480'
         if '.' in code:
             num, market = code.split('.', 1)
             qt_code = market.lower() + num
         else:
             qt_code = 'sh' + code
 
-        url = f'https://qt.gtimg.cn/q={qt_code}'
-        raw = get_gbk(url)
-        if not raw:
-            return None
-
         try:
-            for line in raw.strip().split(';'):
-                if '=' not in line:
-                    continue
-                fields = line.split('=')[1].strip().strip('"').split('~')
-                if len(fields) < 45:
-                    continue
+            from core.quote_source_manager import get_quote_manager
+            mgr = get_quote_manager()
+            q = mgr.fetch_quote(qt_code)
+            if q and q.is_valid:
                 return {
-                    'name': fields[1],
-                    'code': fields[2],
-                    'price': safe_float(fields[3]),
-                    'pre_close': safe_float(fields[4]),
-                    'open': safe_float(fields[5]),
-                    'volume': safe_int(fields[6]),
-                    'amount': safe_float(fields[36]),
-                    'high': safe_float(fields[33]),
-                    'low': safe_float(fields[34]),
-                    'change_pct': safe_float(fields[32]),
-                    'change': safe_float(fields[33]),
+                    'name': q.name,
+                    'code': q.code,
+                    'price': q.price,
+                    'pre_close': q.prev_close,
+                    'open': q.open,
+                    'volume': q.volume,
+                    'amount': q.amount,
+                    'high': q.high,
+                    'low': q.low,
+                    'change_pct': q.pct_change,
+                    'change': q.change,
                 }
         except Exception:
             pass
