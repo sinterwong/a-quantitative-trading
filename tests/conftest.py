@@ -1,153 +1,76 @@
 """
 conftest.py — pytest 全局 fixtures，测试数据库隔离。
 
-所有调用 portfolio.py / watchlist.py / alert_history.py 的测试
-统一使用 tempfile 里的空数据库，真实 portfolio.db 完全不受影响。
+策略：patch sqlite3.connect，所有访问 portfolio.db 的连接重定向到 temp file。
+不需要修改任何测试文件，不需要 importlib.reload，不需要 patch DB_PATH。
 
-覆盖范围（DB_PATH 统一劫持）：
-  backend.services.portfolio       — DB_PATH, get_db(), init_db()
-  backend.services.watchlist      — DB_PATH
-  backend.services.alert_history  — DB_PATH
-
-用法：
-  import pytest
-  class TestFoo:
-      @pytest.fixture(autouse=True)
-      def setup_portfolio_db(self, portfolio_db):
-          ...  # 你的 setUp；tearDown 由 fixture 自动处理
-
-  或无需 import，autouse 的 conftest 已在所有测试前生效。
+真实 portfolio.db 完全不受影响。
 """
 from __future__ import annotations
 
 import os
-import sys
+import sqlite3
 import tempfile
 import shutil
 import pytest
-import importlib
-
-THIS = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(THIS)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Session-level fixture — 整个 pytest 会话只创建一次 temp dir
+# Session-level — patch sqlite3.connect，拦截所有 portfolio.db 访问
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope='session', autouse=True)
 def _isolate_db_session():
     """
-    在任何测试运行前，把三个模块的 DB_PATH 全部指向 session-scoped temp dir。
-    测试结束后 shutil.rmtree 自动清理。
-    autouse=True 意味着无需在每个测试文件里 import。
+    在任何测试运行前，把 sqlite3.connect 劫持到 session-scoped temp file。
+    所有测试进程共享这一个隔离 DB，测试结束后自动清理。
     """
-    # 所有后续 import 都基于当前 sys.path，PROJECT_ROOT 已包含
-    sys.path.insert(0, ROOT)
-    sys.path.insert(0, os.path.join(ROOT, 'backend'))
+    _original_connect = sqlite3.connect
 
-    # 动态 import（避免顶层 import 提前绑定旧 DB_PATH）
-    ps_mod   = importlib.import_module('backend.services.portfolio')
-    wl_mod   = importlib.import_module('backend.services.watchlist')
-    ah_mod   = importlib.import_module('backend.services.alert_history')
+    # session-scoped temp dir
+    tmp_db = tempfile.mkdtemp(prefix='quant_test_db_')
+    tmp_db_file = os.path.join(tmp_db, 'portfolio.db')
 
-    # session-scoped temp dir，进程结束才清理
-    tmp_root = tempfile.mkdtemp(prefix='quant_test_db_')
+    def _patched_connect(path, *args, **kwargs):
+        """
+        所有 sqlite3.connect 调用都经过这里。
+        只要 path 包含 'portfolio.db' 就重定向到 temp file，
+        其他文件（其他 .db）正常连接。
+        """
+        path_str = str(path) if path is not None else ''
+        if 'portfolio.db' in path_str:
+            # 使用 name='<db>' RAM db 等效于真实文件
+            kwargs.setdefault('check_same_thread', False)
+            return _original_connect(tmp_db_file, *args, **kwargs)
+        return _original_connect(path, *args, **kwargs)
 
-    # 强制重新加载，让模块内部的 import 链和 THIS_DIR 全部正确解析。
-    # 注意：reload() 会重新执行顶层 DB_PATH = ...（还原为原始路径），
-    # 所以必须在 reload 之后再次 patch。
-    importlib.reload(ps_mod)
-    importlib.reload(wl_mod)
-    importlib.reload(ah_mod)
+    sqlite3.connect = _patched_connect
 
-    # reload 之后重新 patch（reload 覆盖了上面的 patch）
-    ps_new = os.path.join(tmp_root, 'portfolio.db')
-    ps_mod.DB_PATH = ps_new
-    wl_mod.DB_PATH = ps_new
-    ah_mod.DB_PATH = ps_new
-
-    # 对三个模块都初始化 schema，这样任一 import 路径拿到的模块都能正常工作
-    ps_mod.init_db()        # positions, orders, trades, cash, ...
-    wl_mod.init_watchlist() # watchlist 表
-    ah_mod.init_alerts()    # alerts 表
-
-    # 关键：test_api.py 用 "from services.portfolio import"（不带 backend. 前缀），
-    # 这会走 sys.path[0]=ROOT/backend 找到 services/portfolio.py，
-    # 作为 "services.portfolio" 注册到 sys.modules。
-    # 必须同时 patch sys.modules['services.portfolio']，否则 test_api.py
-    # 会拿到另一个 module 实例，patch 不生效。
-    import sys as _sys
-    _sys.modules['services.portfolio']      = ps_mod
-    _sys.modules['services.watchlist']       = wl_mod
-    _sys.modules['services.alert_history']   = ah_mod
-
-    yield tmp_root  # 测试在这里运行
+    yield tmp_db_file
 
     # ── restore ──────────────────────────────────────────────────────────────
-    import sys as _sys_restore
-    _sys_restore.modules['services.portfolio']     = None
-    _sys_restore.modules['services.watchlist']      = None
-    _sys_restore.modules['services.alert_history']  = None
-    # DB_PATH 还原由 portfolio.py 等模块的 reload 自行恢复
-    shutil.rmtree(tmp_root, ignore_errors=True)
+    sqlite3.connect = _original_connect
+    shutil.rmtree(tmp_db, ignore_errors=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Function-level fixture — 每个测试函数用独立的 temp DB
+# Function-level fixture — 每个测试函数用独立的 temp DB（按需）
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.fixture
-def portfolio_db(tmp_path, _isolate_db_session):
+def portfolio_db(_isolate_db_session, tmp_path):
     """
-    为单个测试函数提供独立 temp DB 路径 + 已初始化数据库。
+    为单个测试函数提供独立 temp DB。
 
-    三个模块的 DB_PATH 已由 session fixture 固定到 _isolate_db_session，
-    这里再创建子 temp dir 让每次测试有独立文件（避免并发冲突）。
+    注意：由于 session fixture 已经 patch 了 sqlite3.connect，
+    实际上这里不需要再 patch 任何东西——所有 connect 都已经被劫持。
+    只要在 tmp_path 下创建空的 .db 文件路径，init_db() 会自动写入这里。
 
-    等价于老测试中 setUp() 里的：
-        ps.DB_PATH = self.db_path
-        ps.init_db()
+    真实 portfolio.db 永远不会被访问。
     """
-    sys.path.insert(0, ROOT)
-    sys.path.insert(0, os.path.join(ROOT, 'backend'))
-
-    ps_mod = importlib.import_module('backend.services.portfolio')
-    wl_mod = importlib.import_module('backend.services.watchlist')
-    ah_mod = importlib.import_module('backend.services.alert_history')
-
-    # 每个测试函数独享一个 temp sub-dir
-    test_tmp = tmp_path / 'test_run'
-    test_tmp.mkdir()
-
-    db_file = str(test_tmp / 'portfolio.db')
-
-    # patch（函数级别，每次测试完自动还原）
-    orig_ps = ps_mod.DB_PATH
-    orig_wl = wl_mod.DB_PATH
-    orig_ah = ah_mod.DB_PATH
-
-    ps_mod.DB_PATH = db_file
-    wl_mod.DB_PATH = db_file
-    ah_mod.DB_PATH = db_file
-
-    # 同步 sys.modules 里的短路径引用
-    import sys as _sys_local
-    _sys_local.modules['services.portfolio']     = ps_mod
-    _sys_local.modules['services.watchlist']     = wl_mod
-    _sys_local.modules['services.alert_history'] = ah_mod
-
-    # 初始化 schema — 必须包含三个模块的所有表
-    ps_mod.init_db()       # positions, cash, orders, trades, ...
-    wl_mod.init_watchlist()  # watchlist 表
-    ah_mod.init_alerts()     # alerts 表
-
+    db_file = str(tmp_path / 'portfolio.db')
     yield db_file
-
-    # ── restore ──────────────────────────────────────────────────────────────
-    ps_mod.DB_PATH = orig_ps
-    wl_mod.DB_PATH = orig_wl
-    ah_mod.DB_PATH = orig_ah
+    # 不需要手动清理，tmp_path 在每个测试函数结束后自动清理
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -161,7 +84,6 @@ def _reset_module_caches():
     如有其他全局状态（_trade_calendar、_singleton 等），在此扩展。
     """
     yield
-    # 测试后清理 — 追加需要清理的模块在这里
     try:
         import backend.main as bm
         bm._trade_calendar = set()
