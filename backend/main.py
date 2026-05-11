@@ -101,6 +101,32 @@ def _build_trade_calendar() -> set:
 _trade_calendar: set = set()
 _trade_calendar_date: str = ''
 
+# ── PID 文件锁：禁止同一进程多实例 ──────────────────────────────
+import fcntl as _fcntl
+
+def _acquire_pid_lock(pid_file: str) -> bool:
+    """尝试获取 PID 文件锁。返回 True 表示获得锁（继续启动），False 表示已有实例在跑。"""
+    import os as _os
+    pid_dir = _os.path.dirname(pid_file) or '.'
+    _os.makedirs(pid_dir, exist_ok=True)
+    try:
+        pf = open(pid_file, 'w')
+        _fcntl.flock(pf.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        pf.write(str(_os.getpid()))
+        pf.flush()
+        return True
+    except (IOError, OSError):
+        return False
+
+
+def _release_pid_lock(pid_file: str):
+    """退出时释放 PID 文件锁"""
+    import os as _os
+    try:
+        _os.unlink(pid_file)
+    except Exception:
+        pass
+
 
 def is_trading_day() -> bool:
     """Check if today is an A-share trading day using AKShare calendar.
@@ -148,6 +174,9 @@ class Scheduler:
       16:00  — 每日运营报告（告警推送）
 
     非交易日（周末/节假日）全部跳过。
+
+    防重复：同一任务在触发窗口（±60秒）内只触发一次，通过
+    _triggered_today 集合记录当天已触发任务（method_name, hour, min）。
     """
 
     # 每日定时任务表：key = (hour, minute), value = 方法名
@@ -165,6 +194,9 @@ class Scheduler:
         self.api_port = api_port
         self.logger = logging.getLogger('backend.scheduler')
         self._stop = threading.Event()
+        # 防重：记录今日已触发的任务 (method_name, hour, min)
+        self._triggered_today: set = set()
+        self._triggered_date: str = ''  # 记录是哪天触发过，用于次日清空
 
     # ── 任务触发方法 ────────────────────────────────────────────────
 
@@ -445,6 +477,13 @@ class Scheduler:
 
         while not self._stop.is_set():
             now = datetime.now()
+            today_str = now.strftime('%Y-%m-%d')
+
+            # 新的一天：重置触发记录
+            if self._triggered_date != today_str:
+                self._triggered_today.clear()
+                self._triggered_date = today_str
+                self.logger.info('[Scheduler] 新的一天 %s，重置触发记录', today_str)
 
             # P2-19: 非交易日整体休眠至次日 08:25（08:30 任务前 5 分钟），
             # 避免无意义的 30 秒轮询。AKShare 不可用时 is_trading_day()
@@ -459,10 +498,18 @@ class Scheduler:
 
             # ── 检查每个定时任务 ──
             for target_hour, target_min, method_name in self.DAILY_TASKS:
+                task_key = (method_name, target_hour, target_min)
+
+                # 防重：今日已触发则跳过
+                if task_key in self._triggered_today:
+                    continue
+
                 target = now.replace(hour=target_hour, minute=target_min,
                                      second=0, microsecond=0)
                 # 触发窗口：目标时间 ± 60 秒（防止时钟漂移丢任务）
                 if abs((now - target).total_seconds()) < 60:
+                    # 标记为已触发（防止本轮其他实例重复触发）
+                    self._triggered_today.add(task_key)
                     self.logger.info('[Scheduler] >>> %02d:%02d 触发 %s',
                                      target_hour, target_min, method_name)
                     handler = getattr(self, method_name, None)
@@ -537,7 +584,17 @@ def main():
     args = parser.parse_args()
 
     logger = setup_logging()
+
+    # ── PID 锁：禁止多实例 ──────────────────────────────────────────
+    pid_file = os.path.join(os.path.dirname(__file__), '.backend.pid')
+    if not _acquire_pid_lock(pid_file):
+        logger.error('[Backend] 已有实例在运行（PID 锁文件 %s），退出。', pid_file)
+        sys.exit(1)
+    logger.info('[Backend] PID 锁获取成功，pid_file=%s', pid_file)
     logger.info('Backend starting in %s mode', args.mode)
+
+    import atexit
+    atexit.register(lambda: _release_pid_lock(pid_file))
 
     sched = Scheduler(api_port=args.port)
     sched_thread = sched.start()

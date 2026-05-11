@@ -12,73 +12,162 @@
                              │ HTTP
 ┌────────────────────────────▼─────────────────────────────────────┐
 │               Backend Service (Flask :5555)                        │
-│  30+ HTTP API 端点 · SQLite 持久化 · RotatingFileHandler 日志    │
 │                                                                      │
 │  ┌──────────────────────┐  ┌─────────────────────────────────┐  │
-│  │ Scheduler             │  │ IntradayMonitor                  │  │
-│  │ 每日 15:10 CST 触发   │  │ 盘中 5 分钟轮询 (09:30–15:00)    │  │
-│  │ 节假日感知            │  │ 止盈/止损/新仓检测 + 飞书推送    │  │
+│  │ Scheduler            │  │ IntradayMonitor                  │  │
+│  │ 每日 08:30–16:00 CST│  │ 盘中 5 分钟轮询 (09:30–15:00)    │  │
+│  │ 节假日感知            │  │ RSI 二次确认 · 止盈/止损 · 飞书推送│  │
 │  └──────────────────────┘  └─────────────────────────────────┘  │
 └──────────────┬─────────────────────────────┬──────────────────────┘
                │                             │
 ┌──────────────▼──────────────┐  ┌───────────▼──────────────────────┐
-│     数据层 (DataLayer)        │  │   策略执行层 (StrategyRunner)     │
-│  ├─ AKShare 日线/分钟 K 线   │  │  ├─ AsyncStrategyRunner (asyncio) │
-│  ├─ Parquet 本地缓存         │  │  ├─ FactorPipeline + 动态 IC 加权  │
-│  ├─ Level2 盘口（5 档）      │  │  ├─ Regime 自适应（4 种市场状态）  │
-│  ├─ 基本面（财报/融资融券）   │  │  └─ EventBus 信号分发             │
-│  ├─ 北向资金实时             │  └────────────┬────────────────────┘
-│  └─ CircuitBreaker 熔断     │               │
+│     数据网关 (DataGateway)    │  │   策略执行层 (StrategyRunner)    │
+│  ├─ Tencent / Sina / Eastmoney│  │  ├─ AsyncStrategyRunner (asyncio)│
+│  ├─ AkShare / YFinance        │  │  ├─ DynamicWeightPipeline         │
+│  ├─ 健康度动态路由             │  │  ├─ 10+ 因子 IC 动态加权          │
+│  ├─ 字段级多源合并            │  │  └─ Regime 自适应（4 种市场状态）  │
+│  ├─ 熔断器 (per provider×cap) │  └────────────┬────────────────────┘
+│  └─ 内存缓存 (TTL 30–86400s)  │               │
 └─────────────────────────────┘  ┌────────────▼────────────────────┐
-                                 │        因子层（22 个因子）         │
-                                 │  价格动量(5) · 技术(7) · 基本面(5) │
-                                 │  情绪(3) · ML预测(1) · NLP情感(1) │
+                                 │        因子层（10+ 个因子）       │
+                                 │  技术(4) · 基本面(4) · 宏观(2)    │
                                  └────────────┬────────────────────┘
                                               │
          ┌────────────────────────────────────▼─────────────────────┐
          │                  执行与优化层                              │
          │  OMS · VWAP/TWAP · ImpactEstimator                       │
-         │  PortfolioOptimizer (MVO/BL/风险平价/最大分散化)          │
          │  PortfolioAllocator（多策略资金分配 + 再平衡）            │
          └────────────────────────────────────┬─────────────────────┘
                                               │
          ┌────────────────────────────────────▼─────────────────────┐
-         │                   风控体系（三层 + 组合层）                │
+         │                   风控体系（三层）                         │
          │  RiskEngine (PreTrade/InTrade/PostTrade)                 │
-         │  CVaR · MonteCarloStressTest (5000 次)                   │
+         │  CVaR · MonteCarloStressTest (10000 次)                  │
          └────────────────────────────────────┬─────────────────────┘
                                               │
          ┌────────────────────────────────────▼─────────────────────┐
          │                        券商适配层                          │
          │  SimulatedBroker · FutuBroker · IBKRBroker(stub)        │
-         │  TigerBroker(stub)                                       │
          └──────────────────────────────────────────────────────────┘
 ```
 
 ---
 
+## 数据网关（DataGateway）
+
+`core/data_gateway/` 是全系统对外网数据的唯一出口，内部无任何业务逻辑。
+
+### 架构
+
+```
+业务侧调用
+    │
+    ▼
+DataGateway  ← 薄外观（core/data_layer.py 转发至此）
+    │
+    ├─ HealthTracker       健康度滑窗评分，按 (provider×capability) 排序
+    ├─ CircuitBreaker     熔断器，失败累计触发硬开关
+    ├─ MemoryCache         内存缓存，TTL 按数据类型区分
+    │
+    ▼
+Provider 注册表
+    ├─ TencentProvider    qt.gtimg.cn / web.ifzq.gtimg.cn（主选，字段最全）
+    ├─ SinaProvider        sina.com.cn（实时行情备用）
+    ├─ EastmoneyProvider   eastmoney.com（板块/资金流/指数）
+    ├─ AkShareProvider     akshare.net（最终备灾，稳定性差）
+    └─ YFinanceProvider    yfinance（美股/港股指数）
+```
+
+### 选源策略
+
+**可合并数据类型**（Quote 基本面）：并发问 top-K provider，字段级互补合并
+
+**不可合并类型**（K 线/板块/北向等）：按健康度降序逐个尝试，第一个成功即返回
+
+### 缓存策略
+
+| 数据类型 | TTL |
+|---------|-----|
+| 实时行情 Quote | 30s |
+| 基本面数据 | 60s |
+| 板块排名/成分股 | 60s |
+| 北向资金/指数 | 60s |
+| 日 K 线 | 300s（网络）/ 就近归档（Parquet）|
+| 宏观数据 | 24h |
+| 基本面历史时序 | 24h |
+
+---
+
+## 因子流水线
+
+`core/pipeline_factory.py` 构建 `DynamicWeightPipeline`，供 StrategyRunner 和回测共用。
+
+### 因子构成
+
+**技术因子（must-have）**
+
+| 因子 | 权重 |
+|------|------|
+| RSIFactor | 0.20 |
+| MACDTrendFactor | 0.20 |
+| BollingerFactor | 0.15 |
+| ATRFactor | 0.10 |
+
+**基本面因子**
+
+| 因子 | 权重 |
+|------|------|
+| PEPercentileFactor | 0.10 |
+| ROEMomentumFactor | 0.10 |
+| RevenueGrowthFactor | 0.05 |
+| CashFlowQualityFactor | 0.05 |
+
+**宏观因子**
+
+| 因子 | 权重 |
+|------|------|
+| PMIFactor | 0.05 |
+| M2GrowthFactor | 0.05 |
+
+### 动态权重
+
+`DynamicWeightPipeline` 每 21 个交易日根据滚动 IC（63 天窗口）重新分配权重。连续 3 次 IC<0 的因子自动清零，IC 转正后以 50% 等权重复活。
+
+---
+
+## 策略运行
+
+`StrategyRunner` 每 5 分钟执行一次 pipeline：
+
+1. 获取标的列表（持仓 ∪ watchlist）
+2. 调用 `DynamicWeightPipeline` 获取 `combined_score`
+3. Regime 检测（CALM / BULL / BEAR / VOLATILE）
+4. 输出 `BUY` / `SELL` / `HOLD`
+
+`IntradayMonitor` 在此基础上做 RSI 二次确认，决定是否真实触发下单。
+
+---
+
 ## 设计原则
 
-1. **EventBus 作为中央总线**：所有模块通过事件通信：`MarketEvent` → `SignalEvent` → `OrderEvent` → `FillEvent`。新增因子/策略无需修改核心。
-
-2. **回测 = 实盘**：同一因子接口、同一信号格式，回测引擎和实盘运行器共享 `FactorPipeline`。
-
-3. **券商适配层**：`BrokerAdapter` 接口抽象所有券商，切换券商只需替换适配器实例。
+1. **回测 = 实盘**：同一因子接口、同一信号格式，回测引擎和实盘运行器共享 `FactorPipeline`。
+2. **数据源透明**：`DataGateway` 记录每条数据的 provenance（来源 provider），可追溯。
+3. **券商适配层**：`BrokerAdapter` 接口抽象所有券商，切换只需替换适配器实例。
 
 ---
 
 ## 关键模块
 
-### EventBus (`core/event_bus.py`)
-
-单例事件总线，支持同步/异步两种模式。
+### 数据网关 (`core/data_gateway/`)
 
 ```python
-from core.event_bus import EventBus, MarketEvent
+from core.data_gateway import get_gateway
 
-bus = EventBus.global_bus()
-bus.on('MarketEvent', my_handler)
-bus.emit(MarketEvent(symbol='000001.SH', close=10.0))
+gw = get_gateway()
+quote = gw.quote('000001.SH')          # 实时行情（字段级合并）
+kline = gw.kline('000001.SH', days=120)  # 日 K 线
+sectors = gw.sectors(limit=50)        # 板块排名
+north = gw.north_flow()               # 北向资金
 ```
 
 ### 因子流水线 (`core/pipeline_factory.py`)
@@ -90,103 +179,9 @@ pipeline = build_pipeline(symbol="000001.SH")
 result = pipeline.run(symbol="000001.SH", data=df, price=current_price)
 ```
 
-### 回测引擎 (`core/backtest_engine.py`)
-
-```python
-from core.backtest_engine import BacktestEngine
-from core.strategies.rsi_strategy import RSIStrategy
-
-engine = BacktestEngine(strategy=RSIStrategy(), start="20200101", end="20251231")
-report = engine.run()
-```
-
-### 组合优化 (`core/portfolio.py`)
-
-```python
-from core.portfolio import PortfolioOptimizer
-
-opt = PortfolioOptimizer(method='black_litterman')
-weights = opt.optimize(returns=return_df, views={'000001.SH': 0.05})
-```
-
 ### 风控 (`core/risk_engine.py`)
 
 三层风控：PreTrade（下单前）、InTrade（持仓中）、PostTrade（收盘后）。
-
-```python
-from core.risk_engine import RiskEngine
-
-risk = RiskEngine()
-result = risk.check_pre_trade(order=order, portfolio=portfolio)
-```
-
-### 港股打新 (`core/ipo_analyst_engine.py`)
-
-feature/ipo-stars 分支可用。
-
-```python
-from core.ipo_analyst_engine import IPOAnalystEngine
-
-engine = IPOAnalystEngine()
-report = engine.analyze(stock_code='01236', multi_source_data={}, validated_data={})
-```
-
----
-
-## 数据流
-
-```
-AKShare / Futu / Browser
-        │
-        ▼
-  DataLayer（缓存 + 质量检查）
-        │
-        ▼
-  FactorPipeline（22 因子并行计算）
-        │
-        ▼
-  CompositeSignalEngine（IC 动态加权）
-        │
-        ├─▶ BacktestEngine（历史验证）
-        │
-        └─▶ StrategyRunner（实盘执行）
-                    │
-                    ▼
-              RiskEngine（三层风控）
-                    │
-                    ▼
-              BrokerAdapter（订单执行）
-                    │
-                    ▼
-              AlertManager（飞书/钉钉推送）
-```
-
----
-
-## IPO Stars 港股打新模块（feature/ipo-stars）
-
-```
-触发 ──▶ IPOScanner 每日 09:00
-                │
-                ▼
-    IPODataSource（东方财富 + 港交所 + 历史库）
-                │
-                ▼
-    DataCrossValidator（多源交叉验证 + 数据质量评分）
-                │
-                ▼
-    IPOAnalystEngine（5 个分析模块）
-       ① 可比 IPO 定价锚点
-       ② 机构持仓结构
-       ③ 发行条款性价比
-       ④ 市场窗口情绪
-       ⑤ 挂单策略生成
-                │
-                ▼
-    IPOAnalysisReport + IPORenderer ──▶ 飞书推送
-```
-
-定位：纯分析报告工具，不进入 PositionBook / 风控体系 / 操盘决策。
 
 ---
 
@@ -194,12 +189,10 @@ AKShare / Futu / Browser
 
 | 组件 | 技术 |
 |------|------|
-| 数据获取 | AKShare、Futu OpenD、辉立暗盘（browser） |
-| 存储 | SQLite（组合）、Parquet（历史数据/IPO） |
+| 数据获取 | 腾讯 / 新浪 / 东方财富 / AkShare / YFinance |
+| 存储 | SQLite（组合）、Parquet（历史 K 线/IPO） |
 | HTTP API | Flask |
 | 实时运行 | asyncio + threading |
-| 因子框架 | 自研（22 因子） |
+| 因子框架 | 自研（10+ 因子） |
 | ML | LightGBM + Walk-Forward |
-| 优化 | scipy、numpy |
-| 告警 | 飞书、钉钉 |
-| 监控 | Prometheus + Grafana |
+| 告警 | 飞书 |

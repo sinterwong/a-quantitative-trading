@@ -1,6 +1,6 @@
 # A 股量化交易系统
 
-A 股 + 港股量化研究与全自动模拟交易平台。支持多因子选股、机器学习预测、算法订单执行、组合优化、盘中监控与告警推送。
+A 股 + 港股量化研究与全自动模拟交易平台。
 
 ---
 
@@ -8,16 +8,12 @@ A 股 + 港股量化研究与全自动模拟交易平台。支持多因子选股
 
 | 功能 | 说明 |
 |------|------|
-| 多因子策略 | 22 个因子（价格动量、技术面、基本面、情绪、宏观），动态 IC 加权 |
+| 多因子策略 | 10+ 因子（技术/基本面/宏观），DynamicWeightPipeline IC 动态加权 |
+| 动态选股 | 每日 15:10 基于板块行情+资金流向+新闻情绪自动选股 |
 | 回测引擎 | 事件驱动 Walk-Forward 回测 |
-| 机器学习 | LightGBM 价格预测 + Walk-Forward 训练 |
-| 组合优化 | MVO / Black-Litterman / 风险平价 / 最大分散化 |
-| 算法执行 | VWAP / TWAP |
-| 盘中监控 | 5 分钟轮询，涨跌停/止盈止损/新仓检测，飞书推送 |
+| 盘中监控 | 5 分钟轮询，RSI 二次确认、止盈止损、飞书推送 |
 | 风控体系 | PreTrade / InTrade / PostTrade 三层，含 CVaR + Monte Carlo |
-| 港股打新 | IPO Stars — 多源数据交叉验证（feature/ipo-stars 分支） |
-| 早晚报 | 盘前市场概况 + 盘后绩效归因 |
-| 可观测性 | Prometheus 监控指标、参数 CRUD、实时行情查询 |
+| 早晚报 | 盘前选股 + 盘后持仓快照，每日 08:30 / 16:00 飞书推送 |
 
 ---
 
@@ -29,15 +25,15 @@ conda create -n quant-trading python=3.11
 conda activate quant-trading
 pip install -r requirements.txt
 
-# 配置
-cp params.json.example params.json
-# 编辑 params.json
-
-# 启动
+# 启动（API + Scheduler + 盘中监控全开）
 cd backend
 python main.py --mode both --port 5555
 
-# 触发分析
+# 或用 systemd 守护进程
+systemctl --user enable quant-trading-backend.service
+systemctl --user start quant-trading-backend.service
+
+# 手动触发选股分析
 curl -X POST http://127.0.0.1:5555/analysis/run
 
 # 查看 API 文档
@@ -50,82 +46,64 @@ http://127.0.0.1:5555/docs
 
 ```
 ├── core/                          # 核心业务逻辑
-│   ├── backtest_engine.py         # 回测引擎
+│   ├── data_gateway/              # 统一数据网关（多 provider 路由 + 缓存）
+│   │   ├── gateway.py             # DataGateway 主入口
+│   │   ├── health.py              # 健康度跟踪器
+│   │   ├── cache.py               # 内存缓存
+│   │   ├── merge.py               # 字段级多源合并
+│   │   ├── schemas.py             # 数据类型定义
+│   │   └── providers/              # provider 实现
+│   │       ├── tencent.py         # 腾讯行情（主选）
+│   │       ├── sina.py            # 新浪行情
+│   │       ├── eastmoney.py       # 东方财富（板块/资金流）
+│   │       ├── akshare.py         # AkShare（最终备灾）
+│   │       └── yfinance.py        # YFinance（美股/港股指数）
+│   ├── data_layer.py             # 数据层外观（转发到 DataGateway）
+│   ├── pipeline_factory.py        # 因子流水线
 │   ├── strategy_runner.py         # 策略运行器
 │   ├── event_bus.py               # 事件总线
-│   ├── data_layer.py              # 数据层
-│   ├── portfolio.py               # 组合管理
-│   ├── pipeline_factory.py        # 因子流水线
 │   ├── regime.py                  # 市场状态检测
-│   ├── factors/                   # 22 个因子
-│   ├── strategies/                # 策略模块
-│   ├── ml/                        # ML 框架
+│   ├── risk_engine.py             # 风控引擎
+│   ├── factors/                   # 因子实现
 │   └── brokers/                   # 券商适配层
 ├── backend/
-│   ├── main.py                    # 服务入口
+│   ├── main.py                    # 服务入口（Scheduler 在此）
 │   ├── api.py                     # HTTP API
 │   └── services/                  # 持久化服务
-├── docs/                          # 文档目录
-├── scripts/                       # 运营脚本
-├── tests/                         # 测试套件
+├── docs/
+│   ├── ARCHITECTURE.md            # 系统架构（详细）
+│   ├── CHANGELOG.md               # 变更日志
+│   └── EVALUATION.md              # 系统评估
 └── params.json                    # 策略参数
 ```
 
 ---
 
-## 核心模块
+## 数据网关
 
-### 多因子系统
+全系统对外网数据的唯一出口，按 (provider × capability) 路由：
 
-```python
-from core.pipeline_factory import build_pipeline
-
-pipeline = build_pipeline(symbol="000001.SH")
-result = pipeline.run(symbol="000001.SH", data=df, price=current_price)
-```
-
-### 回测
-
-```python
-from core.backtest_engine import BacktestEngine
-from core.strategies.rsi_strategy import RSIStrategy
-
-engine = BacktestEngine(
-    strategy=RSIStrategy(),
-    start="20200101",
-    end="20251231",
-    initial_cash=1_000_000,
-)
-result = engine.run()
-```
-
-### 港股打新（feature/ipo-stars 分支）
-
-```bash
-curl -X POST "http://127.0.0.1:5555/ipo/analyze?stock_code=01236"
-curl http://127.0.0.1:5555/ipo/upcoming
-```
+- **可合并数据**（实时行情、基本面）：并发问 top-K provider，字段级互补合并
+- **不可合并数据**（K 线、板块、北向等）：按健康度降序逐个尝试
+- **熔断器**：失败累计触发硬开关，保护系统不被单一源拖垮
+- **缓存**：按数据类型设 TTL（30s ~ 24h），避免重复请求
 
 ---
 
-## 文档
+## 每日运行流程
 
-- [系统架构](docs/ARCHITECTURE.md)
-- [贡献指南](docs/CONTRIBUTING.md)
-- [变更日志](docs/CHANGELOG.md)
-- [系统评估](docs/EVALUATION.md)
-- [开发任务](docs/TODO.md)
-
----
-
-## 运行测试
-
-```bash
-pytest tests/ -v
+```
+08:30  — 选股 → watchlist → RSI 信号扫描 → 模拟下单 → 飞书早报
+09:31  — 盘中监控启动，每 5 分钟扫 RSI 金叉/死叉
+15:00  — 收盘晚报（持仓快照 + 收益）
+15:10  — 日终 DynamicStockSelectorV2 选股分析
+15:30  — CVaR + 蒙特卡洛压力测试
+15:45  — TCA 反馈闭环
+16:00  — 每日运营报告 → 飞书
 ```
 
 ---
 
 ## 免责声明
 
-本系统仅供研究与模拟交易验证，不构成投资建议。实盘交易存在亏损风险，请谨慎评估。
+本系统仅供研究与模拟交易验证，不构成投资建议。
