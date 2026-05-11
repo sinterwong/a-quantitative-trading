@@ -248,7 +248,14 @@ class DataLayer:
         if df is None or df.empty:
             return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
 
-        result = df.tail(days).reset_index()
+        result = df.tail(days).copy()
+        # 始终保留 DatetimeIndex，date 列作为兼容字段（部分旧代码依赖它）
+        if "date" not in result.columns:
+            if isinstance(result.index, pd.DatetimeIndex):
+                result.insert(0, "date", result.index)
+            else:
+                result = result.reset_index().rename(columns={"index": "date"})
+        # 旧代码依赖 'index' 列名 → 兼容
         if "index" in result.columns and "date" not in result.columns:
             result = result.rename(columns={"index": "date"})
         return result

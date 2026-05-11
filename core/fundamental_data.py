@@ -113,37 +113,26 @@ class FundamentalDataManager:
 
     def _fetch(self, symbol: str) -> Optional[pd.DataFrame]:
         """
-        通过 AKShare 获取财务摘要数据，转换为日频 DataFrame。
+        通过 AKShare stock_financial_analysis_indicator_em 获取财务历史数据，
+        转换为日频 DataFrame。
         失败时返回 None。
         """
         try:
             import akshare as ak
 
-            # 处理标的代码格式（akshare 需要 6 位纯数字）
-            code = symbol.replace('.SH', '').replace('.SZ', '')
+            # 处理标的代码格式（AkShare 东方财富接口需要 '600519.SH' 格式）
+            # stock_financial_analysis_indicator_em 必须带交易所后缀
+            code_raw = symbol.upper()
+            if not code_raw.endswith(('.SH', '.SZ')):
+                # 没有后缀时默认沪市
+                code_raw = code_raw + '.SH'
 
-            frames = []
-
-            # 方案 1：stock_financial_abstract — 关键财务指标（pe/pb/roe/eps）
-            try:
-                df_abs = ak.stock_financial_abstract(symbol=code)
-                if df_abs is not None and not df_abs.empty:
-                    frames.append(('abstract', df_abs))
-            except Exception as e:
-                logger.debug('stock_financial_abstract failed for %s: %s', symbol, e)
-
-            # 方案 2：stock_a_indicator_lg — 估值指标（pe_ttm/pb）
-            try:
-                df_ind = ak.stock_a_indicator_lg(symbol=code)
-                if df_ind is not None and not df_ind.empty:
-                    frames.append(('indicator', df_ind))
-            except Exception as e:
-                logger.debug('stock_a_indicator_lg failed for %s: %s', symbol, e)
-
-            if not frames:
+            # 获取财务分析指标（ROE/EPS/营收/净利润历史，~102期）
+            df = ak.stock_financial_analysis_indicator_em(symbol=code_raw)
+            if df is None or df.empty:
                 return None
 
-            return self._normalize_frames(frames, symbol)
+            return self._normalize_indicator_em(df, symbol)
 
         except ImportError:
             logger.warning('akshare not installed, fundamental data unavailable')
@@ -152,61 +141,58 @@ class FundamentalDataManager:
             logger.warning('Fundamental fetch failed for %s: %s', symbol, e)
             return None
 
-    def _normalize_frames(self, frames: list, symbol: str) -> Optional[pd.DataFrame]:
+    def _normalize_indicator_em(
+        self, df: pd.DataFrame, symbol: str,
+    ) -> Optional[pd.DataFrame]:
         """
-        将不同来源的 AKShare DataFrame 合并为标准日频格式。
-        列名映射：不同接口返回列名不一致，统一映射到标准列名。
+        将 stock_financial_analysis_indicator_em 返回的 DataFrame 标准化。
+
+        列映射：
+          ROEJQ        → roe_ttm      （加权 ROE，%）
+          EPSJB        → eps_ttm      （每股收益 TTM，元/股）
+          NETPROFITRPHBZC → profit_yoy（净利润同比增长，%）
+          TOTALOPERATEREVE → _revenue  （营业总收入，用于自算营收 YoY）
+
+        注意：
+          - pe_ttm / pb / ocf_to_profit / revenue_yoy / holder_num 在此数据源中不可得，
+            对应因子（PEPercentile / CashFlowQuality / RevenueGrowth /
+            ShareholderConcentration）将降级为零，这是已知数据层限制。
         """
+        df = df.copy()
+
+        # 日期列
+        if 'REPORT_DATE' not in df.columns:
+            return None
+        df.index = pd.to_datetime(df['REPORT_DATE'], errors='coerce')
+        df = df[~df.index.isna()].sort_index()
+        if df.empty:
+            return None
+
         result = {}
 
-        for source, df in frames:
-            df = df.copy()
+        # ROE（%，直接可用）
+        if 'ROEJQ' in df.columns:
+            result['roe_ttm'] = pd.to_numeric(df['ROEJQ'], errors='coerce')
 
-            # 统一索引为日期
-            date_col = next(
-                (c for c in df.columns
-                 if any(k in c.lower() for k in ['date', '日期', '报告期', 'period'])),
-                None
-            )
-            if date_col is None and pd.api.types.is_datetime64_any_dtype(df.index):
-                df.index = pd.to_datetime(df.index)
-            elif date_col:
-                df.index = pd.to_datetime(df[date_col], errors='coerce')
-                df = df.drop(columns=[date_col])
-            else:
-                continue
+        # EPS（TTM，元/股）
+        if 'EPSJB' in df.columns:
+            result['eps_ttm'] = pd.to_numeric(df['EPSJB'], errors='coerce')
 
-            df = df[~df.index.isna()].sort_index()
+        # 净利润 YoY（%，AkShare 直接提供）
+        if 'NETPROFITRPHBZC' in df.columns:
+            result['profit_yoy'] = pd.to_numeric(df['NETPROFITRPHBZC'], errors='coerce')
 
-            # 列名映射
-            col_map = {
-                # pe
-                'pe_ttm': 'pe_ttm', 'pettm': 'pe_ttm', '市盈率ttm': 'pe_ttm',
-                '市盈率-动态': 'pe_ttm', 'pe': 'pe_ttm',
-                # pb
-                'pb': 'pb', '市净率': 'pb',
-                # roe
-                'roe_ttm': 'roe_ttm', 'roettm': 'roe_ttm', 'roe': 'roe_ttm',
-                '净资产收益率': 'roe_ttm',
-                # eps
-                'eps_ttm': 'eps_ttm', 'epsttm': 'eps_ttm', '每股收益ttm': 'eps_ttm',
-                '基本每股收益': 'eps_ttm', 'eps': 'eps_ttm',
-                # revenue growth
-                'revenue_yoy': 'revenue_yoy', '营收同比增长率': 'revenue_yoy',
-                '营业总收入_同比增长率': 'revenue_yoy',
-                # profit growth
-                'profit_yoy': 'profit_yoy', '净利润同比增长率': 'profit_yoy',
-                '归母净利润_同比增长率': 'profit_yoy',
-                # cash flow quality
-                'ocf_to_profit': 'ocf_to_profit',
-            }
+        # 营收 YoY（AkShare 无直接字段，从 TOTALOPERATEREVE 自算）
+        if 'TOTALOPERATEREVE' in df.columns:
+            rev = pd.to_numeric(df['TOTALOPERATEREVE'], errors='coerce').fillna(0.0)
+            rev_prev = rev.shift(1)  # 上一年同期
+            # 避免除零
+            yoy = ((rev / rev_prev.replace(0, np.nan)) - 1) * 100
+            result['revenue_yoy'] = yoy.replace([np.inf, -np.inf], np.nan)
 
-            for orig, std in col_map.items():
-                # 大小写不敏感匹配
-                matched = [c for c in df.columns if c.lower().replace(' ', '') == orig]
-                if matched and std not in result:
-                    series = pd.to_numeric(df[matched[0]], errors='coerce')
-                    result[std] = series
+        # 以下字段在此数据源中不可得，因子将自动降级：
+        #   pe_ttm, pb, ocf_to_profit, holder_num
+        # 其对应因子在 financial_data 缺失这些字段时返回零值，这是预期行为。
 
         if not result:
             return None
@@ -214,7 +200,6 @@ class FundamentalDataManager:
         combined = pd.DataFrame(result).sort_index()
         combined = combined[~combined.index.duplicated(keep='last')]
 
-        # 转换为日频（前向填充，模拟季报公布后数据延续）
         return self._to_daily(combined)
 
     def _to_daily(self, quarterly: pd.DataFrame) -> pd.DataFrame:
@@ -230,7 +215,7 @@ class FundamentalDataManager:
         daily_idx = pd.date_range(start=start, end=end, freq='B')  # 工作日
 
         daily = quarterly.reindex(daily_idx, method=None)
-        daily = daily.fillna(method='ffill')  # 前向填充（季报日期之后使用）
+        daily = daily.ffill()  # 前向填充（季报日期之后使用）
 
         return daily
 

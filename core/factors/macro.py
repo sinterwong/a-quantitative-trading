@@ -59,7 +59,7 @@ def _align_macro(
     macro_data : pd.DataFrame or None
         宏观数据，index 为日期（月末或任意月内日期），含 col 列
     target_index : pd.Index
-        目标日线索引（DatetimeIndex 或可转换类型）
+        目标日线索引（DatetimeIndex）
     col : str
         需要提取的列名
 

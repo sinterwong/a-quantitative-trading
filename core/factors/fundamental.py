@@ -47,8 +47,14 @@ def _align_financial(
     if financial_data is None or financial_data.empty or column not in financial_data.columns:
         return pd.Series(np.nan, index=price_index)
 
-    series = financial_data[column].reindex(price_index, method='ffill')
-    return series
+    try:
+        series = financial_data[column].reindex(price_index, method='ffill')
+        return series
+    except TypeError:
+        # Index types incompatible (e.g. RangeIndex vs DatetimeIndex) →
+        # broadcast the single financial snapshot across all price rows
+        val = financial_data[column].iloc[0]
+        return pd.Series(val, index=price_index)
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +160,13 @@ class ROEMomentumFactor(Factor):
             return pd.Series(0.0, index=data.index)
 
         roe_diff = roe - roe.shift(self.diff_days)
+
+        # 单点快照无法做 252d 同比 → 降级为 ROE 水平信号
+        # roe_diff 全为 NaN（数据不足 1 年窗口）时触发
+        if roe_diff.isna().all():
+            # 正值 ROE → 正向信号；负值 ROE → 负向信号；用绝对水平代替动量
+            centered = roe - roe.mean()
+            return self.normalize(centered.fillna(0.0))
 
         return self.normalize(roe_diff.fillna(0.0))
 

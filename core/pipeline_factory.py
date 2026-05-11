@@ -97,51 +97,31 @@ def build_pipeline(symbol: str = '', strict: bool = True):
     # ── 基本面层（每因子独立 try-except，单个失败不影响其它）──
     try:
         from core.factors.fundamental import (
-            PEPercentileFactor,
             ROEMomentumFactor,
-            ShareholderConcentrationFactor,
-            CashFlowQualityFactor,
+            RevenueGrowthFactor,
         )
-        # 从 data_gateway 获取基本面数据，组装成 DataFrame 传给各因子
-        import pandas as pd
-        from core.data_gateway import get_gateway
-        fund = get_gateway().fundamentals(symbol) if symbol else None
-
-        # 构建 financial_data DataFrame（各因子使用不同列）
-        # 仅快照值（季度/年度），回溯计算由因子内部 rolling 处理
-        fd_dict = {}
-        if fund:
-            if fund.pe_ttm is not None:
-                fd_dict['pe_ttm'] = [fund.pe_ttm]
-            if fund.roe_ttm is not None:
-                fd_dict['roe_ttm'] = [fund.roe_ttm]
-            if getattr(fund, 'holder_num', None) is not None:
-                fd_dict['holder_num'] = [fund.holder_num]
-            if fund.revenue_yoy is not None:
-                fd_dict['revenue_yoy'] = [fund.revenue_yoy]
-            if fund.profit_yoy is not None:
-                fd_dict['profit_yoy'] = [fund.profit_yoy]
-            if fund.ocf_to_profit is not None:
-                fd_dict['ocf_to_profit'] = [fund.ocf_to_profit]
-            if fund.eps_ttm is not None:
-                fd_dict['eps_ttm'] = [fund.eps_ttm]
-
-        financial_data = pd.DataFrame(fd_dict) if fd_dict else None
+        # 使用 FundamentalDataManager 获取历史季报数据（前向填充至日频）
+        # DataGateway.fundamentals() 只返回单点快照，无法支撑 rolling/shift 计算
+        financial_data = None
+        if symbol:
+            try:
+                from core.fundamental_data import FundamentalDataManager
+                mgr = FundamentalDataManager()
+                # 请求 3 年历史（足够支撑 252d 同比 + rolling 窗口）
+                fin_df = mgr.get_fundamentals(symbol, start='2023-01-01')
+                if fin_df is not None and not fin_df.empty:
+                    # 截取所需列（FundamentalDataManager 已完成 ffill 日频化）
+                    available = ['roe_ttm', 'eps_ttm', 'revenue_yoy', 'profit_yoy', 'ocf_to_profit']
+                    financial_data = fin_df[[c for c in available if c in fin_df.columns]]
+            except Exception as exc:
+                logger.warning('FundamentalDataManager 获取 %s 失败: %s', symbol, exc)
 
         for cls, w in [
-            (PEPercentileFactor,             0.10),
-            (ROEMomentumFactor,              0.10),
-            (ShareholderConcentrationFactor, 0.05),
-            (CashFlowQualityFactor,          0.05),
+            (ROEMomentumFactor,   0.10),
+            (RevenueGrowthFactor,  0.05),
         ]:
             params = {}
-            if financial_data is not None and cls in (
-                PEPercentileFactor,
-                ROEMomentumFactor,
-                ShareholderConcentrationFactor,
-            ):
-                params = {'financial_data': financial_data}
-            elif cls == CashFlowQualityFactor and financial_data is not None:
+            if financial_data is not None:
                 params = {'financial_data': financial_data}
             if _safe_add(pipeline, cls, weight=w, params=params):
                 loaded_count += 1
