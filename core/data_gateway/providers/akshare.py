@@ -50,6 +50,20 @@ class AkshareProvider(Provider):
             priority_hint=0.30,  # 实测不稳定,健康度低
         )
 
+    def supports(self, capability: Capability, market) -> bool:
+        """AkShare 的 FUNDAMENTALS / FUNDAMENTALS_HISTORY / MACRO 对所有市场均可用。
+
+        AkShare 的财报和宏观数据跨 A/H 股，声明 Market.GLOBAL 是诚实声明，
+        但基类默认的精确匹配不认 GLOBAL × 具体市场（如 HK），
+        所以这里显式 override——只影响 AkShareProvider，不影响其他 Provider。
+        """
+        if not super().supports(capability, market):
+            return False
+        # GLOBAL provider 额外放行所有具体市场（财报/宏观不区分交易所）
+        if Market.GLOBAL in self.declare().markets:
+            return True
+        return market in self.declare().markets
+
     def fetch_macro(self, indicator: str) -> pd.DataFrame:
         """支持 indicator: PMI / M2 / CREDIT。"""
         try:

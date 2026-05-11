@@ -16,7 +16,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from ..capabilities import Capability, Market, ProviderCapability
+from ..capabilities import Capability, ProviderCapability
 from ..schemas import (
     Fundamentals,
     MarketIndexSnapshot,
@@ -55,17 +55,9 @@ class Provider(ABC):
         默认仅检查粗粒度的 capabilities() / markets() 是否都命中。
         provider 可重写以表达更细的能力(如腾讯 KLINE_MINUTE 只支持 HK,
         不支持 A/INDEX/US)。返回 False 时 gateway 不会调用对应 fetch_*。
-
-        注意：声明 Market.GLOBAL 的 provider 视为对所有具体市场均可用
-        （跨市场数据类型如板块/基本面/宏观，不区分交易所）。
         """
         decl = self.declare()
-        if capability not in decl.capabilities:
-            return False
-        # GLOBAL provider 可响应任意具体市场的同类请求
-        if Market.GLOBAL in decl.markets:
-            return True
-        return market in decl.markets
+        return capability in decl.capabilities and market in decl.markets
 
     def field_authority(self) -> Dict[Capability, Dict[str, float]]:
         """声明各字段的权威度权重(0-1)。
