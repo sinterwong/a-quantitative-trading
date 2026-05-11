@@ -9,7 +9,7 @@ core/pipeline_factory.py — 生产用因子流水线工厂
 
 因子构成（按权重降序）：
   技术层    RSI(0.20) + MACDTrend(0.20) + Bollinger(0.15) + ATR(0.10)
-  基本面层  PEPercentile(0.10) + ROEMomentum(0.10) + ShareholderConc(0.05)
+  基本面层  PEPercentile(0.10) + ROEMomentum(0.10) + ShareholderConc(0.05) + CashFlowQuality(0.05)
   宏观层    PMI(0.05) + M2Growth(0.05)  ← 无行情数据时自动降级为零权重
 
 使用 DynamicWeightPipeline：
@@ -102,17 +102,31 @@ def build_pipeline(symbol: str = '', strict: bool = True):
             ShareholderConcentrationFactor,
             CashFlowQualityFactor,
         )
-        # 从 data_gateway 获取基本面数据
+        # 从 data_gateway 获取基本面数据，组装成 DataFrame 传给各因子
+        import pandas as pd
         from core.data_gateway import get_gateway
         fund = get_gateway().fundamentals(symbol) if symbol else None
 
-        # OCF/净利润：经营现金流量净额 / 归母净利润
-        ocf_to_profit = None
-        if fund and fund.profit_ttm > 0 and fund.ocf_to_profit is not None:
-            ocf_to_profit = fund.ocf_to_profit
-        elif fund and fund.profit_ttm > 0:
-            # 从 akshare财报计算：经营现金流/归母净利润
-            pass  # akshare stock_financial_abstract 无此字段，保持 None
+        # 构建 financial_data DataFrame（各因子使用不同列）
+        # 仅快照值（季度/年度），回溯计算由因子内部 rolling 处理
+        fd_dict = {}
+        if fund:
+            if fund.pe_ttm is not None:
+                fd_dict['pe_ttm'] = [fund.pe_ttm]
+            if fund.roe_ttm is not None:
+                fd_dict['roe_ttm'] = [fund.roe_ttm]
+            if getattr(fund, 'holder_num', None) is not None:
+                fd_dict['holder_num'] = [fund.holder_num]
+            if fund.revenue_yoy is not None:
+                fd_dict['revenue_yoy'] = [fund.revenue_yoy]
+            if fund.profit_yoy is not None:
+                fd_dict['profit_yoy'] = [fund.profit_yoy]
+            if fund.ocf_to_profit is not None:
+                fd_dict['ocf_to_profit'] = [fund.ocf_to_profit]
+            if fund.eps_ttm is not None:
+                fd_dict['eps_ttm'] = [fund.eps_ttm]
+
+        financial_data = pd.DataFrame(fd_dict) if fd_dict else None
 
         for cls, w in [
             (PEPercentileFactor,             0.10),
@@ -121,12 +135,14 @@ def build_pipeline(symbol: str = '', strict: bool = True):
             (CashFlowQualityFactor,          0.05),
         ]:
             params = {}
-            if cls == CashFlowQualityFactor and fund:
-                # CashFlowQualityFactor 需要 financial_data dict，含 ocf_to_profit
-                import pandas as pd
-                if fund.ocf_to_profit is not None:
-                    fd = pd.DataFrame({'ocf_to_profit': [fund.ocf_to_profit]})
-                    params = {'financial_data': fd}
+            if financial_data is not None and cls in (
+                PEPercentileFactor,
+                ROEMomentumFactor,
+                ShareholderConcentrationFactor,
+            ):
+                params = {'financial_data': financial_data}
+            elif cls == CashFlowQualityFactor and financial_data is not None:
+                params = {'financial_data': financial_data}
             if _safe_add(pipeline, cls, weight=w, params=params):
                 loaded_count += 1
     except ImportError as exc:
