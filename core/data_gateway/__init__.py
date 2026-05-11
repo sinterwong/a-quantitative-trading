@@ -11,6 +11,7 @@ data_gateway — 统一数据网关
 """
 
 from .capabilities import Capability, Market, ProviderCapability
+from .gateway import DataGateway, get_gateway, reset_gateway
 from .schemas import (
     Fundamentals,
     MarketIndexSnapshot,
@@ -28,6 +29,10 @@ from .symbols import (
 )
 
 __all__ = [
+    # gateway
+    "DataGateway",
+    "get_gateway",
+    "reset_gateway",
     # schemas
     "Quote",
     "Fundamentals",
