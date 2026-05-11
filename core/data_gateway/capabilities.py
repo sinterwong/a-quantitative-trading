@@ -26,6 +26,7 @@ class Capability(str, Enum):
     NORTH_FLOW = "north_flow"                # NorthFlow
     MARKET_INDEX = "market_index"            # MarketIndexSnapshot
     MACRO = "macro"                          # 宏观时序 DataFrame (PMI/M2/社融等)
+    FUNDAMENTALS_HISTORY = "fundamentals_history"  # 基本面历史时序 DataFrame（日频，前向填充）
 
 
 class Market(str, Enum):

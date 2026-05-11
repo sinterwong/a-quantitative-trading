@@ -9,7 +9,7 @@ core/pipeline_factory.py — 生产用因子流水线工厂
 
 因子构成（按权重降序）：
   技术层    RSI(0.20) + MACDTrend(0.20) + Bollinger(0.15) + ATR(0.10)
-  基本面层  PEPercentile(0.10) + ROEMomentum(0.10) + ShareholderConc(0.05) + CashFlowQuality(0.05)
+  基本面层  PEPercentile(0.10) + ROEMomentum(0.10) + RevenueGrowth(0.05) + CashFlowQuality(0.05)
   宏观层    PMI(0.05) + M2Growth(0.05)  ← 无行情数据时自动降级为零权重
 
 使用 DynamicWeightPipeline：
@@ -97,11 +97,13 @@ def build_pipeline(symbol: str = '', strict: bool = True):
     # ── 基本面层（每因子独立 try-except，单个失败不影响其它）──
     try:
         from core.factors.fundamental import (
+            PEPercentileFactor,
             ROEMomentumFactor,
             RevenueGrowthFactor,
+            CashFlowQualityFactor,
         )
         # 使用 FundamentalDataManager 获取历史季报数据（前向填充至日频）
-        # DataGateway.fundamentals() 只返回单点快照，无法支撑 rolling/shift 计算
+        # 数据请求委托给 DataGateway，享受熔断 + 健康度 + 缓存保护
         financial_data = None
         if symbol:
             try:
@@ -111,14 +113,17 @@ def build_pipeline(symbol: str = '', strict: bool = True):
                 fin_df = mgr.get_fundamentals(symbol, start='2023-01-01')
                 if fin_df is not None and not fin_df.empty:
                     # 截取所需列（FundamentalDataManager 已完成 ffill 日频化）
-                    available = ['roe_ttm', 'eps_ttm', 'revenue_yoy', 'profit_yoy', 'ocf_to_profit']
+                    available = ['roe_ttm', 'eps_ttm', 'revenue_yoy', 'profit_yoy',
+                                 'ocf_to_profit', 'pe_ttm', 'pb']
                     financial_data = fin_df[[c for c in available if c in fin_df.columns]]
             except Exception as exc:
                 logger.warning('FundamentalDataManager 获取 %s 失败: %s', symbol, exc)
 
         for cls, w in [
-            (ROEMomentumFactor,   0.10),
-            (RevenueGrowthFactor,  0.05),
+            (PEPercentileFactor,        0.10),
+            (ROEMomentumFactor,         0.10),
+            (RevenueGrowthFactor,        0.05),
+            (CashFlowQualityFactor,      0.05),
         ]:
             params = {}
             if financial_data is not None:

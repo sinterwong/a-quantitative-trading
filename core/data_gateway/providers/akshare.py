@@ -41,7 +41,11 @@ class AkshareProvider(Provider):
 
     def declare(self) -> ProviderCapability:
         return ProviderCapability(
-            capabilities=frozenset({Capability.MACRO, Capability.FUNDAMENTALS}),
+            capabilities=frozenset({
+                Capability.MACRO,
+                Capability.FUNDAMENTALS,
+                Capability.FUNDAMENTALS_HISTORY,
+            }),
             markets=frozenset({Market.GLOBAL}),
             priority_hint=0.30,  # 实测不稳定,健康度低
         )
@@ -191,6 +195,100 @@ class AkshareProvider(Provider):
             or next((c for c in raw.columns if "同比" in c), raw.columns[1])
         )
         return cls._normalize(raw, date_col, val_col, "credit_yoy")
+
+    def fetch_fundamentals_history(
+        self, symbol: str, start: str | None = None, end: str | None = None,
+    ) -> pd.DataFrame:
+        """从 stock_financial_analysis_indicator_em 获取财务历史，转换为日频 DataFrame。
+
+        列映射：
+          ROEJQ            → roe_ttm      （加权 ROE，%）
+          EPSJB            → eps_ttm      （每股收益 TTM，元/股）
+          NETPROFITRPHBZC  → profit_yoy   （净利润同比增长，%）
+          TOTALOPERATEREVE → _revenue     （营业总收入，用于自算营收 YoY）
+
+        注意：pe_ttm / pb / ocf_to_profit / holder_num 在此数据源中不可得，
+        对应因子将降级为零，这是已知数据层限制。
+        """
+        try:
+            import akshare as ak
+        except ImportError:
+            logger.debug("akshare 未安装,跳过 fundamentals_history 请求")
+            return pd.DataFrame()
+
+        code_raw = symbol.upper()
+        if not code_raw.endswith((".SH", ".SZ")):
+            code_raw = code_raw + ".SH"
+
+        try:
+            df = ak.stock_financial_analysis_indicator_em(symbol=code_raw)
+        except Exception as exc:
+            raise ProviderError(
+                f"akshare.fetch_fundamentals_history({symbol}): {exc}"
+            ) from exc
+
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        return self._normalize_indicator_em(df, start, end)
+
+    @staticmethod
+    def _normalize_indicator_em(
+        df: pd.DataFrame, start: str | None, end: str | None,
+    ) -> pd.DataFrame:
+        """将 stock_financial_analysis_indicator_em DataFrame 标准化为日频时序。"""
+        import numpy as np
+
+        df = df.copy()
+
+        if "REPORT_DATE" not in df.columns:
+            return pd.DataFrame()
+        df.index = pd.to_datetime(df["REPORT_DATE"], errors="coerce")
+        df = df[~df.index.isna()].sort_index()
+        if df.empty:
+            return pd.DataFrame()
+
+        result = {}
+
+        # ROE（%，直接可用）
+        if "ROEJQ" in df.columns:
+            result["roe_ttm"] = pd.to_numeric(df["ROEJQ"], errors="coerce")
+
+        # EPS（TTM，元/股）
+        if "EPSJB" in df.columns:
+            result["eps_ttm"] = pd.to_numeric(df["EPSJB"], errors="coerce")
+
+        # 净利润 YoY（AkShare 直接提供）
+        if "NETPROFITRPHBZC" in df.columns:
+            result["profit_yoy"] = pd.to_numeric(df["NETPROFITRPHBZC"], errors="coerce")
+
+        # 营收 YoY（AkShare 无直接字段，从 TOTALOPERATEREVE 自算）
+        # 注意：营收为 0 或 NaN 时不做填充，让 NaN 传播，因子会正确降级
+        if "TOTALOPERATEREVE" in df.columns:
+            rev = pd.to_numeric(df["TOTALOPERATEREVE"], errors="coerce")
+            rev_prev = rev.shift(1)  # 上一年同期
+            yoy = ((rev / rev_prev.replace(0, np.nan)) - 1) * 100
+            result["revenue_yoy"] = yoy.replace([np.inf, -np.inf], np.nan)
+
+        # 以下字段在此数据源中不可得：
+        #   pe_ttm, pb, ocf_to_profit, holder_num
+        # 其对应因子在 financial_data 缺失这些字段时返回零值，这是预期行为。
+
+        if not result:
+            return pd.DataFrame()
+
+        quarterly = pd.DataFrame(result).sort_index()
+        quarterly = quarterly[~quarterly.index.duplicated(keep="last")]
+
+        # 季频 → 日频（前向填充）
+        start_dt = pd.Timestamp(start) if start else quarterly.index.min()
+        end_dt = pd.Timestamp(end) if end else pd.Timestamp.now()
+        daily_idx = pd.bdate_range(start=start_dt, end=end_dt)  # 工作日
+
+        daily = quarterly.reindex(daily_idx)
+        daily = daily.ffill()
+
+        return daily
 
 
 __all__ = ["AkshareProvider"]

@@ -51,6 +51,7 @@ logger = logging.getLogger("data_gateway.gateway")
 _DEFAULT_TTL = {
     Capability.QUOTE: 30.0,
     Capability.FUNDAMENTALS: 60.0,
+    Capability.FUNDAMENTALS_HISTORY: 86400.0,  # 季度数据，24h 缓存足够
     Capability.SECTOR_RANKING: 3600.0,
     Capability.SECTOR_CONSTITUENTS: 60.0,
     Capability.NORTH_FLOW: 60.0,
@@ -469,6 +470,30 @@ class DataGateway:
         df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
         if not df.empty:
             self._cache.set(cache_key, df, _DEFAULT_TTL[Capability.MACRO])
+        return df
+
+    def fundamentals_history(
+        self, symbol: str, start: str | None = None, end: str | None = None,
+    ) -> pd.DataFrame:
+        """基本面历史时序（日频，前向填充季报）。
+
+        通过 DataGateway 统一路由，享受熔断 + 健康度 + 缓存保护。
+        """
+        cache_key = f"fundamentals_history:{symbol}:{start}:{end}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        result, _ = self._sequential_fetch(
+            Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
+            "fetch_fundamentals_history", symbol, start, end,
+        )
+        df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
+        if not df.empty:
+            self._cache.set(
+                cache_key, df,
+                _DEFAULT_TTL.get(Capability.FUNDAMENTALS_HISTORY, 86400.0),
+            )
         return df
 
     # ── 监控 / 调试 ──────────────────────────────────────────────────────────

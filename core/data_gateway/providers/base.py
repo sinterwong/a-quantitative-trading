@@ -118,5 +118,18 @@ class Provider(ABC):
         """
         return pd.DataFrame()
 
+    def fetch_fundamentals_history(
+        self, symbol: str, start: str | None = None, end: str | None = None,
+    ) -> pd.DataFrame:
+        """基本面历史时序（日频，前向填充季报）。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex，列：roe_ttm / eps_ttm / revenue_yoy / profit_yoy /
+            ocf_to_profit 等。若无数据返回空 DataFrame。
+        """
+        return pd.DataFrame()
+
 
 __all__ = ["Provider", "ProviderError"]
