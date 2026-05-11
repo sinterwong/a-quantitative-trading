@@ -1743,6 +1743,39 @@ def performance_summary():
 
 
 # ============================================================
+# P1: Macro Data (宏观数据)
+# ============================================================
+
+@app.route('/data/macro/<indicator>', methods=['GET'])
+def get_macro_data(indicator):
+    """
+    GET /data/macro/PMI
+    GET /data/macro/M2
+
+    返回宏观指标的最新值和日期。
+    """
+    valid = {'PMI', 'M2'}
+    if indicator not in valid:
+        return err(f'Unknown macro indicator: {indicator}. Valid: {valid}', 400)
+
+    try:
+        from core.data_gateway import get_gateway
+        result = get_gateway().macro(indicator)
+        if result is None or result.empty:
+            return err(f'No data for {indicator}', 404)
+        latest = result.iloc[-1]
+        val_col = result.columns[0]
+        return ok(
+            indicator=indicator,
+            value=float(latest[val_col]) if pd.notna(latest[val_col]) else None,
+            date=str(latest.name.date()) if hasattr(latest.name, 'date') else str(latest.name),
+            unit='%' if indicator == 'M2' else '点',
+        )
+    except Exception as exc:
+        return err(f'macro data error: {exc}', 500)
+
+
+# ============================================================
 # P1: Fundamentals (基本面)
 # ============================================================
 

@@ -315,7 +315,7 @@ def analyze_a_share(req: AnalysisRequest) -> AnalysisReport:
                 'eps_ttm': fund.eps_ttm or _safe_float(None),
                 'revenue_yoy': fund.revenue_yoy or _safe_float(None),
                 'profit_yoy': fund.profit_yoy or _safe_float(None),
-                'ocf_to_profit': _safe_float(None),
+                'ocf_to_profit': fund.ocf_to_profit or _safe_float(None),
                 'as_of_date': str(fund.timestamp.date()) if fund.timestamp else None,
             }
         else:

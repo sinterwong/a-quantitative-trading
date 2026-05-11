@@ -110,6 +110,13 @@ class AkshareProvider(Provider):
         revenue_yoy = get_val("成长能力", "营业总收入增长率", 0.0)
         profit_yoy = get_val("成长能力", "归属母公司净利润增长率", 0.0)
 
+        # OCF/净利润（现金流质量）= 经营现金流量净额 / 归母净利润
+        ocf_net = get_val("常用指标", "经营现金流量净额", 0.0)
+        if profit_ttm > 0:
+            ocf_to_profit = ocf_net / profit_ttm
+        else:
+            ocf_to_profit = 0.0
+
         # 报告期
         try:
             period_str = str(latest_col).strip()  # e.g. "20260331"
@@ -132,6 +139,7 @@ class AkshareProvider(Provider):
             revenue_ttm=revenue_ttm,
             revenue_yoy=revenue_yoy,
             profit_yoy=profit_yoy,
+            ocf_to_profit=ocf_to_profit,
             pe_ttm=0.0,   # 腾讯实时行情补充，见 gateway.fundamentals()
             pb=0.0,       # 腾讯实时行情补充，见 gateway.fundamentals()
             timestamp=report_ts,

@@ -14,6 +14,7 @@ memory
 investments.json
 
 backend.log
+backend/*.log*
 backend/__pycache__/
 scripts/__pycache__/
 scripts/quant/__pycache__/

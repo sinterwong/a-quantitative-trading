@@ -100,13 +100,34 @@ def build_pipeline(symbol: str = '', strict: bool = True):
             PEPercentileFactor,
             ROEMomentumFactor,
             ShareholderConcentrationFactor,
+            CashFlowQualityFactor,
         )
+        # 从 data_gateway 获取基本面数据
+        from core.data_gateway import get_gateway
+        fund = get_gateway().fundamentals(symbol) if symbol else None
+
+        # OCF/净利润：经营现金流量净额 / 归母净利润
+        ocf_to_profit = None
+        if fund and fund.profit_ttm > 0 and fund.ocf_to_profit is not None:
+            ocf_to_profit = fund.ocf_to_profit
+        elif fund and fund.profit_ttm > 0:
+            # 从 akshare财报计算：经营现金流/归母净利润
+            pass  # akshare stock_financial_abstract 无此字段，保持 None
+
         for cls, w in [
             (PEPercentileFactor,             0.10),
             (ROEMomentumFactor,              0.10),
             (ShareholderConcentrationFactor, 0.05),
+            (CashFlowQualityFactor,          0.05),
         ]:
-            if _safe_add(pipeline, cls, weight=w, params=sym_param):
+            params = {}
+            if cls == CashFlowQualityFactor and fund:
+                # CashFlowQualityFactor 需要 financial_data dict，含 ocf_to_profit
+                import pandas as pd
+                if fund.ocf_to_profit is not None:
+                    fd = pd.DataFrame({'ocf_to_profit': [fund.ocf_to_profit]})
+                    params = {'financial_data': fd}
+            if _safe_add(pipeline, cls, weight=w, params=params):
                 loaded_count += 1
     except ImportError as exc:
         logger.warning('基本面因子模块导入失败（整层跳过）: %s', exc)

@@ -103,6 +103,7 @@ class Fundamentals:
     profit_ttm: float = 0.0      # 元
     revenue_yoy: float = 0.0     # %
     profit_yoy: float = 0.0      # %
+    ocf_to_profit: float = 0.0   # 经营现金流/净利润（现金流质量）
 
     # 市值
     market_cap: float = 0.0      # 亿
