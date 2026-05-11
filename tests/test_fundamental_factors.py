@@ -357,58 +357,68 @@ class TestCashFlowQualityFactor(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestFundamentalDataManager(unittest.TestCase):
+    """FundamentalDataManager 单元测试（不发网络请求）。
 
-    def test_get_fundamentals_no_akshare_returns_empty(self):
-        """AKShare 不可用时返回空 DataFrame（不抛异常）"""
-        from core.fundamental_data import FundamentalDataManager
-        mgr = FundamentalDataManager()
-        with patch.object(mgr, '_fetch', return_value=None):
-            result = mgr.get_fundamentals('000001.SZ')
-        self.assertIsInstance(result, pd.DataFrame)
+    新实现委托 DataGateway.fundamentals_history()，内部不再持有缓存网络代码。
+    """
 
-    def test_memory_cache_reused(self):
-        """第二次调用直接返回内存缓存，不重新 fetch"""
+    def test_get_fundamentals_delegates_to_gateway(self):
+        """get_fundamentals() 正确委托 DataGateway，不直接调 AkShare"""
         from core.fundamental_data import FundamentalDataManager
-        mgr = FundamentalDataManager()
         mock_df = _make_financial_df(60)
-        mgr._memory_cache['000001.SZ'] = (datetime.now(), mock_df)
+        with patch('core.fundamental_data.get_gateway') as mock_gw:
+            mock_gw.return_value.fundamentals_history.return_value = mock_df
+            mgr = FundamentalDataManager()
+            result = mgr.get_fundamentals('000001.SZ', start='2022-01-01')
 
-        with patch.object(mgr, '_fetch') as mock_fetch:
-            result = mgr.get_fundamentals('000001.SZ')
-            mock_fetch.assert_not_called()
+        mock_gw.return_value.fundamentals_history.assert_called_once_with(
+            '000001.SZ', start='2022-01-01', end=None,
+        )
         self.assertFalse(result.empty)
 
-    def test_parquet_roundtrip(self):
-        """Parquet 保存后可以正确读回"""
+    def test_get_fundamentals_gateway_returns_empty(self):
+        """Gateway 返回空 DataFrame 时，get_fundamentals() 返回空 DataFrame（不抛异常）"""
         from core.fundamental_data import FundamentalDataManager
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch('core.fundamental_data._FUNDAMENTAL_DIR', tmpdir):
-                mgr = FundamentalDataManager()
-                fin = _make_financial_df(60)
-                mgr._save_parquet('TEST.SZ', fin)
-                loaded = mgr._load_parquet('TEST.SZ')
+        with patch('core.fundamental_data.get_gateway') as mock_gw:
+            mock_gw.return_value.fundamentals_history.return_value = pd.DataFrame()
+            mgr = FundamentalDataManager()
+            result = mgr.get_fundamentals('000001.SZ')
 
-        self.assertIsNotNone(loaded)
-        self.assertEqual(len(loaded), len(fin))
-        self.assertIn('pe_ttm', loaded.columns)
+        self.assertIsInstance(result, pd.DataFrame)
+        self.assertTrue(result.empty)
 
-    def test_slice_by_date(self):
-        """_slice 正确按日期范围截取"""
+    def test_get_fundamentals_gateway_raises(self):
+        """Gateway 抛异常时，get_fundamentals() 返回空 DataFrame（不向上传播）"""
         from core.fundamental_data import FundamentalDataManager
-        mgr = FundamentalDataManager()
-        fin = _make_financial_df(300)
+        with patch('core.fundamental_data.get_gateway') as mock_gw:
+            mock_gw.return_value.fundamentals_history.side_effect = RuntimeError('network')
+            mgr = FundamentalDataManager()
+            result = mgr.get_fundamentals('000001.SZ')
 
-        sliced = mgr._slice(fin, start='2022-03-01', end='2022-06-30')
-        self.assertTrue((sliced.index >= pd.Timestamp('2022-03-01')).all())
-        self.assertTrue((sliced.index <= pd.Timestamp('2022-06-30')).all())
+        self.assertIsInstance(result, pd.DataFrame)
+        self.assertTrue(result.empty)
 
-    def test_invalidate_removes_cache(self):
-        """invalidate() 清除内存缓存"""
+    def test_get_fundamentals_date_index_normalized(self):
+        """返回 DataFrame 保证 DatetimeIndex"""
         from core.fundamental_data import FundamentalDataManager
-        mgr = FundamentalDataManager()
-        mgr._memory_cache['000001.SZ'] = (datetime.now(), _make_financial_df(30))
-        mgr.invalidate('000001.SZ')
-        self.assertNotIn('000001.SZ', mgr._memory_cache)
+        mock_df = _make_financial_df(60)
+        # Simulate a non-DatetimeIndex (edge case from gateway)
+        mock_df.index = range(len(mock_df))
+        with patch('core.fundamental_data.get_gateway') as mock_gw:
+            mock_gw.return_value.fundamentals_history.return_value = mock_df
+            mgr = FundamentalDataManager()
+            result = mgr.get_fundamentals('000001.SZ')
+
+        self.assertTrue(pd.api.types.is_datetime64_any_dtype(result.index))
+
+    def test_invalidate_calls_gateway_clear(self):
+        """invalidate() 正确清除 gateway 缓存"""
+        from core.fundamental_data import FundamentalDataManager
+        with patch('core.fundamental_data.get_gateway') as mock_gw:
+            mgr = FundamentalDataManager()
+            mgr.invalidate('000001.SZ')
+
+        mock_gw.return_value.invalidate_cache.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

@@ -57,15 +57,30 @@ def init_alerts():
                 delivered    INTEGER NOT NULL DEFAULT 1
             )
         """)
-        # 索引加速查询
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_alerts_triggered_at
-            ON alerts(triggered_at DESC)
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_alerts_type
-            ON alerts(type)
-        """)
+        # ── Schema migrations（新增列兼容旧数据库）──────────────
+        for col, dtype in [
+            ('type',        'TEXT NOT NULL DEFAULT "MANUAL"'),
+            ('symbol',      'TEXT NOT NULL DEFAULT ""'),
+            ('message',      'TEXT NOT NULL DEFAULT ""'),
+            ('price',       'REAL'),
+            ('pct_change', 'REAL'),
+            ('triggered_at', 'TEXT NOT NULL DEFAULT ""'),
+            ('delivered',   'INTEGER NOT NULL DEFAULT 1'),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE alerts ADD COLUMN {col} {dtype}")
+            except Exception:
+                pass  # column already exists
+
+        # 索引加速查询（表/列不存在时跳过）
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_alerts_triggered_at ON alerts(triggered_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_alerts_type ON alerts(type)",
+        ]:
+            try:
+                conn.execute(idx_sql)
+            except Exception:
+                pass  # table or column doesn't exist yet
 
 
 def record_alert(

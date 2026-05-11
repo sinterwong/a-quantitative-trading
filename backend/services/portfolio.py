@@ -116,6 +116,12 @@ def init_db():
         except Exception:
             pass  # column already exists
 
+        # Add trade_id column if upgrading from older schema (pre-trade_id era)
+        try:
+            cur.execute("ALTER TABLE trades ADD COLUMN trade_id TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass  # column already exists or other error
+
         # signals
         cur.execute('''
             CREATE TABLE IF NOT EXISTS signals (
@@ -171,15 +177,39 @@ def init_db():
 
         # Add columns to existing orders table if missing (migration)
         for col, dtype in [
-            ('filled_shares', 'INTEGER NOT NULL DEFAULT 0'),
-            ('avg_fill_price', 'REAL NOT NULL DEFAULT 0.0'),
-            ('cancel_reason', 'TEXT'),
-            ('rejection_reason', 'TEXT'),
+            ('filled_shares',     'INTEGER NOT NULL DEFAULT 0'),
+            ('avg_fill_price',   'REAL NOT NULL DEFAULT 0.0'),
+            ('cancel_reason',    'TEXT'),
+            ('rejection_reason',  'TEXT'),
+            ('submitted_at',     'TEXT'),
+            ('filled_at',        'TEXT'),
+        ]:
+            try:
+                cur.execute(f"ALTER TABLE orders ADD COLUMN {col} {dtype}")
+            except Exception:
+                pass  # column already exists
+
+        # Add columns to existing positions table if missing (migration)
+        for col, dtype in [
             ('latest_price', 'REAL NOT NULL DEFAULT 0.0'),
-            ('peak_price', 'REAL NOT NULL DEFAULT 0.0'),
+            ('peak_price',   'REAL NOT NULL DEFAULT 0.0'),
         ]:
             try:
                 cur.execute(f'ALTER TABLE positions ADD COLUMN {col} {dtype}')
+            except Exception:
+                pass  # column already exists
+
+        # Add columns to existing daily_meta table if missing (migration)
+        for col, dtype in [
+            ('weekday',     'TEXT'),
+            ('n_signals',   'INTEGER DEFAULT 0'),
+            ('n_trades',    'INTEGER DEFAULT 0'),
+            ('equity',      'REAL'),
+            ('cash',        'REAL'),
+            ('note',        'TEXT'),
+        ]:
+            try:
+                cur.execute(f"ALTER TABLE daily_meta ADD COLUMN {col} {dtype}")
             except Exception:
                 pass  # column already exists
 

@@ -49,6 +49,12 @@ def init_watchlist():
             )
         """)
 
+        # Add enabled column if upgrading from older schema (pre-enabled era)
+        try:
+            conn.execute("ALTER TABLE watchlist ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+        except Exception:
+            pass  # column already exists or other error
+
 
 # ─── CRUD ──────────────────────────────────────────────────────────────
 
