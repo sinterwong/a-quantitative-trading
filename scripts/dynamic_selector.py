@@ -453,16 +453,16 @@ class DynamicStockSelectorV2:
         if self._sectors_fetched and self.sectors_raw:
             return self.sectors_raw
 
-        # 通过 QuoteSourceManager → EastmoneySectorSource 获取板块排名
+        # 通过 data_gateway 获取板块排名(默认路由到 eastmoney)
         try:
-            from core.quote_source_manager import get_quote_manager
-            sectors = get_quote_manager().fetch_sector_rankings(limit=100)
+            from core.data_gateway import get_gateway
+            sectors = get_gateway().sectors(limit=100)
             if sectors:
                 # 转换为原有 dict 格式（兼容现有 calc_sector_scores_from_bk）
                 self.sectors_raw = []
                 for s in sectors:
                     self.sectors_raw.append({
-                        'f12': s.bk_code,
+                        'f12': s.code,
                         'f14': s.name,
                         'f3': s.change_pct,
                         'f62': s.net_flow,
@@ -472,10 +472,10 @@ class DynamicStockSelectorV2:
                 self._last_source = 'eastmoney'
                 _write_file_cache('sectors.json', self.sectors_raw)
                 self._sectors_fetched = True
-                _log('INFO', f'fetch_sectors: eastmoney ok ({len(self.sectors_raw)} sectors)')
+                _log('INFO', f'fetch_sectors: gateway ok ({len(self.sectors_raw)} sectors)')
                 return self.sectors_raw
         except Exception as e:
-            _log('WARNING', f'fetch_sectors: QuoteSourceManager failed: {e}')
+            _log('WARNING', f'fetch_sectors: gateway failed: {e}')
 
         # 文件缓存兜底
         cached = _read_file_cache('sectors.json', max_age_seconds=3600)
@@ -498,8 +498,8 @@ class DynamicStockSelectorV2:
             return self._constituent_cache[cache_key]
 
         try:
-            from core.quote_source_manager import get_quote_manager
-            constituents = get_quote_manager().fetch_sector_constituents(bk_code, limit=top_n)
+            from core.data_gateway import get_gateway
+            constituents = get_gateway().sector_constituents(bk_code, limit=top_n)
             result = []
             for c in constituents:
                 std_sym = c.symbol
@@ -541,9 +541,8 @@ class DynamicStockSelectorV2:
             qt_code = 'sh' + code
 
         try:
-            from core.quote_source_manager import get_quote_manager
-            mgr = get_quote_manager()
-            q = mgr.fetch_quote(qt_code)
+            from core.data_gateway import get_gateway
+            q = get_gateway().quote(qt_code)
             if q and q.is_valid:
                 return {
                     'name': q.name,

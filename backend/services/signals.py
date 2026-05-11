@@ -244,15 +244,14 @@ def fetch_bulk(symbols: list[str]) -> dict[str, dict]:
 
 def _fetch_history_sina(symbol: str, days: int = 6) -> Optional[list[dict]]:
     """
-    用新浪财经接口获取日K线（最近几天），用于：
-    1. 计算 RSI（14日）
+    通过 data_gateway 获取日K线(最近几天),用于:
+    1. 计算 RSI(14日)
     2. 计算 5 日均量
-    返回 [{date, close, volume}, ...]，最近日期在最后。
+    返回 [{date, close, volume}, ...],最近日期在最后。
     """
     try:
-        from core.sina_quote_source import get_sina_source
-        src = get_sina_source()
-        df = src.fetch_daily_kline(symbol, days=days)
+        from core.data_gateway import get_gateway
+        df = get_gateway().kline(symbol, interval="daily", days=days)
         if df.empty or len(df) < 2:
             return None
         return [{'date': str(r['date']), 'close': r['close'], 'volume': r['volume']}
@@ -521,9 +520,8 @@ def _fetch_minute_bars(symbol: str, scale: int = 15,
     返回 [{time, close, volume}, ...]，时间升序。
     """
     try:
-        from core.sina_quote_source import get_sina_source
-        src = get_sina_source()
-        df = src.fetch_minute_kline(symbol, period=f'{scale}m', limit=datalen)
+        from core.data_gateway import get_gateway
+        df = get_gateway().kline(symbol, interval=f'{scale}m', limit=datalen)
         if df.empty or len(df) < 5:
             return None
         return [{'time': str(r['datetime']), 'close': r['close'], 'volume': r['volume']}

@@ -1,29 +1,22 @@
 """
-tests/test_data_layer.py — Phase 1 验收测试：DataLayer
+tests/test_data_layer.py — DataLayer 验收测试
 
-兼容两种运行方式：
-  python tests/test_data_layer.py        (无需 pytest)
-  pytest tests/test_data_layer.py -v     (有 pytest 时)
-
-覆盖：
+覆盖:
   1. Quote / NorthFlowSnapshot 数据类行为
-  2. _TTLCache 线程安全 + TTL 过期
-  3. _parse_tencent_quote 解析正确性
-  4. DataLayer.get_realtime_bulk — 缓存命中（不发网络）
-  5. DataLayer.get_bars — 缓存命中、降级、空结果
-  6. DataLayer.invalidate — 清除缓存后重新请求
-  7. BacktestDataLayer — 前视偏差防护（核心验收）
-  8. BacktestDataLayer — 实时行情、批量、北向、可用日期
-  9. 全局单例 get_data_layer()
+  2. DataLayer 转发到 gateway 的契约(mock gateway)
+  3. BacktestDataLayer 前视偏差防护(核心验收)
+  4. 全局单例 get_data_layer()
+
+DataLayer 自身的 TTL 缓存已下沉到 data_gateway 层(MemoryCache),
+对应的缓存单元测试在 tests/test_data_gateway/test_cache.py。
 """
 
 import sys
 import os
-import time
 import threading
 import traceback
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -32,13 +25,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from core.data_layer import (
     Quote,
     NorthFlowSnapshot,
-    _TTLCache,
     DataLayer,
     BacktestDataLayer,
     get_data_layer,
     reset_data_layer,
 )
-from core.quote_data_source import normalize_to_tencent
+from core.data_gateway.symbols import normalize_to_tencent
+from core.data_gateway.schemas import Quote as GwQuote
+from core.data_gateway.schemas import NorthFlow as GwNorthFlow
 
 # ─── 测试框架（最小实现，无外部依赖）────────────────────────────────────────
 
@@ -63,7 +57,6 @@ def _section(name: str):
 
 
 def _run_method(obj, name: str):
-    """运行单个测试方法，捕获异常作为失败"""
     global _passed, _failed
     setup = getattr(obj, "setup_method", None)
     teardown = getattr(obj, "teardown_method", None)
@@ -90,7 +83,6 @@ def _run_method(obj, name: str):
 
 
 def _run_class(cls):
-    """运行测试类中的所有 test_* 方法"""
     _section(cls.__name__)
     obj = cls()
     for name in sorted(dir(obj)):
@@ -100,8 +92,8 @@ def _run_class(cls):
 
 # ─── 辅助：构造合成数据 ──────────────────────────────────────────────────────
 
+
 def _make_bar_df(n: int = 60, start: str = "2024-01-02") -> pd.DataFrame:
-    """合成日K线 DataFrame（n 行工作日）"""
     import numpy as np
     dates = pd.date_range(start, periods=n, freq="B")
     np.random.seed(42)
@@ -117,9 +109,28 @@ def _make_bar_df(n: int = 60, start: str = "2024-01-02") -> pd.DataFrame:
     })
 
 
+def _make_gw_quote(symbol: str = "sh510310") -> GwQuote:
+    return GwQuote(
+        symbol=symbol, name="测试", code=symbol[2:], market="A",
+        price=5.0, prev_close=4.9, open=5.0, high=5.1, low=4.8,
+        change=0.1, pct_change=2.04,
+        volume=100000, amount=500000, turnover_rate=1.0,
+        bid1_price=4.99, bid1_vol=100, ask1_price=5.01, ask1_vol=100,
+        volume_ratio=1.2, currency="CNY",
+    )
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 测试类（兼容 pytest 类风格）
+
+def _mock_gateway(*, quote_value=None, quotes_value=None, kline_value=None,
+                  north_value=None, macro_value=None):
+    mock = MagicMock()
+    mock.quote.return_value = quote_value
+    mock.quotes.return_value = quotes_value or {}
+    mock.kline.return_value = kline_value if kline_value is not None else pd.DataFrame()
+    mock.north_flow.return_value = north_value
+    mock.macro.return_value = macro_value if macro_value is not None else pd.DataFrame()
+    return mock
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -164,63 +175,6 @@ class TestNorthFlowSnapshot:
         assert snap.direction == "NEUTRAL"
 
 
-class TestTTLCache:
-    def test_set_and_get(self):
-        cache = _TTLCache()
-        cache.set("k", 42, ttl=10)
-        assert cache.get("k") == 42
-
-    def test_miss_returns_none(self):
-        cache = _TTLCache()
-        assert cache.get("nonexistent") is None
-
-    def test_ttl_expiry(self):
-        cache = _TTLCache()
-        cache.set("k", "value", ttl=0.05)
-        assert cache.get("k") == "value"
-        time.sleep(0.1)
-        assert cache.get("k") is None, "过期后应返回 None"
-
-    def test_delete(self):
-        cache = _TTLCache()
-        cache.set("k", 1, ttl=60)
-        cache.delete("k")
-        assert cache.get("k") is None
-
-    def test_clear(self):
-        cache = _TTLCache()
-        cache.set("a", 1, ttl=60)
-        cache.set("b", 2, ttl=60)
-        cache.clear()
-        assert len(cache) == 0
-
-    def test_overwrite(self):
-        cache = _TTLCache()
-        cache.set("k", "old", ttl=60)
-        cache.set("k", "new", ttl=60)
-        assert cache.get("k") == "new"
-
-    def test_thread_safety(self):
-        """多线程并发读写不崩溃"""
-        cache = _TTLCache()
-        errors = []
-
-        def worker(i):
-            try:
-                for j in range(200):
-                    cache.set(f"k{i}_{j}", j, ttl=1)
-                    cache.get(f"k{i}_{j}")
-            except Exception as e:
-                errors.append(str(e))
-
-        threads = [threading.Thread(target=worker, args=(i,)) for i in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-        assert not errors, f"线程安全异常: {errors}"
-
-
 class TestNormalizeToTencent:
     def test_sh(self):
         assert normalize_to_tencent("600519.SH") == "sh600519"
@@ -235,195 +189,116 @@ class TestNormalizeToTencent:
         assert normalize_to_tencent("510310.SH") == "sh510310"
 
 
+class TestDataLayerForwarding:
+    """验证 DataLayer 正确转发到 gateway,字段映射保持向后兼容。"""
 
-class TestDataLayerCache:
-    """DataLayer 缓存行为测试（全部 mock 网络，不发真实请求）"""
-
-    def _make_quote(self, symbol: str = "510310.SH") -> Quote:
-        return Quote(symbol, price=5.0, prev_close=4.9,
-                     pct_change=2.04, high=5.1, low=4.8, vol_ratio=1.2)
-
-    def _make_tencent_quote(self, symbol: str = "510310.SH"):
-        """构造一个 QuoteData mock 对象"""
-        from core.quote_data_source import QuoteData
-        return QuoteData(
-            symbol=symbol, name="测试", code=symbol.split(".")[0],
-            market="A", price=5.0, prev_close=4.9, open=5.0,
-            high=5.1, low=4.8, avg_price=5.0,
-            change=0.1, pct_change=2.04,
-            volume=100000, amount=500000, turnover_rate=1.0,
-            bid1_price=4.99, bid1_vol=100, ask1_price=5.01, ask1_vol=100,
-            pe_ttm=0.0, pb=0.0, dividend_yield=0.0,
-            market_cap=0.0, float_cap=0.0,
-            limit_up=0.0, limit_down=0.0, amplitude=0.0,
-            high_52w=0.0, low_52w=0.0,
-            volume_ratio=1.2, currency="CNY", timestamp="2024-01-01",
-        )
-
-    def _mock_tencent_source(self, quote_map):
-        """构造 mock TencentQuoteDataSource，返回指定的 quote_map"""
-        mock_source = type("MockSource", (), {})()
-        mock_source.fetch_quotes = lambda syms: {
-            s: q for s, q in quote_map.items() if s in syms
-        }
-        return mock_source
-
-    def _mock_quote_manager(self, bars_df=None, fetch_kline_side_effect=None):
-        """构造 mock QuoteSourceManager"""
-        mock_mgr = type("MockMgr", (), {})()
-        if fetch_kline_side_effect:
-            mock_mgr.fetch_daily_kline = fetch_kline_side_effect
-        elif bars_df is not None:
-            mock_mgr.fetch_daily_kline = lambda sym, days=60, adjust="qfq": bars_df
-        else:
-            mock_mgr.fetch_daily_kline = lambda sym, days=60, adjust="qfq": pd.DataFrame()
-        mock_mgr.fetch_minute_kline = lambda sym, period="15m", limit=100: pd.DataFrame()
-        return mock_mgr
-
-    def test_get_realtime_bulk_caches_result(self):
-        """相同标的第二次调用命中缓存，不触发 HTTP"""
-        layer = DataLayer()
-        sym = "510310.SH"
-        tq = self._make_tencent_quote(sym)
-        call_count = [0]
-
-        def counting_fetch_quotes(syms):
-            call_count[0] += 1
-            return {sym: tq}
-
-        mock_source = type("MockSource", (), {})()
-        mock_source.fetch_quotes = counting_fetch_quotes
-
-        with patch.object(layer, "_get_tencent_source", return_value=mock_source):
-            layer.get_realtime_bulk([sym])
-            layer.get_realtime_bulk([sym])
-
-        assert call_count[0] == 1, f"应只请求1次，实际{call_count[0]}次"
-
-    def test_get_realtime_bulk_partial_cache(self):
-        """A已缓存，B未缓存，只请求B"""
-        layer = DataLayer()
-        tq_a = self._make_tencent_quote("510310.SH")
-        tq_b = self._make_tencent_quote("600900.SH")
-
-        # 第一次只返回 A
-        mock_source_1 = type("MockSource", (), {})()
-        mock_source_1.fetch_quotes = lambda syms: {"510310.SH": tq_a}
-        with patch.object(layer, "_get_tencent_source", return_value=mock_source_1):
-            layer.get_realtime_bulk(["510310.SH"])
-
-        # 第二次只应请求 B
-        request_args = []
-        def capture_quotes(syms):
-            request_args.append(list(syms))
-            return {"600900.SH": tq_b}
-
-        mock_source_2 = type("MockSource", (), {})()
-        mock_source_2.fetch_quotes = capture_quotes
-        with patch.object(layer, "_get_tencent_source", return_value=mock_source_2):
-            result = layer.get_realtime_bulk(["510310.SH", "600900.SH"])
-
-        assert request_args == [["600900.SH"]], "只应请求未缓存的 B"
-        assert "510310.SH" in result
-        assert "600900.SH" in result
-
-    def test_get_bars_caches_result(self):
-        """get_bars 第二次调用不触发 HTTP"""
+    def test_get_realtime_forwards_to_gateway(self):
+        gw = _mock_gateway(quote_value=_make_gw_quote("sh510310"))
         layer = DataLayer(use_parquet_cache=False)
-        df = _make_bar_df(60)
-        call_count = [0]
+        layer._gw = gw
+        q = layer.get_realtime("510310.SH")
+        gw.quote.assert_called_once_with("510310.SH")
+        assert q is not None
+        # 业务侧 Quote.symbol 保留调用方原始格式(不强制归一)
+        assert q.symbol == "510310.SH"
+        assert q.price == 5.0
+        assert q.vol_ratio == 1.2  # gateway.volume_ratio 映射
 
-        def fake_fetch(sym, days=60, adjust="qfq"):
-            call_count[0] += 1
-            return df
-
-        mock_mgr = self._mock_quote_manager(fetch_kline_side_effect=fake_fetch)
-        with patch.object(layer, "_get_quote_manager", return_value=mock_mgr):
-            layer.get_bars("510310.SH", days=60)
-            layer.get_bars("510310.SH", days=60)
-
-        assert call_count[0] == 1
-
-    def test_get_bars_fallback_returns_empty_df(self):
-        """QuoteSourceManager 返回空时，最终返回空 DataFrame"""
-        layer = DataLayer()
-        mock_mgr = self._mock_quote_manager(bars_df=pd.DataFrame())
-        with patch.object(layer, "_get_quote_manager", return_value=mock_mgr):
-            result = layer.get_bars("600900.SH", days=30)
-
-        assert isinstance(result, pd.DataFrame)
-        assert result.empty
-
-    def test_get_bars_has_required_columns(self):
-        """返回 DataFrame 必须含标准列"""
-        layer = DataLayer()
-        df = _make_bar_df(10)
-        mock_mgr = self._mock_quote_manager(bars_df=df)
-        with patch.object(layer, "_get_quote_manager", return_value=mock_mgr):
-            result = layer.get_bars("510310.SH", days=10)
-        required = {"date", "open", "high", "low", "close", "volume"}
-        assert required.issubset(set(result.columns))
-
-    def test_invalidate_symbol_clears_quote_cache(self):
-        """invalidate(sym) 后再次请求触发 HTTP"""
-        layer = DataLayer()
-        sym = "510310.SH"
-        tq = self._make_tencent_quote(sym)
-        call_count = [0]
-
-        def counting_fetch_quotes(syms):
-            call_count[0] += 1
-            return {sym: tq}
-
-        mock_source = type("MockSource", (), {})()
-        mock_source.fetch_quotes = counting_fetch_quotes
-
-        with patch.object(layer, "_get_tencent_source", return_value=mock_source):
-            layer.get_realtime_bulk([sym])
-            layer.invalidate(sym)
-            layer.get_realtime_bulk([sym])
-
-        assert call_count[0] == 2
-
-    def test_invalidate_all_clears_cache(self):
-        """invalidate() 清全部缓存"""
-        layer = DataLayer()
-        sym = "510310.SH"
-        tq = self._make_tencent_quote(sym)
-        df = _make_bar_df(10)
-
-        mock_source = type("MockSource", (), {})()
-        mock_source.fetch_quotes = lambda syms: {sym: tq}
-        mock_mgr = self._mock_quote_manager(bars_df=df)
-
-        with patch.object(layer, "_get_tencent_source", return_value=mock_source), \
-             patch.object(layer, "_get_quote_manager", return_value=mock_mgr):
-            layer.get_realtime_bulk([sym])
-            layer.get_bars(sym, days=10)
-
-        assert len(layer._cache) > 0
-        layer.invalidate()
-        assert len(layer._cache) == 0
-
-    def test_get_realtime_delegates_to_bulk(self):
-        """get_realtime(sym) 等同 get_realtime_bulk([sym])[sym]"""
-        layer = DataLayer()
-        tq = self._make_tencent_quote("600519.SH")
-        mock_source = type("MockSource", (), {})()
-        mock_source.fetch_quotes = lambda syms: {"600519.SH": tq}
-        with patch.object(layer, "_get_tencent_source", return_value=mock_source):
-            result = layer.get_realtime("600519.SH")
-        assert result is not None
-        assert result.symbol == "600519.SH"
+    def test_get_realtime_bulk_forwards(self):
+        gw = _mock_gateway(quotes_value={
+            "sh510310": _make_gw_quote("sh510310"),
+            "sh600519": _make_gw_quote("sh600519"),
+        })
+        layer = DataLayer(use_parquet_cache=False)
+        layer._gw = gw
+        out = layer.get_realtime_bulk(["sh510310", "sh600519"])
+        gw.quotes.assert_called_once()
+        assert set(out) == {"sh510310", "sh600519"}
 
     def test_get_realtime_returns_none_on_miss(self):
-        """找不到标的时返回 None 不崩溃"""
-        layer = DataLayer()
-        mock_source = type("MockSource", (), {})()
-        mock_source.fetch_quotes = lambda syms: {}
-        with patch.object(layer, "_get_tencent_source", return_value=mock_source):
-            result = layer.get_realtime("NOTEXIST.SH")
-        assert result is None
+        gw = _mock_gateway(quote_value=None)
+        layer = DataLayer(use_parquet_cache=False)
+        layer._gw = gw
+        assert layer.get_realtime("NOTEXIST.SH") is None
+
+    def test_zero_optional_fields_become_none(self):
+        """gateway.Quote 中 0.0 的可选字段在业务 Quote 中应为 None。"""
+        gq = _make_gw_quote()
+        gq.pe_ttm = 0.0
+        gq.pb = 0.0
+        gw = _mock_gateway(quote_value=gq)
+        layer = DataLayer(use_parquet_cache=False)
+        layer._gw = gw
+        q = layer.get_realtime("510310.SH")
+        assert q.pe_ttm is None
+        assert q.pb is None
+
+    def test_get_bars_forwards_to_gateway_kline(self):
+        layer = DataLayer(use_parquet_cache=False)
+        df = _make_bar_df(60)
+        gw = _mock_gateway(kline_value=df)
+        layer._gw = gw
+        out = layer.get_bars("510310.SH", days=30)
+        # gateway.kline 被调用
+        gw.kline.assert_called_once()
+        call_kw = gw.kline.call_args
+        assert call_kw.kwargs.get("interval") == "daily"
+        assert isinstance(out, pd.DataFrame)
+        assert {"date", "open", "high", "low", "close", "volume"}.issubset(out.columns)
+
+    def test_get_bars_empty_returns_typed_empty(self):
+        layer = DataLayer(use_parquet_cache=False)
+        gw = _mock_gateway(kline_value=pd.DataFrame())
+        layer._gw = gw
+        out = layer.get_bars("X.SH", days=30)
+        assert out.empty
+        assert set(out.columns) == {"date", "open", "high", "low", "close", "volume"}
+
+    def test_get_minute_bars_forwards(self):
+        layer = DataLayer(use_parquet_cache=False)
+        df_min = pd.DataFrame({"datetime": [datetime.now()], "open": [1.0],
+                               "high": [1.1], "low": [0.9], "close": [1.05],
+                               "volume": [100]})
+        gw = _mock_gateway(kline_value=df_min)
+        layer._gw = gw
+        out = layer.get_minute_bars("510310.SH", period="5")
+        gw.kline.assert_called_once()
+        assert gw.kline.call_args.kwargs.get("interval") == "5m"
+        assert not out.empty
+
+    def test_get_north_flow_forwards(self):
+        layer = DataLayer(use_parquet_cache=False)
+        gw = _mock_gateway(north_value=GwNorthFlow(
+            net_north_yi=12.3, net_south_yi=-1.0, direction="BUY",
+        ))
+        layer._gw = gw
+        snap = layer.get_north_flow()
+        gw.north_flow.assert_called_once()
+        assert snap.net_north_yi == 12.3
+        assert snap.direction == "BUY"
+
+    def test_get_north_flow_none_returns_default(self):
+        layer = DataLayer(use_parquet_cache=False)
+        gw = _mock_gateway(north_value=None)
+        layer._gw = gw
+        snap = layer.get_north_flow()
+        assert snap.direction == "NEUTRAL"
+
+    def test_get_macro_forwards(self):
+        layer = DataLayer(use_parquet_cache=False)
+        df = pd.DataFrame({"pmi": [50.5]}, index=pd.to_datetime(["2026-05-01"]))
+        gw = _mock_gateway(macro_value=df)
+        layer._gw = gw
+        out = layer.get_macro_data("PMI")
+        gw.macro.assert_called_once_with("PMI")
+        assert not out.empty
+
+    def test_invalidate_clears_gateway_cache(self):
+        layer = DataLayer(use_parquet_cache=False)
+        gw = _mock_gateway()
+        layer._gw = gw
+        layer.invalidate()
+        gw.invalidate_cache.assert_called_once()
 
 
 class TestBacktestDataLayer:
@@ -434,13 +309,11 @@ class TestBacktestDataLayer:
         return BacktestDataLayer({"510310.SH": df})
 
     def test_get_bars_no_date_returns_last_n(self):
-        """未设置日期，返回全量最后 N 条"""
         layer = self._make_layer(60)
         result = layer.get_bars("510310.SH", days=30)
         assert len(result) == 30
 
     def test_no_lookahead_bias(self):
-        """最核心验收：当前日期之后的数据不出现在 get_bars 结果中"""
         layer = self._make_layer(60)
         all_dates = layer.available_dates("510310.SH")
         cutoff = all_dates[20]
@@ -452,7 +325,6 @@ class TestBacktestDataLayer:
         assert len(future) == 0, f"存在前视偏差！泄露了 {len(future)} 条未来数据"
 
     def test_get_bars_respects_cutoff_date(self):
-        """cutoff 当天的数据应包含，之后的不包含"""
         layer = self._make_layer(60)
         all_dates = layer.available_dates("510310.SH")
         cutoff = all_dates[30]
@@ -460,7 +332,6 @@ class TestBacktestDataLayer:
         layer.set_date(cutoff)
         bars = layer.get_bars("510310.SH", days=60)
         assert bars["date"].max() <= cutoff
-        # cutoff 当天本身也应在结果中
         assert (bars["date"] == cutoff).any()
 
     def test_get_bars_days_limit(self):
@@ -474,7 +345,6 @@ class TestBacktestDataLayer:
         assert result.empty
 
     def test_get_realtime_returns_current_date_close(self):
-        """get_realtime 返回 current_date 当日收盘价"""
         layer = self._make_layer(60)
         all_dates = layer.available_dates("510310.SH")
         cutoff = all_dates[20]
@@ -482,13 +352,11 @@ class TestBacktestDataLayer:
 
         q = layer.get_realtime("510310.SH")
         assert q is not None
-        # 对比原始数据
         df = _make_bar_df(60, start="2024-01-02")
         expected = float(df[df["date"] == cutoff]["close"].iloc[0])
         assert abs(q.price - expected) < 0.001
 
     def test_get_realtime_returns_none_before_data(self):
-        """设置比所有数据都早的日期时返回 None"""
         layer = self._make_layer(10)
         layer.set_date("2000-01-01")
         assert layer.get_realtime("510310.SH") is None
@@ -502,7 +370,6 @@ class TestBacktestDataLayer:
         assert "600900.SH" in result
 
     def test_get_north_flow_always_neutral(self):
-        """回测中北向固定中性"""
         layer = self._make_layer(10)
         snap = layer.get_north_flow()
         assert snap.direction == "NEUTRAL"
@@ -511,7 +378,7 @@ class TestBacktestDataLayer:
     def test_available_dates_sorted_ascending(self):
         layer = self._make_layer(20)
         dates = layer.available_dates("510310.SH")
-        assert dates == sorted(dates), "available_dates 应升序"
+        assert dates == sorted(dates)
         assert len(dates) == 20
 
     def test_set_date_from_string(self):
@@ -520,7 +387,6 @@ class TestBacktestDataLayer:
         assert layer.current_date == pd.Timestamp("2024-02-01")
 
     def test_string_date_column_normalized(self):
-        """传入字符串 date 列时应自动转为 datetime64"""
         df = _make_bar_df(20, start="2024-01-02")
         df["date"] = df["date"].astype(str)
         layer = BacktestDataLayer({"510310.SH": df})
@@ -528,7 +394,6 @@ class TestBacktestDataLayer:
         assert pd.api.types.is_datetime64_any_dtype(bars["date"])
 
     def test_multiple_symbols_independent_cutoffs(self):
-        """多标的各自独立，不相互影响"""
         df1 = _make_bar_df(60, start="2024-01-02")
         df2 = _make_bar_df(60, start="2024-01-02")
         layer = BacktestDataLayer({"A.SH": df1, "B.SH": df2})
@@ -538,7 +403,6 @@ class TestBacktestDataLayer:
 
         bars_a = layer.get_bars("A.SH", days=60)
         bars_b = layer.get_bars("B.SH", days=60)
-        # 两者都受同一 cutoff 约束
         assert bars_a["date"].max() <= cutoff
         assert bars_b["date"].max() <= cutoff
 
@@ -553,7 +417,7 @@ class TestGlobalSingleton:
     def test_returns_same_instance(self):
         a = get_data_layer()
         b = get_data_layer()
-        assert a is b, "全局单例应返回相同实例"
+        assert a is b
 
     def test_reset_creates_new_instance(self):
         a = get_data_layer()
@@ -567,13 +431,13 @@ class TestGlobalSingleton:
 
 # ─── 直接运行（无 pytest）────────────────────────────────────────────────────
 
+
 def run_all():
     test_classes = [
         TestQuote,
         TestNorthFlowSnapshot,
-        TestTTLCache,
         TestNormalizeToTencent,
-        TestDataLayerCache,
+        TestDataLayerForwarding,
         TestBacktestDataLayer,
         TestGlobalSingleton,
     ]
@@ -581,7 +445,7 @@ def run_all():
         _run_class(cls)
 
     print(f"\n{'='*60}")
-    print(f"Phase 1 DataLayer: {_passed} passed, {_failed} failed")
+    print(f"DataLayer: {_passed} passed, {_failed} failed")
     if _errors:
         print("Failed:")
         for e in _errors:

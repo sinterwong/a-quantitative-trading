@@ -303,12 +303,14 @@ with tempfile.TemporaryDirectory() as tmpdir:
         # 此处只验证接口存在且不崩溃
         check(isinstance(df_min2, pd.DataFrame), "get_minute_bars 返回 DataFrame")
 
-# 缓存：连续两次调用，第二次走内存缓存
+# 缓存:连续两次调用,第二次走 gateway 内部缓存
 layer2 = DataLayer(use_parquet_cache=False)
-with patch('core.data_layer._fetch_minute_bars_akshare', return_value=None):
-    r1 = layer2.get_minute_bars('510300', period='5')
-    r2 = layer2.get_minute_bars('510300', period='5')  # 应命中缓存
-    check(isinstance(r2, pd.DataFrame), "缓存命中后返回 DataFrame")
+mock_gw = MagicMock()
+mock_gw.kline.return_value = pd.DataFrame()
+layer2._gw = mock_gw
+r1 = layer2.get_minute_bars('510300', period='5')
+r2 = layer2.get_minute_bars('510300', period='5')
+check(isinstance(r2, pd.DataFrame), "DataLayer.get_minute_bars 通过 gateway 返回 DataFrame")
 
 # ─── Section 10: DataLayer — Parquet 集成 ────────────────────────────────────
 

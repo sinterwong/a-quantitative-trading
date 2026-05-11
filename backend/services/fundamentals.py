@@ -1,8 +1,6 @@
 """
 基本面数据获取模块 (S2-T4)
-从腾讯财经实时行情中提取 PE、PB、股息率等指标。
-
-使用 core.tencent_quote_source 统一数据源，消除重复的 HTTP 代码。
+从 data_gateway 统一行情中提取 PE、PB、股息率等指标。
 """
 
 from typing import Optional
@@ -24,9 +22,8 @@ def fetch_fundamentals(symbol: str) -> Optional[dict]:
         None if data unavailable.
     """
     try:
-        from core.tencent_quote_source import TencentQuoteDataSource
-        src = TencentQuoteDataSource()
-        q = src.fetch_quote(symbol)
+        from core.data_gateway import get_gateway
+        q = get_gateway().quote(symbol)
         if q is None or not q.is_valid:
             return None
 
