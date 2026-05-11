@@ -56,3 +56,30 @@ def test_provider_declaration_round_trip():
 
 def test_provider_error_is_exception():
     assert issubclass(ProviderError, Exception)
+
+
+def test_supports_default_checks_capabilities_and_markets():
+    p = _NoOpProvider()
+    assert p.supports(Capability.QUOTE, Market.A) is True
+    assert p.supports(Capability.QUOTE, Market.HK) is False  # market 不在声明
+    assert p.supports(Capability.KLINE_DAILY, Market.A) is False  # capability 不在声明
+
+
+def test_supports_can_be_overridden():
+    class _Refined(_NoOpProvider):
+        def declare(self):
+            return ProviderCapability(
+                capabilities=frozenset({Capability.KLINE_MINUTE}),
+                markets=frozenset({Market.A, Market.HK}),
+                priority_hint=0.7,
+            )
+
+        def supports(self, capability, market):
+            # A 股分钟 K 不支持(模拟腾讯)
+            if capability == Capability.KLINE_MINUTE and market == Market.A:
+                return False
+            return super().supports(capability, market)
+
+    p = _Refined()
+    assert p.supports(Capability.KLINE_MINUTE, Market.HK) is True
+    assert p.supports(Capability.KLINE_MINUTE, Market.A) is False

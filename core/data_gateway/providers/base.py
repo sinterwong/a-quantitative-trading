@@ -49,6 +49,16 @@ class Provider(ABC):
     def declare(self) -> ProviderCapability:
         """声明本 provider 支持的 capability / market / 冷启动评分。"""
 
+    def supports(self, capability: Capability, market) -> bool:
+        """是否支持(capability, market)组合。
+
+        默认仅检查粗粒度的 capabilities() / markets() 是否都命中。
+        provider 可重写以表达更细的能力(如腾讯 KLINE_MINUTE 只支持 HK,
+        不支持 A/INDEX/US)。返回 False 时 gateway 不会调用对应 fetch_*。
+        """
+        decl = self.declare()
+        return capability in decl.capabilities and market in decl.markets
+
     def field_authority(self) -> Dict[Capability, Dict[str, float]]:
         """声明各字段的权威度权重(0-1)。
 
@@ -100,6 +110,13 @@ class Provider(ABC):
 
     def fetch_market_index(self, code: str) -> Optional[MarketIndexSnapshot]:
         return None
+
+    def fetch_macro(self, indicator: str) -> pd.DataFrame:
+        """indicator: 'PMI' / 'M2' / 'SHRZGM' ...
+
+        返回 DataFrame(列约定: date, value),空 DataFrame 表示无数据。
+        """
+        return pd.DataFrame()
 
 
 __all__ = ["Provider", "ProviderError"]

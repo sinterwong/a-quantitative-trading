@@ -25,6 +25,7 @@ class Capability(str, Enum):
     SECTOR_CONSTITUENTS = "sector_constituents"  # List[SectorConstituent]
     NORTH_FLOW = "north_flow"                # NorthFlow
     MARKET_INDEX = "market_index"            # MarketIndexSnapshot
+    MACRO = "macro"                          # 宏观时序 DataFrame (PMI/M2/社融等)
 
 
 class Market(str, Enum):
