@@ -196,6 +196,13 @@ class EastmoneyProvider(Provider):
         s2n = self._parse_kamt_series(kamt.get("s2n", []))   # 南向
         net_north = (n2s.get("cum_amount", 0) - s2n.get("cum_amount", 0))
         net_yi = net_north / 1e8
+
+        # net=0 且 amount=0 同时发生时，判定为接口异常数据，放弃实时数据
+        # 让 fetch_north_flow() 兜底到日总结接口
+        if net_yi == 0 and n2s.get("amount", 0) == 0:
+            logger.debug("kamt realtime: net=0 and amount=0, treating as abnormal, falling through to daily")
+            return None
+
         return NorthFlow(
             net_north_yi=net_yi,
             net_south_yi=0.0,

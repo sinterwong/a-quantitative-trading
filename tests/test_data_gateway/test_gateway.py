@@ -412,8 +412,10 @@ def test_macro_routes_to_macro_capability(gw):
 
 def test_fundamentals_merge(gw):
     a = _FakeProvider("A", capabilities=(Capability.FUNDAMENTALS,),
+                      markets=(Market.GLOBAL,),
                       fundamentals_value=Fundamentals(symbol="x", pe_ttm=20, roe_ttm=0))
     b = _FakeProvider("B", capabilities=(Capability.FUNDAMENTALS,),
+                      markets=(Market.GLOBAL,),
                       fundamentals_value=Fundamentals(symbol="x", pe_ttm=0, roe_ttm=15))
     gw.register_provider(a)
     gw.register_provider(b)

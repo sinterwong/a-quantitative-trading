@@ -303,22 +303,20 @@ def analyze_a_share(req: AnalysisRequest) -> AnalysisReport:
     except Exception as exc:
         report.warnings.append(f'pipeline_error: {exc}')
 
-    # 3) 基本面
+    # 3) 基本面（统一走 gateway，内部包含腾讯实时 PE/PB 补充）
     try:
-        from core.fundamental_data import FundamentalDataManager
-        fm = FundamentalDataManager()
-        fdf = fm.get_fundamentals(sym)
-        if fdf is not None and not fdf.empty:
-            row = fdf.iloc[-1]
+        from core.data_gateway import get_gateway
+        fund = get_gateway().fundamentals(sym)
+        if fund and (fund.eps_ttm > 0 or fund.roe_ttm > 0 or fund.pe_ttm > 0):
             report.fundamentals = {
-                'pe_ttm': _safe_float(row.get('pe_ttm')),
-                'pb': _safe_float(row.get('pb')),
-                'roe_ttm': _safe_float(row.get('roe_ttm')),
-                'eps_ttm': _safe_float(row.get('eps_ttm')),
-                'revenue_yoy': _safe_float(row.get('revenue_yoy')),
-                'profit_yoy': _safe_float(row.get('profit_yoy')),
-                'ocf_to_profit': _safe_float(row.get('ocf_to_profit')),
-                'as_of_date': str(fdf.index[-1].date() if hasattr(fdf.index[-1], 'date') else fdf.index[-1]),
+                'pe_ttm': fund.pe_ttm or _safe_float(None),
+                'pb': fund.pb or _safe_float(None),
+                'roe_ttm': fund.roe_ttm or _safe_float(None),
+                'eps_ttm': fund.eps_ttm or _safe_float(None),
+                'revenue_yoy': fund.revenue_yoy or _safe_float(None),
+                'profit_yoy': fund.profit_yoy or _safe_float(None),
+                'ocf_to_profit': _safe_float(None),
+                'as_of_date': str(fund.timestamp.date()) if fund.timestamp else None,
             }
         else:
             report.warnings.append('fundamentals_unavailable')

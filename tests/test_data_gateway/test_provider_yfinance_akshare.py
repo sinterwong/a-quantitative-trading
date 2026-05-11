@@ -117,7 +117,8 @@ def test_yfinance_kline_minute_returns_empty():
 
 def test_akshare_capabilities_macro_only():
     decl = AkshareProvider().declare()
-    assert decl.capabilities == frozenset({Capability.MACRO})
+    assert Capability.FUNDAMENTALS in decl.capabilities
+    assert Capability.MACRO in decl.capabilities
     assert Market.GLOBAL in decl.markets
 
 
@@ -131,9 +132,9 @@ def test_akshare_priority_hint_low():
 
 def test_akshare_macro_pmi():
     mock_ak = MagicMock()
-    mock_ak.macro_china_pmi_monthly.return_value = pd.DataFrame({
+    mock_ak.macro_china_pmi.return_value = pd.DataFrame({
         "月份": ["2026-04", "2026-05"],
-        "制造业PMI": [50.5, 51.0],
+        "制造业-指数": [50.5, 51.0],
     })
     with patch.dict(sys.modules, {"akshare": mock_ak}):
         df = AkshareProvider().fetch_macro("PMI")

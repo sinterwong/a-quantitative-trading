@@ -377,13 +377,21 @@ class DataGateway:
         if cached is not None:
             return cached
 
-        market = detect_market(symbol)
+        market = Market.GLOBAL  # 基本面数据跨市场统一，用 GLOBAL 查所有 provider
         merged, prov = self._merged_fetch(
             Capability.FUNDAMENTALS, market, "fetch_fundamentals",
             ("symbol", "name", "industry", "sector"),
             symbol,
         )
         if merged is not None:
+            # PE/PB 由腾讯实时行情补充（akshare 财报接口不含此字段）
+            if merged.pe_ttm <= 0 or merged.pb <= 0:
+                quote = self.quote(symbol)
+                if quote is not None:
+                    if merged.pe_ttm <= 0 and quote.pe_ttm > 0:
+                        merged.pe_ttm = quote.pe_ttm
+                    if merged.pb <= 0 and quote.pb > 0:
+                        merged.pb = quote.pb
             self._cache.set(cache_key, merged, _DEFAULT_TTL[Capability.FUNDAMENTALS])
             self._last_provenance[cache_key] = prov
         return merged
