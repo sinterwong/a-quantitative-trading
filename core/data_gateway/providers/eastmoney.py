@@ -166,15 +166,6 @@ class EastmoneyProvider(Provider):
         if not isinstance(records, list):
             return []
 
-        def _safe_float(val) -> float:
-            """东方财富用'-'表示无数据（如停牌/未上市），统一转0.0。"""
-            if val is None or val == '' or val == '-':
-                return 0.0
-            try:
-                return float(val)
-            except (ValueError, TypeError):
-                return 0.0
-
         out: List[SectorConstituent] = []
         for rec in records:
             sym = str(rec.get("f12", ""))

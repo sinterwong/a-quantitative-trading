@@ -2,6 +2,8 @@
 """
 News Sentiment Scorer - 新闻情绪打分
 P2 - 新闻情绪打分模块
+
+默认使用 LLM（MiniMax）分析情感，保留关键词兜底当 LLM 不可用时。
 """
 
 import os, sys, time, random, json, re
@@ -73,6 +75,7 @@ def _clean_text(text: str) -> str:
 
 
 def _detect_sectors(text: str) -> List[str]:
+    """基于关键词匹配板块分类（LLM 不参与板块识别，仍用规则）。"""
     text_clean = _clean_text(text)
     found = []
     for sector, keywords in SECTOR_KEYWORDS.items():
@@ -85,6 +88,7 @@ def _detect_sectors(text: str) -> List[str]:
 
 
 def _score_text(text: str) -> Tuple[int, str]:
+    """关键词兜底打分（LLM 不可用时使用）。"""
     text_clean = _clean_text(text)
     pos_count = sum(1 for kw in POSITIVE_KEYWORDS if kw in text_clean)
     neg_count = sum(1 for kw in NEGATIVE_KEYWORDS if kw in text_clean)
@@ -106,6 +110,23 @@ def _score_text(text: str) -> Tuple[int, str]:
     return score, label
 
 
+def _get_llm_service():
+    """懒加载 LLMService，失败时返回 None。"""
+    try:
+        _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # scripts/
+        _backend_path = os.path.join(_repo_root, 'backend')
+        for _p in [_repo_root, _backend_path]:
+            if _p not in sys.path:
+                sys.path.insert(0, _p)
+        from backend.services.llm.factory import create_llm_service
+        svc = create_llm_service()
+        if svc and svc.is_available:
+            return svc
+    except Exception:
+        pass
+    return None
+
+
 def fetch_latest_news(max_news: int = 20) -> List[Dict]:
     news_list = []
     try:
@@ -113,7 +134,6 @@ def fetch_latest_news(max_news: int = 20) -> List[Dict]:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        # 东方财富快讯 API
         url = (f'https://newsapi.eastmoney.com/kuaixun/v1/getlist_101_ajaxResult_{max_news}_1_.html')
         req = urllib.request.Request(url, headers={
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
@@ -121,7 +141,6 @@ def fetch_latest_news(max_news: int = 20) -> List[Dict]:
         })
         with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
             content = resp.read().decode('utf-8', errors='replace')
-        # JSONP: var ajaxResult={...}
         import re
         m = re.search(r'ajaxResult\s*=\s*(\{.+})', content)
         if m:
@@ -140,16 +159,36 @@ def fetch_latest_news(max_news: int = 20) -> List[Dict]:
 
 
 class NewsSentimentScorer:
-    def __init__(self, cache_minutes: int = 10):
+    def __init__(self, cache_minutes: int = 10, use_llm: bool = True):
+        """
+        Args:
+            cache_minutes: 缓存有效期（分钟）
+            use_llm: 是否优先使用 LLM 情感分析（默认 True，失败时自动降级关键词）
+        """
         self.cache_minutes = cache_minutes
+        self.use_llm = use_llm
         self._cache = None
         self._cache_time = None
+        self._llm_service = None
+        self._llm_checked = False
 
     def _is_cache_valid(self) -> bool:
         if self._cache is None or self._cache_time is None:
             return False
         elapsed = (datetime.now() - self._cache_time).total_seconds() / 60
         return elapsed < self.cache_minutes
+
+    def _get_llm(self):
+        """获取 LLMService，只检查一次。"""
+        if not self.use_llm:
+            return None
+        if self._llm_checked:
+            return self._llm_service
+        self._llm_checked = True
+        self._llm_service = _get_llm_service()
+        if self._llm_service is None:
+            print('[WARN] NewsSentimentScorer: LLM not available, using keyword fallback')
+        return self._llm_service
 
     def fetch_news(self, max_news: int = 20) -> List[Dict]:
         if self._is_cache_valid():
@@ -159,18 +198,105 @@ class NewsSentimentScorer:
         self._cache_time = datetime.now()
         return news
 
-    def score_one(self, title: str) -> Tuple[int, str, List[str]]:
-        score, label = _score_text(title)
+    def score_one(self, title: str, use_llm: bool = None) -> Tuple[int, str, List[str]]:
+        """
+        对单条新闻打分。
+
+        Args:
+            title: 新闻标题
+            use_llm: 是否用 LLM（None=使用实例默认值 self.use_llm）
+
+        Returns:
+            (score: int -100~100, label: str, sectors: List[str])
+        """
+        if use_llm is None:
+            use_llm = self.use_llm
+
+        # 板块分类始终用关键词（不需要 LLM）
         sectors = _detect_sectors(title)
+
+        # 情感分析
+        if use_llm and self._get_llm() is not None:
+            try:
+                result = self._llm_service.analyze_news(title.strip(), timeout=15)
+                sentiment = getattr(result, 'sentiment', 'neutral')
+                confidence = getattr(result, 'confidence', 0.0)
+                # 映射 LLM 结果到 -100~100
+                if sentiment == 'bullish':
+                    raw_score = int(confidence * 100)
+                elif sentiment == 'bearish':
+                    raw_score = int(-confidence * 100)
+                else:
+                    raw_score = 0
+                raw_score = max(-100, min(100, raw_score))
+                label = '利好' if raw_score >= 10 else ('利空' if raw_score <= -10 else '中性')
+                return raw_score, label, sectors
+            except Exception as e:
+                print(f'[WARN] LLM analyze_news failed: {e}, falling back to keywords')
+
+        # 关键词兜底
+        score, label = _score_text(title)
         return score, label, sectors
 
     def score_all(self, max_news: int = 20,
-                  sector_filter: Optional[str] = None) -> List[Dict]:
+                  sector_filter: Optional[str] = None,
+                  use_llm: bool = None) -> List[Dict]:
+        if use_llm is None:
+            use_llm = self.use_llm
         news = self.fetch_news(max_news)
         results = []
+
+        # 板块分类始终用关键词（快）
         for item in news:
             title = item.get('title', '')
-            score, label, sectors = self.score_one(title)
+            item['_sectors'] = _detect_sectors(title)
+
+        # LLM 批量情感分析
+        llm = self._get_llm() if use_llm else None
+        if llm is not None and news:
+            try:
+                # batch_news 返回带 sentiment_result 的原列表（顺序不变）
+                enriched = llm.batch_news(news, text_field='title',
+                                          timeout_per_item=20, max_concurrency=3)
+                for item in enriched:
+                    title = item.get('title', '')
+                    sr = item.get('sentiment_result')
+                    sectors = item.get('_sectors', [])
+                    if sr is not None:
+                        sentiment = getattr(sr, 'sentiment', 'neutral')
+                        confidence = getattr(sr, 'confidence', 0.0)
+                        if sentiment == 'bullish':
+                            raw_score = int(confidence * 100)
+                        elif sentiment == 'bearish':
+                            raw_score = int(-confidence * 100)
+                        else:
+                            raw_score = 0
+                        raw_score = max(-100, min(100, raw_score))
+                        label = '利好' if raw_score >= 10 else ('利空' if raw_score <= -10 else '中性')
+                    else:
+                        raw_score, label = _score_text(title)
+                    if sector_filter and sector_filter not in sectors:
+                        continue
+                    results.append({
+                        'date': item.get('date', ''),
+                        'title': title,
+                        'score': raw_score,
+                        'label': label,
+                        'sectors': sectors,
+                        'url': item.get('url', ''),
+                        'source': item.get('source', ''),
+                    })
+                results.sort(key=lambda x: x['score'], reverse=True)
+                return results
+            except Exception as e:
+                print(f'[WARN] batch_news failed: {e}, falling back to keywords')
+                # Fall through to keyword scoring
+
+        # 关键词兜底
+        for item in news:
+            title = item.get('title', '')
+            sectors = item.get('_sectors', [])
+            score, label = _score_text(title)
             if sector_filter and sector_filter not in sectors:
                 continue
             results.append({
@@ -204,8 +330,11 @@ class NewsSentimentScorer:
             label = '中性'
         return composite, label
 
-    def get_market_sentiment(self) -> Dict:
-        all_news = self.score_all(max_news=30)
+    def get_market_sentiment(self, use_llm: bool = None) -> Dict:
+        """获取市场综合情绪（含板块情绪）。默认使用 LLM。"""
+        if use_llm is None:
+            use_llm = self.use_llm
+        all_news = self.score_all(max_news=30, use_llm=use_llm)
         composite, label = self.get_composite_score(all_news)
         sector_scores: Dict[str, List[int]] = {}
         for item in all_news:
@@ -227,9 +356,9 @@ class NewsSentimentScorer:
 
 if __name__ == '__main__':
     print('\n============================================================')
-    print('  NewsSentimentScorer Test')
+    print('  NewsSentimentScorer Test (LLM Mode)')
     print('============================================================\n')
-    scorer = NewsSentimentScorer()
+    scorer = NewsSentimentScorer(use_llm=True)
     test_titles = [
         '央行宣布降准0.25个百分点，释放长期资金约5000亿元',
         '多家银行信贷增长超预期，不良率持续下降',
@@ -239,11 +368,11 @@ if __name__ == '__main__':
         '电力改革重磅文件出台，电价机制迎来重大调整',
         '锂价暴跌30%，新能源板块集体重挫',
     ]
-    print('[UNIT TEST] Keyword scoring')
+    print('[UNIT TEST] Scoring')
     for title in test_titles:
         score, label, sectors = scorer.score_one(title)
         print(f'  [{score:>+4},{label}] {title[:40]}... sectors={sectors}')
-    print('\n[LIVE TEST] Fetch real news from Eastmoney')
+    print('\n[LIVE TEST] Fetch real news from Eastmoney + LLM sentiment')
     try:
         sentiment = scorer.get_market_sentiment()
         print(f'  Composite: {sentiment["composite_score"]:>+4} ({sentiment["label"]})')
