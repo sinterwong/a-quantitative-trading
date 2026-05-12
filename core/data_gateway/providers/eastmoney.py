@@ -49,9 +49,19 @@ _FIELDS = (
 )
 
 
+def _safe_float(raw: Any) -> float:
+    """东方财富用'-'表示无数据（如停牌/未上市），统一转0.0。"""
+    if raw is None or raw == '' or raw == '-':
+        return 0.0
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return 0.0
+
+
 def _parse_amount(raw: Any) -> float:
     """成交额归一为元。东方财富有时给万元、有时给元、偶尔给亿元。"""
-    if raw is None:
+    if raw is None or raw == '' or raw == '-':
         return 0.0
     try:
         val = float(raw)
@@ -123,9 +133,9 @@ class EastmoneyProvider(Provider):
             sectors.append(SectorRanking(
                 code=f"EM_{code}",
                 name=name,
-                change_pct=float(rec.get("f3", 0) or 0),
-                net_flow=_parse_amount(rec.get("f62", 0)),
-                amount=_parse_amount(rec.get("f20", 0)),
+                change_pct=_safe_float(rec.get("f3")),
+                net_flow=_parse_amount(rec.get("f62")),
+                amount=_parse_amount(rec.get("f20")),
                 rank_perf=i,
                 rank_flow=0,
             ))
@@ -165,10 +175,10 @@ class EastmoneyProvider(Provider):
             out.append(SectorConstituent(
                 symbol=normalize_to_sina(sym),
                 name=name,
-                price=float(rec.get("f2", 0) or 0),
-                change_pct=float(rec.get("f3", 0) or 0),
-                amount=_parse_amount(rec.get("f20", 0)),
-                volume=float(rec.get("f6", 0) or 0),
+                price=_safe_float(rec.get("f2")),
+                change_pct=_safe_float(rec.get("f3")),
+                amount=_parse_amount(rec.get("f20")),
+                volume=_safe_float(rec.get("f6")),
             ))
         out.sort(key=lambda c: c.change_pct, reverse=True)
         return out[:limit]
