@@ -463,22 +463,82 @@ class LLMService:
         解析 LLM 返回的 JSON 字符串。
         LLM 有时会返回 markdown 包裹的 JSON（```json ... ```），
         此函数自动处理这种情况。
+
+        容错策略（按顺序尝试）：
+        1. 去掉 markdown fence + 修复尾部逗号 → json.loads
+        2. 修复漏掉的字段间逗号（通过行结构检测）→ json.loads
+        3. 正则提取已知字段作为最后兜底（保证至少能拿到 sentiment/confidence）
         """
-        # 去掉 markdown code fence
+        import re
+
+        # ── 1. 预处理：去 fence ─────────────────────────────────────────────
         text = raw.strip()
         if text.startswith('```'):
-            # 去掉 ```json 或 ```
-            text = text.split('\n', 1)[-1]  # 去掉第一行（```json 或 ```）
-            text = text.rsplit('```', 1)[0]  # 去掉最后一行的 ```
+            text = text.split('\n', 1)[-1]
+            text = text.rsplit('```', 1)[0]
             text = text.strip()
-
-        # 如果还有 ``` 在中间，当作普通字符处理后尝试解析
-        # 去掉可能的行内 ``` 
-        import re
+        # 去掉残余的 ```
         text = re.sub(r'^```[a-z]*\s*', '', text, flags=re.IGNORECASE)
         text = re.sub(r'\s*```$', '', text)
 
-        return json.loads(text)
+        # ── 2. 修复尾部逗号 `{k: v,}` / `[v,]` → `{k: v}` / `[v]` ───────
+        text = re.sub(r',(\s*[}\]])', r'\1', text)
+
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # ── 3. 修复漏掉的逗号（行末是字符串值，下一行是字段） ─────────────
+        lines = text.split('\n')
+        fixed: list[str] = []
+        for i, line in enumerate(lines):
+            stripped = line.rstrip()
+            if i > 0:
+                prev = lines[i - 1].rstrip()
+                # prev 末尾是字符串/数组值（以 `"` 或 `]` 结尾），下一行是新字段
+                if re.search(r':\s*"[^"]*"[^,\s]\s*$', prev) and re.match(r'\s*"[^"\s]+\s*:', line):
+                    fixed[-1] = prev + ','
+            fixed.append(stripped)
+        text = '\n'.join(fixed)
+
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # ── 4. 正则兜底：提取已知关键字段（保证至少返回部分结果） ─────────
+        def extract(pattern, group=1):
+            m = re.search(pattern, text)
+            return m.group(group).strip().strip('"') if m else None
+
+        sentiment = extract(r'"sentiment"\s*:\s*"(\w+)"')
+        confidence = extract(r'"confidence"\s*:\s*([0-9.]+)', 1)
+        sectors_m = re.search(r'"impact_sectors"\s*:\s*\[(.*?)\]', text)
+        sectors = []
+        if sectors_m:
+            sectors = [s.strip().strip('"') for s in sectors_m.group(1).split(',') if s.strip()]
+        summary = extract(r'"summary"\s*:\s*"(.*?)"', 1)
+        price_moved = extract(r'"price_already_moved"\s*:\s*(true|false|null)', 1)
+        price_moved_reason = extract(r'"price_already_moved_reason"\s*:\s*"(.*?)"', 1)
+
+        result = {}
+        if sentiment:          result['sentiment'] = sentiment
+        if confidence:        result['confidence'] = float(confidence)
+        if sectors:           result['impact_sectors'] = sectors
+        if summary:           result['summary'] = summary
+        if price_moved:       result['price_already_moved'] = None if price_moved == 'null' else (price_moved == 'true')
+        if price_moved_reason: result['price_already_moved_reason'] = price_moved_reason
+
+        if result:
+            logger.warning("_parse_json: fell back to regex extraction for %s", list(result.keys()))
+            return result
+
+        # 完全失败
+        raise json.JSONDecodeError(f"Failed to parse JSON (tried 3 strategies): {text[:200]}", text, 0)
+
+
+    def _parse_news_result(self, parsed: dict, raw: str) -> NewsSentiment:
         """将 LLM JSON 解析为 NewsSentiment，带默认值保护"""
         sentiment_raw = parsed.get('sentiment', 'neutral')
         sentiment = sentiment_raw.lower() if sentiment_raw else 'neutral'
