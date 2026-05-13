@@ -24,6 +24,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from .data_gateway import get_gateway
+from .data_gateway.capabilities import MacroIndicator
 from .data_gateway.schemas import NorthFlow as _GwNorthFlow
 from .data_gateway.schemas import Quote as _GwQuote
 
@@ -299,8 +300,8 @@ class DataLayer:
 
     # ── 宏观数据 ─────────────────────────────────────────────────────────────
 
-    def get_macro_data(self, indicator: str) -> pd.DataFrame:
-        """indicator: 'PMI' / 'M2' / 'CREDIT'(对应 data_gateway 的 MACRO)。"""
+    def get_macro_data(self, indicator: MacroIndicator) -> pd.DataFrame:
+        """indicator: MacroIndicator enum (PMI / M2 / CREDIT)。"""
         return self._gw.macro(indicator)
 
     # ── 缓存管理 ─────────────────────────────────────────────────────────────

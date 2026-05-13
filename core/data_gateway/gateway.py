@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from .cache import MemoryCache
-from .capabilities import Capability, Market
+from .capabilities import Capability, MacroIndicator, Market
 from .health import HealthTracker, get_health_tracker
 from .merge import Candidate, merge_field_level
 from .providers.base import Provider, ProviderError
@@ -459,8 +459,9 @@ class DataGateway:
             self._cache.set(cache_key, result, _DEFAULT_TTL[Capability.MARKET_INDEX])
         return result
 
-    def macro(self, indicator: str) -> pd.DataFrame:
-        cache_key = f"macro:{indicator}"
+    def macro(self, indicator: MacroIndicator) -> pd.DataFrame:
+        """indicator: MacroIndicator enum (PMI / M2 / CREDIT)。"""
+        cache_key = f"macro:{indicator.value}"
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached

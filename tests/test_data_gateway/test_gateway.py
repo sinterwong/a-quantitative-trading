@@ -405,7 +405,8 @@ def test_macro_routes_to_macro_capability(gw):
                       markets=(Market.GLOBAL,),
                       macro_value=pd.DataFrame({"date": ["2026-05"], "pmi": [50.5]}))
     gw.register_provider(p)
-    df = gw.macro("PMI")
+    from core.data_gateway.capabilities import MacroIndicator
+    df = gw.macro(MacroIndicator.PMI)
     assert not df.empty
     assert df["pmi"].iloc[0] == 50.5
 

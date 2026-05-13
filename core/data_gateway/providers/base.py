@@ -16,7 +16,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from ..capabilities import Capability, ProviderCapability
+from ..capabilities import Capability, MacroIndicator, Market, ProviderCapability
 from ..schemas import (
     Fundamentals,
     MarketIndexSnapshot,
@@ -89,7 +89,11 @@ class Provider(ABC):
         adjust: str = "qfq",
         limit: int = 100,
     ) -> pd.DataFrame:
-        """interval: 'daily' / 'weekly' / 'monthly' / '1m' / '5m' / '15m' / '30m' / '60m'"""
+        """interval: 'daily' / 'weekly' / 'monthly' / '1m' / '5m' / '15m' / '30m' / '60m'
+
+        注意: 本方法对应 KLINE_DAILY 和 KLINE_MINUTE 两个 Capability，
+        由 gateway 根据 interval 参数区分路由。当前共用方法是兼容设计，
+        未来拆分为 fetch_kline_daily / fetch_kline_minute 更清晰。"""
         return pd.DataFrame()
 
     def fetch_fundamentals(self, symbol: str) -> Optional[Fundamentals]:
@@ -111,11 +115,10 @@ class Provider(ABC):
     def fetch_market_index(self, code: str) -> Optional[MarketIndexSnapshot]:
         return None
 
-    def fetch_macro(self, indicator: str) -> pd.DataFrame:
-        """indicator: 'PMI' / 'M2' / 'SHRZGM' ...
+    def fetch_macro(self, indicator: MacroIndicator) -> pd.DataFrame:
+        """indicator: MacroIndicator enum (PMI / M2 / CREDIT)。
 
-        返回 DataFrame(列约定: date, value),空 DataFrame 表示无数据。
-        """
+        返回 DataFrame(列约定: date, value)，空 DataFrame 表示无数据。"""
         return pd.DataFrame()
 
     def fetch_fundamentals_history(
