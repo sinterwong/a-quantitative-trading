@@ -214,7 +214,7 @@ def test_fetch_kline_minute_returns_empty_for_a_share():
     """腾讯 A 股分钟 K 不支持 → 直接返回空,不发请求。"""
     http = MagicMock()
     p = TencentProvider(http=http)
-    df = p.fetch_kline("sh600519", interval="5m")
+    df = p.fetch_kline_minute("sh600519", interval="5m")
     assert df.empty
     # 不应调用 HTTP
     assert http.get_text.call_count == 0
@@ -223,7 +223,7 @@ def test_fetch_kline_minute_returns_empty_for_a_share():
 def test_fetch_kline_unknown_interval_returns_empty():
     http = MagicMock()
     p = TencentProvider(http=http)
-    assert p.fetch_kline("sh600519", interval="garbage").empty
+    assert p.fetch_kline_minute("sh600519", interval="garbage").empty
     assert http.get_text.call_count == 0
 
 
@@ -236,7 +236,7 @@ def test_fetch_kline_daily_parses_response():
     http = MagicMock()
     http.get_text.return_value = sample
     p = TencentProvider(http=http)
-    df = p.fetch_kline("sh600519", interval="daily", days=2)
+    df = p.fetch_kline_daily("sh600519", days=2)
     assert len(df) == 2
     assert list(df.columns) == ["date", "open", "high", "low", "close", "volume"]
     assert df["close"].iloc[-1] == 1245.0

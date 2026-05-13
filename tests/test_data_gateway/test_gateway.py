@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-from core.data_gateway.capabilities import Capability, Market, ProviderCapability
+from core.data_gateway.capabilities import Capability, MacroIndicator, Market, ProviderCapability
 from core.data_gateway.gateway import DataGateway
 from core.data_gateway.health import HealthTracker
 from core.data_gateway.providers.base import Provider, ProviderError
@@ -85,9 +85,14 @@ class _FakeProvider(Provider):
         self._maybe_raise("fetch_quotes")
         return self._quotes
 
-    def fetch_kline(self, symbol, **kw):
-        self.call_log.append(f"fetch_kline:{symbol}:{kw.get('interval', 'daily')}")
-        self._maybe_raise("fetch_kline")
+    def fetch_kline_daily(self, symbol, **kw):
+        self.call_log.append(f"fetch_kline_daily:{symbol}")
+        self._maybe_raise("fetch_kline_daily")
+        return self._kline
+
+    def fetch_kline_minute(self, symbol, **kw):
+        self.call_log.append(f"fetch_kline_minute:{symbol}:{kw.get('interval', '5m')}")
+        self._maybe_raise("fetch_kline_minute")
         return self._kline
 
     def fetch_fundamentals(self, symbol):
@@ -115,7 +120,7 @@ class _FakeProvider(Provider):
         self._maybe_raise("fetch_market_index")
         return self._index
 
-    def fetch_macro(self, indicator):
+    def fetch_macro(self, indicator: MacroIndicator):
         self.call_log.append(f"fetch_macro:{indicator}")
         self._maybe_raise("fetch_macro")
         return self._macro

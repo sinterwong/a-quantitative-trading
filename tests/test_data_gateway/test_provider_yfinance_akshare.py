@@ -101,14 +101,14 @@ def test_yfinance_kline_normalizes_columns():
     ticker.history.return_value = df
     mock_yf.Ticker.return_value = ticker
     with patch.dict(sys.modules, {"yfinance": mock_yf}):
-        out = YfinanceProvider().fetch_kline("ES=F", interval="daily", days=2)
+        out = YfinanceProvider().fetch_kline_daily("ES=F", days=2)
     assert list(out.columns) == ["date", "open", "high", "low", "close", "volume"]
     assert len(out) == 2
 
 
 def test_yfinance_kline_minute_returns_empty():
     """yfinance provider 不声明 KLINE_MINUTE。"""
-    out = YfinanceProvider().fetch_kline("VIX", interval="5m")
+    out = YfinanceProvider().fetch_kline_minute("VIX", interval="5m")
     assert out.empty
 
 
