@@ -105,17 +105,44 @@ _trade_calendar_date: str = ''
 import fcntl as _fcntl
 
 def _acquire_pid_lock(pid_file: str) -> bool:
-    """尝试获取 PID 文件锁。返回 True 表示获得锁（继续启动），False 表示已有实例在跑。"""
+    """尝试获取 PID 文件锁。
+
+    双重保护：
+    1. flock(LOCK_EX|LOCK_NB) — 操作系统级互斥，进程退出自动释放
+    2. kill(0) — 验证旧 PID 是否真实存活，防止 flock 残留或 zombie 锁
+
+    返回 True 表示获得锁（继续启动），False 表示已有实例在跑。
+    """
     import os as _os
+    import signal as _signal
     pid_dir = _os.path.dirname(pid_file) or '.'
     _os.makedirs(pid_dir, exist_ok=True)
+
+    # ── 第一关：flock 互斥（防并发启动） ─────────────────────────────
     try:
-        pf = open(pid_file, 'w')
+        pf = open(pid_file, 'r+')
         _fcntl.flock(pf.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        # 拿到锁了 → 检查是否有旧 PID 在跑
+        old_pid_str = pf.read().strip()
+        if old_pid_str:
+            try:
+                old_pid = int(old_pid_str)
+                # 验证旧进程是否真实存活（kill(pid, 0) 不发信号，只检查）
+                if old_pid != _os.getpid():
+                    _os.kill(old_pid, 0)
+                # 旧进程还活着 → 让它继续，退出
+                pf.close()
+                return False
+            except (ValueError, OSError):
+                # 旧 PID 无效（zombie/stale lock）→ 覆盖继续
+                pass
+        # 写入当前 PID 并持有锁
+        pf.seek(0)
+        pf.truncate()
         pf.write(str(_os.getpid()))
         pf.flush()
         return True
-    except (IOError, OSError):
+    except (IOError, OSError) as exc:
         return False
 
 

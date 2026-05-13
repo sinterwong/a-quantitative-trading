@@ -9,6 +9,7 @@ data_gateway.providers.sina — 新浪财经数据源
   │ QUOTE          │ ✓    │ ✓    │ ✓    │
   │ KLINE_DAILY    │ ✓    │ ✓    │ ✗    │
   │ KLINE_MINUTE   │ ✓    │ ✓    │ ✗    │
+  │ MARKET_INDEX   │ ✓    │ ✓    │ ✓    │  ← 新增（新浪 hq.sinajs.cn 支持 A/INDEX/HK 指数）
   └────────────────┴──────┴───────┴──────┘
 
 字段权威声明:
@@ -26,7 +27,7 @@ import pandas as pd
 
 from ..capabilities import Capability, Market, ProviderCapability
 from ..http import HttpClient, HttpError, get_http_client
-from ..schemas import Quote
+from ..schemas import MarketIndexSnapshot, Quote
 from ..symbols import detect_market, normalize_to_sina, safe_float
 from .base import Provider, ProviderError
 
@@ -151,16 +152,20 @@ class SinaProvider(Provider):
                 Capability.QUOTE,
                 Capability.KLINE_DAILY,
                 Capability.KLINE_MINUTE,
+                Capability.MARKET_INDEX,   # 新浪 hq.sinajs.cn/list=s_sh000001 指数接口
             }),
             markets=frozenset({Market.A, Market.INDEX, Market.HK}),
             priority_hint=0.80,
         )
 
     def supports(self, capability: Capability, market: Market) -> bool:
-        # 新浪港股 K 线不稳定，视为不支持
+        # 港股 K 线不稳定，视为不支持
         if capability in (Capability.KLINE_DAILY, Capability.KLINE_MINUTE):
             if market == Market.HK:
                 return False
+        # MARKET_INDEX 不支持美股（新浪美股指数接口不同）
+        if capability == Capability.MARKET_INDEX and market == Market.US:
+            return False
         return super().supports(capability, market)
 
     def field_authority(self) -> Dict[Capability, Dict[str, float]]:
