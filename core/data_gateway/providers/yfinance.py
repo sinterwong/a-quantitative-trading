@@ -70,16 +70,14 @@ class YfinanceProvider(Provider):
             timestamp=datetime.now(),
         )
 
-    def fetch_kline(
+    def fetch_kline_daily(
         self,
         symbol: str,
-        interval: str = "daily",
         days: int = 120,
         adjust: str = "qfq",
         limit: int = 100,
     ) -> pd.DataFrame:
-        if interval != "daily":
-            return pd.DataFrame()
+        """日 K 线（仅 daily，yfinance 不支持分钟 K）。"""
         try:
             import yfinance as yf
         except ImportError:
@@ -88,20 +86,27 @@ class YfinanceProvider(Provider):
             ticker = yf.Ticker(symbol)
             hist = ticker.history(period=f"{days + 5}d", auto_adjust=True)
         except Exception as exc:
-            raise ProviderError(f"yfinance.fetch_kline({symbol}): {exc}") from exc
+            raise ProviderError(f"yfinance.fetch_kline_daily({symbol}): {exc}") from exc
 
         if hist is None or hist.empty:
             return pd.DataFrame()
 
         df = hist.tail(days).reset_index()
-        # yfinance 返回 Date / Open / High / Low / Close / Volume
         df = df.rename(columns={
             "Date": "date", "Open": "open", "High": "high",
             "Low": "low", "Close": "close", "Volume": "volume",
         })
-        # 仅保留契约列(忽略 Dividends / Stock Splits)
         keep = [c for c in ["date", "open", "high", "low", "close", "volume"] if c in df.columns]
         return df[keep]
+
+    def fetch_kline_minute(
+        self,
+        symbol: str,
+        interval: str = "5m",
+        limit: int = 100,
+    ) -> pd.DataFrame:
+        """yfinance 不支持分钟 K。"""
+        return pd.DataFrame()
 
 
 __all__ = ["YfinanceProvider"]

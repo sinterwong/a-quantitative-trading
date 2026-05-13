@@ -157,7 +157,7 @@ class SinaProvider(Provider):
         )
 
     def supports(self, capability: Capability, market: Market) -> bool:
-        # 新浪港股 K 线常返回 'null',视为不支持
+        # 新浪港股 K 线不稳定，视为不支持
         if capability in (Capability.KLINE_DAILY, Capability.KLINE_MINUTE):
             if market == Market.HK:
                 return False
@@ -233,27 +233,43 @@ class SinaProvider(Provider):
 
     # ── KLINE ────────────────────────────────────────────────────────────────
 
-    def fetch_kline(
+    def fetch_kline_daily(
         self,
         symbol: str,
-        interval: str = "daily",
         days: int = 120,
         adjust: str = "qfq",
         limit: int = 100,
     ) -> pd.DataFrame:
+        """日 K 线。新浪港股 K 线不稳定，supports() 已排除 HK。"""
+        sina_code = normalize_to_sina(symbol)
+        scale = _PERIOD_TO_SCALE.get("daily")
+        if scale is None:
+            return pd.DataFrame()
+        n = min(days, 6000)
+        url = f"{_KLINE_URL}?symbol={sina_code}&scale={scale}&ma=no&datalen={n}"
+        return self._fetch_and_parse_kline(url, sina_code, is_minute=False)
+
+    def fetch_kline_minute(
+        self,
+        symbol: str,
+        interval: str = "5m",
+        limit: int = 100,
+    ) -> pd.DataFrame:
+        """分钟 K 线。新浪港股 K 线不稳定，supports() 已排除 HK。"""
+        sina_code = normalize_to_sina(symbol)
         scale = _PERIOD_TO_SCALE.get(interval)
         if scale is None:
             return pd.DataFrame()
+        url = f"{_KLINE_URL}?symbol={sina_code}&scale={scale}&ma=no&datalen={limit}"
+        return self._fetch_and_parse_kline(url, sina_code, is_minute=True)
 
-        is_minute = interval in ("1m", "5m", "15m", "30m", "60m")
-        sina_code = normalize_to_sina(symbol)
-        n = limit if is_minute else min(days, 6000)
-        url = f"{_KLINE_URL}?symbol={sina_code}&scale={scale}&ma=no&datalen={n}"
-
+    def _fetch_and_parse_kline(
+        self, url: str, sina_code: str, *, is_minute: bool
+    ) -> pd.DataFrame:
         try:
             text = self._http.get_text(url, headers=_HEADERS, encoding="utf-8")
         except HttpError as exc:
-            raise ProviderError(f"sina.fetch_kline({sina_code},{interval}): {exc}") from exc
+            raise ProviderError(f"sina.kline({sina_code}): {exc}") from exc
 
         s = text.strip()
         if s == "null" or s.startswith("null"):

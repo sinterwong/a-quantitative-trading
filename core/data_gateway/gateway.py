@@ -348,26 +348,32 @@ class DataGateway:
         adjust: str = "qfq",
         limit: int = 100,
     ) -> pd.DataFrame:
-        """K 线数据(failover, 不合并)。"""
+        """K 线数据（failover，不合并）。
+
+        interval 参数决定路由到 KLINE_DAILY 还是 KLINE_MINUTE Capability，
+        进而触发对应的 fetch_kline_daily / fetch_kline_minute 方法。"""
         market = detect_market(symbol)
-        cap = (
-            Capability.KLINE_MINUTE
-            if interval in ("1m", "5m", "15m", "30m", "60m")
-            else Capability.KLINE_DAILY
-        )
+        is_minute = interval in ("1m", "5m", "15m", "30m", "60m")
+        cap = Capability.KLINE_MINUTE if is_minute else Capability.KLINE_DAILY
         cache_key = f"kline:{symbol}:{interval}:{days}:{adjust}:{limit}"
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
 
-        result, _ = self._sequential_fetch(
-            cap, market, "fetch_kline",
-            symbol, interval=interval, days=days, adjust=adjust, limit=limit,
-        )
+        # 按 Capability 选择对应方法，避免在一个方法内同时处理日K和分钟K
+        if is_minute:
+            result, _ = self._sequential_fetch(
+                cap, market, "fetch_kline_minute",
+                symbol, interval=interval, limit=limit,
+            )
+        else:
+            result, _ = self._sequential_fetch(
+                cap, market, "fetch_kline_daily",
+                symbol, days=days, adjust=adjust, limit=limit,
+            )
         df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
         if not df.empty:
-            # K 线 TTL: 分钟 60s, 日线 300s
-            ttl = 60.0 if cap == Capability.KLINE_MINUTE else 300.0
+            ttl = 60.0 if is_minute else 300.0
             self._cache.set(cache_key, df, ttl)
         return df
 
