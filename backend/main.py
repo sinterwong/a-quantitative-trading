@@ -234,7 +234,7 @@ class Scheduler:
 
     # 每日定时任务表：key = (hour, minute), value = 方法名
     DAILY_TASKS = [
-        (8,  30, '_trigger_morning_runner'),   # 早盘自动化
+        (9,  30, '_trigger_morning_runner'),   # 早盘自动化
         (9,  31, '_trigger_intraday_monitor'), # 盘中信号监控（仅交易时段）
         (15,  0, '_trigger_afternoon_report'),  # 收盘晚报
         (15, 10, '_trigger_analysis'),          # 日终选股分析
