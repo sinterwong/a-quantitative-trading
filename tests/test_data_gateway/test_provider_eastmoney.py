@@ -23,14 +23,13 @@ def _wrap_jsonp(payload: dict) -> str:
 
 def test_capabilities():
     decl = EastmoneyProvider().declare()
+    assert Capability.QUOTE in decl.capabilities
+    assert Capability.MARKET_INDEX in decl.capabilities
     assert Capability.SECTOR_RANKING in decl.capabilities
     assert Capability.SECTOR_CONSTITUENTS in decl.capabilities
     assert Capability.NORTH_FLOW in decl.capabilities
-
-
-def test_priority_hint_low_due_to_instability():
-    """东方财富时好时坏 → 冷启动评分应低。"""
-    assert EastmoneyProvider().declare().priority_hint < 0.7
+    # ulist.np 实测稳定，priority_hint 已上调
+    assert decl.priority_hint == 0.70
 
 
 # ── fetch_sectors ────────────────────────────────────────────────────────────

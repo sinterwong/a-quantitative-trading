@@ -137,6 +137,18 @@ def test_supports_hk_kline_disabled():
     assert p.supports(Capability.KLINE_DAILY, Market.A) is True
 
 
+def test_supports_index_kline_disabled():
+    """新浪 normalize_to_sina 对上交所指数代码(000xxx)错误归一为深证路径，
+    导致 K 线返回 null；腾讯已全覆盖 INDEX K-line，新浪应排除。
+    """
+    p = SinaProvider()
+    assert p.supports(Capability.KLINE_DAILY, Market.INDEX) is False
+    assert p.supports(Capability.KLINE_MINUTE, Market.INDEX) is False
+    # QUOTE / MARKET_INDEX 对 INDEX 仍支持（新浪有指数快照接口）
+    assert p.supports(Capability.QUOTE, Market.INDEX) is True
+    assert p.supports(Capability.MARKET_INDEX, Market.INDEX) is True
+
+
 def test_field_authority_declares_quote_depth():
     """新浪 5 档买卖盘比腾讯权威。"""
     auth = SinaProvider().field_authority()
