@@ -105,6 +105,10 @@ class Fundamentals:
     profit_yoy: float = 0.0      # %
     ocf_to_profit: float = 0.0   # 经营现金流/净利润（现金流质量）
 
+    # 增长（来自 query_growth_data）
+    eps_yoy: float = 0.0        # EPS YoY %
+    asset_yoy: float = 0.0       # 总资产 YoY %
+
     # 市值
     market_cap: float = 0.0      # 亿
     float_cap: float = 0.0       # 亿
@@ -166,6 +170,31 @@ class NorthFlow:
 
 
 @dataclass
+class BalanceSheet:
+    """股票资产负债表快照（来自 query_balance_data）。"""
+
+    symbol: str = ""
+
+    # 资产负债
+    total_asset: float = 0.0     # 元
+    total_liability: float = 0.0  # 元
+    debt_to_equity: float = 0.0  # 资产负债率 %
+
+    # 流动性
+    current_ratio: float = 0.0    # 流动比率
+    quick_ratio: float = 0.0      # 速动比率
+
+    # 股东权益
+    equity: float = 0.0           # 股东权益（元）
+
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.symbol)
+
+
+@dataclass
 class MarketIndexSnapshot:
     """单一外盘/指数快照(取代 SPFutures/VIX/HSI 各自的 dataclass)。"""
 
@@ -184,6 +213,7 @@ class MarketIndexSnapshot:
 __all__ = [
     "Quote",
     "Fundamentals",
+    "BalanceSheet",
     "SectorRanking",
     "SectorConstituent",
     "NorthFlow",
