@@ -1,0 +1,375 @@
+# -*- coding: utf-8 -*-
+"""
+data_gateway.providers.baostock — baostock A股基本面 + 日K数据源
+
+baostock (api.baostock.com) 是免费无需 Token 的A股数据API，特点：
+  - 基本面数据完整：利润表 / 现金流 / 运营能力 / 杜邦分析
+  - A股日K线稳定，作为腾讯/新浪的第三备源
+  - 不支持港股/美股
+
+能力矩阵：
+  ┌────────────────┬──────┬───────┬──────┬──────┐
+  │ 数据类型        │ A 股 │ INDEX │ HK   │ US   │
+  ├────────────────┼──────┼───────┼──────┼──────┤
+  │ KLINE_DAILY    │ ✓    │ ✗     │ ✗    │ ✗    │
+  │ FUNDAMENTALS   │ ✓    │ ✗     │ ✗    │ ✗    │
+  │ FUNDAMENTALS_HISTORY │ ✓ │ ✗    │ ✗    │ ✗    │
+  └────────────────┴──────┴───────┴──────┴──────┘
+
+字段覆盖：
+  - KLINE_DAILY: date, open, high, low, close, volume, amount, adjustflag
+  - FUNDAMENTALS: roe_ttm, eps_ttm, revenue_ttm, profit_ttm, roe (杜邦),
+                  现金流指标, 运营指标
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from datetime import datetime
+from typing import Optional
+
+import pandas as pd
+
+from ..capabilities import Capability, Market, ProviderCapability
+from ..schemas import Fundamentals, Quote
+from .base import Provider, ProviderError
+
+logger = logging.getLogger("data_gateway.baostock")
+
+# ─── Baostock 全局会话管理 ──────────────────────────────────────────
+_bs_lock = threading.Lock()
+_bs_session: Optional["_BaostockSession"] = None
+
+
+class _BaostockSession:
+    """baostock API 会话封装，处理 login/logout 生命周期。"""
+
+    def __init__(self):
+        import baostock as bs
+        self._bs = bs
+        self._logged_in = False
+        self.login()
+
+    def login(self):
+        if self._logged_in:
+            return
+        result = self._bs.login()
+        if result.error_msg != "success":
+            raise ProviderError(f"baostock login failed: {result.error_msg}")
+        self._logged_in = True
+        logger.debug("baostock session opened")
+
+    def logout(self):
+        if not self._logged_in:
+            return
+        try:
+            self._bs.logout()
+        except Exception:
+            pass
+        self._logged_in = False
+        logger.debug("baostock session closed")
+
+    def is_login(self) -> bool:
+        return self._logged_in
+
+    def ensure_login(self):
+        """必要时重连（baostock 会话有时限）。"""
+        if not self._logged_in:
+            self.login()
+
+
+def _get_session() -> _BaostockSession:
+    """获取全局 baostock 会话，单例模式。"""
+    global _bs_session
+    with _bs_lock:
+        if _bs_session is None:
+            _bs_session = _BaostockSession()
+        else:
+            try:
+                _bs_session.ensure_login()
+            except Exception:
+                # 登录失败，重新创建会话
+                try:
+                    _bs_session.logout()
+                except Exception:
+                    pass
+                _bs_session = _BaostockSession()
+        return _bs_session
+
+
+def _symbol_to_bs(code: str) -> str:
+    """将系统标准化代码转为 baostock 格式。
+
+    baostock 使用 'sh.600519' / 'sz.000001' 格式。
+    支持 A股（sh/sz），不支持港股/美股/指数。
+    """
+    code = code.strip().lower()
+    if code.startswith("sh"):
+        return f"sh.{code[2:]}"
+    if code.startswith("sz"):
+        return f"sz.{code[2:]}"
+    if code.startswith("60") or code.startswith("68"):
+        return f"sh.{code}"
+    if code.startswith("00") or code.startswith("30"):
+        return f"sz.{code}"
+    # 无法识别，返回原格式碰运气
+    return code
+
+
+class BaostockProvider(Provider):
+    """baostock A股基本面 + 日K provider。"""
+
+    name = "baostock"
+
+    def declare(self) -> ProviderCapability:
+        return ProviderCapability(
+            capabilities=frozenset({
+                Capability.KLINE_DAILY,
+                Capability.FUNDAMENTALS,
+                Capability.FUNDAMENTALS_HISTORY,
+            }),
+            markets=frozenset({Market.A}),
+            priority_hint=0.75,  # 稳定免费源，冷启动评分较高
+        )
+
+    def supports(self, capability: Capability, market) -> bool:
+        if not super().supports(capability, market):
+            return False
+        # baostock 仅支持 A股
+        return market in (Market.A, Market.INDEX) or market == Market.A
+
+    # ─── KLINE_DAILY ─────────────────────────────────────────────────
+
+    def fetch_kline_daily(
+        self,
+        symbol: str,
+        days: int = 120,
+        end_date: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """获取A股日K线。
+
+        Args:
+            symbol: 标准化代码，如 'sh600519'
+            days: 历史天数
+            end_date: 截止日期，格式 YYYY-MM-DD，默认为今天
+
+        Returns:
+            DataFrame，列: date, open, high, low, close, volume, amount
+        """
+        if end_date is None:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = _offset_date(end_date, days)
+
+        try:
+            session = _get_session()
+        except Exception as exc:
+            raise ProviderError(f"baostock 会话获取失败: {exc}") from exc
+
+        bs_code = _symbol_to_bs(symbol)
+        logger.debug("fetch_kline_daily %s (%s -> %s)", symbol, start_date, end_date)
+
+        try:
+            rs = session._bs.query_history_k_data_plus(
+                bs_code,
+                "date,open,high,low,close,volume,amount",
+                start_date=start_date,
+                end_date=end_date,
+                frequency="d",
+                adjustflag="3",  # 不复权
+            )
+            if rs.error_msg != "success":
+                raise ProviderError(f"baostock kline query failed: {rs.error_msg}")
+
+            # rs.get_data() 直接返回完整 DataFrame，无需循环
+            df = rs.get_data()
+            if df is None or df.empty:
+                return pd.DataFrame()
+            for col in ["open", "high", "low", "close", "volume", "amount"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+            df = df.rename(columns={"date": "timestamp"})
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            return df.sort_values("timestamp").reset_index(drop=True)
+
+        except Exception as exc:
+            if "login" in str(exc).lower():
+                try:
+                    session.login()
+                    return self.fetch_kline_daily(symbol, days, end_date)
+                except Exception:
+                    pass
+            raise ProviderError(f"baostock kline fetch failed: {exc}") from exc
+
+    # ─── FUNDAMENTALS ───────────────────────────────────────────────
+
+    def fetch_fundamentals(self, symbol: str) -> Fundamentals:
+        """获取A股基本面快照（最新一期财报）。
+
+        策略：优先取最新一期数据（通常是当年Q1，ROE/epsTTM为TTM值），
+        若营收(单季为空)则往后找最近有值期。
+        baostock quarterly profit 表中 Q1 单季营收通常为空（年报才有完整数据），
+        所以 revenue 从最近有值期取。
+        """
+        try:
+            session = _get_session()
+        except Exception as exc:
+            raise ProviderError(f"baostock 会话获取失败: {exc}") from exc
+
+        bs_code = _symbol_to_bs(symbol)
+        logger.debug("fetch_fundamentals %s", symbol)
+
+        try:
+            profit_df = self._fetch_profit_all(session, bs_code)
+            cashflow = self._fetch_cashflow(session, bs_code)
+            operation = self._fetch_operation(session, bs_code)
+            dupont = self._fetch_dupont(session, bs_code)
+        except Exception as exc:
+            raise ProviderError(f"baostock fundamentals fetch failed: {exc}") from exc
+
+        if profit_df is None or profit_df.empty:
+            return Fundamentals(symbol=symbol)
+
+        # 取最新一期（第一行即最新）
+        row = profit_df.iloc[0]
+        name = self._fetch_stock_name(session, bs_code)
+
+        # ROE：始终为小数（0.105687 = 10.57%），×100 转百分比
+        roe_val = _safe_float(row.get("roeAvg")) * 100
+
+        # revenue：Q1 通常为空，跳过找最近有值期
+        revenue_val = 0.0
+        for _, r in profit_df.iterrows():
+            mb = _safe_float(r.get("MBRevenue"))
+            if mb > 0:
+                revenue_val = mb  # baostock MBRevenue 已是元，无需转换
+                break
+
+        # epsTTM：baostock 的 epsTTM 字段已经是 TTM 值（年报口径）
+        eps_ttm = _safe_float(row.get("epsTTM"))
+        # 若 epsTTM 为空（偶发），用 netProfit / totalShare 近似
+        if eps_ttm == 0:
+            net_profit = _safe_float(row.get("netProfit"))
+            total_share = _safe_float(row.get("totalShare"))
+            if total_share > 0:
+                eps_ttm = net_profit / total_share
+
+        fundamentals = Fundamentals(
+            symbol=symbol,
+            name=name,
+            eps_ttm=eps_ttm,
+            roe_ttm=roe_val,
+            profit_ttm=_safe_float(row.get("netProfit")),
+            revenue_ttm=revenue_val,
+        )
+
+        # 现金流
+        if cashflow is not None and not cashflow.empty:
+            cf_row = cashflow.iloc[0]
+            fundamentals.ocf_to_profit = _safe_float(cf_row.get("CFOToNP"))
+
+        # 营收 YoY：找最近两个同季度对比（通常用年报 Q4 vs Q4）
+        if len(profit_df) >= 2:
+            cur_row = profit_df.iloc[0]
+            for _, prev_row in profit_df.iloc[1:].iterrows():
+                # 只对比同季度（如 Q4 vs Q4）
+                if prev_row.get("statDate", "")[5:7] == cur_row.get("statDate", "")[5:7]:
+                    mb_cur = _safe_float(cur_row.get("MBRevenue"))
+                    mb_prev = _safe_float(prev_row.get("MBRevenue"))
+                    if mb_cur > 0 and mb_prev > 0:
+                        fundamentals.revenue_yoy = (mb_cur - mb_prev) / mb_prev * 100
+                        break
+
+        return fundamentals
+
+    def _fetch_profit_all(self, session: _BaostockSession, bs_code: str) -> pd.DataFrame:
+        """拉取近4年全部利润表（用于找最近有值期+计算YoY）。返回按时间降序排列的 DataFrame。"""
+        all_rows = []
+        year = datetime.now().year
+        for offset in range(4):
+            y = year - offset
+            for q in [4, 3, 2, 1]:
+                rs = session._bs.query_profit_data(bs_code, year=y, quarter=q)
+                if rs.error_msg == "success":
+                    df = rs.get_data()
+                    if df is not None and not df.empty:
+                        all_rows.append(df)
+        if not all_rows:
+            return pd.DataFrame()
+        result = pd.concat(all_rows, ignore_index=True)
+        # 按 statDate 降序排列（最新期在前）
+        result["_sort_date"] = pd.to_datetime(result["statDate"], errors="coerce")
+        result = result.sort_values("_sort_date", ascending=False).drop(columns=["_sort_date"])
+        return result.reset_index(drop=True)
+
+    def _fetch_cashflow(self, session: _BaostockSession, bs_code: str) -> pd.DataFrame:
+        year = datetime.now().year
+        for offset in range(4):
+            y = year - offset
+            for q in [4, 3, 2, 1]:
+                rs = session._bs.query_cash_flow_data(bs_code, year=y, quarter=q)
+                if rs.error_msg == "success":
+                    df = rs.get_data()
+                    if df is not None and not df.empty:
+                        return df
+        return pd.DataFrame()
+
+    def _fetch_operation(self, session: _BaostockSession, bs_code: str) -> pd.DataFrame:
+        year = datetime.now().year
+        for offset in range(4):
+            y = year - offset
+            for q in [4, 3, 2, 1]:
+                rs = session._bs.query_operation_data(bs_code, year=y, quarter=q)
+                if rs.error_msg == "success":
+                    df = rs.get_data()
+                    if df is not None and not df.empty:
+                        return df
+        return pd.DataFrame()
+
+    def _fetch_dupont(self, session: _BaostockSession, bs_code: str) -> pd.DataFrame:
+        year = datetime.now().year
+        for offset in range(4):
+            y = year - offset
+            for q in [4, 3, 2, 1]:
+                rs = session._bs.query_dupont_data(bs_code, year=y, quarter=q)
+                if rs.error_msg == "success":
+                    df = rs.get_data()
+                    if df is not None and not df.empty:
+                        return df
+        return pd.DataFrame()
+
+    def _fetch_stock_name(self, session: _BaostockSession, bs_code: str) -> str:
+        """通过 stock_basic 查询股票名称。"""
+        try:
+            rs = session._bs.query_stock_basic(code=bs_code)
+            if rs.error_msg == "success":
+                df = rs.get_data()
+                if df is not None and not df.empty:
+                    return df.iloc[0].get("code_name", "") or ""
+        except Exception:
+            pass
+        return ""
+
+
+def _safe_float(val, default: float = 0.0) -> float:
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def _offset_date(end_date: str, offset_days: int) -> str:
+    """从 end_date 往前推 offset_days 天，返回 YYYY-MM-DD。"""
+    try:
+        end = pd.Timestamp(end_date)
+        start = end - pd.Timedelta(days=offset_days)
+        return start.strftime("%Y-%m-%d")
+    except Exception:
+        # 回退逻辑
+        from datetime import timedelta
+        dt = datetime.strptime(end_date, "%Y-%m-%d")
+        dt -= timedelta(days=offset_days)
+        return dt.strftime("%Y-%m-%d")
+
+
+__all__ = ["BaostockProvider"]

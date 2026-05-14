@@ -7,6 +7,7 @@ data_gateway.providers — 各家数据源实现
 """
 
 from .akshare import AkshareProvider
+from .baostock import BaostockProvider
 from .base import Provider, ProviderError
 from .eastmoney import EastmoneyProvider
 from .sina import SinaProvider
@@ -20,5 +21,6 @@ __all__ = [
     "SinaProvider",
     "EastmoneyProvider",
     "YfinanceProvider",
+    "BaostockProvider",
     "AkshareProvider",
 ]

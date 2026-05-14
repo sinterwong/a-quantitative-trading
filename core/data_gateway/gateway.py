@@ -537,6 +537,7 @@ _gateway_lock = threading.Lock()
 
 def _build_default_gateway() -> DataGateway:
     from .providers.akshare import AkshareProvider
+    from .providers.baostock import BaostockProvider
     from .providers.eastmoney import EastmoneyProvider
     from .providers.sina import SinaProvider
     from .providers.tencent import TencentProvider
@@ -544,7 +545,7 @@ def _build_default_gateway() -> DataGateway:
 
     gw = DataGateway()
     for cls in (TencentProvider, SinaProvider, EastmoneyProvider,
-                YfinanceProvider, AkshareProvider):
+                YfinanceProvider, BaostockProvider, AkshareProvider):
         try:
             gw.register_provider(cls())
         except Exception as exc:
