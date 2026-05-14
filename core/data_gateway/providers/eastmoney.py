@@ -22,13 +22,14 @@ from typing import Any, Dict, List, Optional
 
 from ..capabilities import Capability, Market, ProviderCapability
 from ..http import HttpClient, HttpError, get_http_client, parse_jsonp
-from ..schemas import NorthFlow, SectorConstituent, SectorRanking
-from ..symbols import normalize_to_sina
+from ..schemas import MarketIndexSnapshot, NorthFlow, SectorConstituent, SectorRanking, Quote
+from ..symbols import normalize_to_sina, detect_market
 from .base import Provider, ProviderError
 
 logger = logging.getLogger("data_gateway.eastmoney")
 
 _BASE_URL = "https://push2.eastmoney.com/api/qt/clist/get"
+_ULIST_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get"
 _HEADERS = {"Referer": "https://quote.eastmoney.com/"}
 
 _KAMT_REALTIME_URL = (
@@ -74,6 +75,69 @@ def _parse_amount(raw: Any) -> float:
         return 0.0
 
 
+# ── secid 格式转换 ─────────────────────────────────────────────────────────
+# Eastmoney ulist/clist 接口用 "市场.代码" 格式 secid
+# 市场代码: 1=沪A  0=深A  116=港股  105=美股  h=沪深指数
+
+_EM_MARKET_CODE = {
+    "SH": "1",   # 沪市
+    "SZ": "0",   # 深市
+    "HK": "116", # 港股
+    "US": "105", # 美股（需要特殊处理，道琼斯等用 105.DJIA）
+}
+
+def _symbol_to_secid(symbol: str) -> str:
+    """将 sh600519 / hk00700 / usAAPL 转为东方财富 secid 格式 1.600519 / 116.HK00700。"""
+    s = symbol.strip().lower()
+    # 剥掉 sh/sz/hk/us 前缀
+    prefix_map = {"sh": "sh", "sz": "sz", "hk": "hk", "us": "us"}
+    for p, key in prefix_map.items():
+        if s.startswith(p):
+            code = s[len(p):]
+            market_key = key.upper()
+            break
+    else:
+        # 纯数字代码，默认沪市
+        return f"1.{symbol}"
+
+    if market_key == "HK":
+        return f"116.{code.upper()}"
+    if market_key == "US":
+        return f"105.{code.upper()}"
+    em_code = _EM_MARKET_CODE.get(market_key, "1")
+    return f"{em_code}.{code}"
+
+
+def _index_code_to_secid(code: str) -> str:
+    """将 000001 / sh000001 / hkHSI / usDJIA 转为东方财富 secid。
+
+    东方财富指数 secid 格式：
+      沪深指数: h.000001（上证）h.399001（深证）
+      港股指数: 116.HSI（恒生）116.HSCEI（国企指数）
+      美股指数: 105.DJIA（道琼斯）105.IXIC（纳斯达克）105.SPX（标普）
+    """
+    s = code.strip().lower()
+    # 已经是 secid 格式（包含 .）
+    if "." in s and any(s.startswith(x) for x in ["h.", "1.", "0.", "116.", "105."]):
+        return s.upper()
+
+    # 剥前缀
+    for p in ("sh", "sz", "hk", "us", "h"):
+        if s.startswith(p):
+            rest = s[len(p):]
+            rest_upper = rest.upper()
+            if p in ("hk"):
+                return f"116.{rest_upper}"
+            if p in ("us"):
+                return f"105.{rest_upper}"
+            if p == "h":
+                return f"h.{rest}"
+            # sh/sz → h 前缀
+            return f"h.{rest}"
+    # 纯数字（默认当沪深指数处理）
+    return f"h.{code}"
+
+
 class EastmoneyProvider(Provider):
     """东方财富 push2.eastmoney.com 板块数据源。"""
 
@@ -85,14 +149,21 @@ class EastmoneyProvider(Provider):
     def declare(self) -> ProviderCapability:
         return ProviderCapability(
             capabilities=frozenset({
-                Capability.SECTOR_RANKING,
-                Capability.SECTOR_CONSTITUENTS,
-                Capability.NORTH_FLOW,
+                Capability.QUOTE,           # push2 ulist.np（A股/港股/指数实时行情）
+                Capability.MARKET_INDEX,    # 同上，指数快照
+                Capability.SECTOR_RANKING,  # push2 clist（已有）
+                Capability.SECTOR_CONSTITUENTS,  # push2 clist（已有）
+                Capability.NORTH_FLOW,      # kamt 实时/日总结（已有）
             }),
-            markets=frozenset({Market.GLOBAL}),
-            # 实测时好时坏 — 给低 priority_hint,健康度系统会动态降权
-            priority_hint=0.55,
+            markets=frozenset({Market.A, Market.INDEX, Market.HK}),
+            priority_hint=0.70,
         )
+
+    def supports(self, capability: Capability, market: Market) -> bool:
+        """QUOTE / MARKET_INDEX / SECTOR_* / NORTH_FLOW 均只支持 A / INDEX / HK 市场。"""
+        if market not in (Market.A, Market.INDEX, Market.HK):
+            return False
+        return super().supports(capability, market)
 
     def _request(self, fs_param: str) -> Optional[dict]:
         params = {
@@ -258,6 +329,149 @@ class EastmoneyProvider(Provider):
                 except (ValueError, IndexError):
                     continue
         return {"amount": 0.0, "cum_amount": 0.0}
+
+    # ── QUOTE ─────────────────────────────────────────────────────────────────
+
+    def fetch_quote(self, symbol: str) -> Optional[Quote]:
+        """通过 push2 ulist.np 获取个股实时行情（A股/港股）。"""
+        secid = _symbol_to_secid(symbol)
+        try:
+            data = self._http.get_json(
+                _ULIST_URL,
+                params={
+                    "fltt": 2,
+                    "invt": 2,
+                    "fields": "f2,f3,f4,f5,f6,f12,f14,f15,f16,f17,f18,f62,f104,f105,f106",
+                    "secids": secid,
+                },
+                headers=_HEADERS,
+            )
+        except HttpError as exc:
+            raise ProviderError(f"eastmoney.fetch_quote({symbol}): {exc}") from exc
+
+        diff = ((data or {}).get("data") or {}).get("diff") or []
+        if not diff:
+            return None
+        rec = diff[0]
+
+        price = _safe_float(rec.get("f2"))
+        if price <= 0:
+            return None
+        pct = _safe_float(rec.get("f3"))
+        change = _safe_float(rec.get("f4"))
+        market = detect_market(symbol)
+        name = str(rec.get("f14", ""))
+        code = str(rec.get("f12", ""))
+
+        return Quote(
+            symbol=symbol,
+            name=name,
+            code=code,
+            market=market.value,
+            price=price,
+            prev_close=price - change if change else 0,
+            open=_safe_float(rec.get("f5")),
+            high=_safe_float(rec.get("f15")),
+            low=_safe_float(rec.get("f16")),
+            change=change,
+            pct_change=pct,
+            volume=_safe_float(rec.get("f6")),
+            amount=_safe_float(rec.get("f62")),
+            pe_ttm=_safe_float(rec.get("f9")) if "f9" else 0.0,
+            pb=_safe_float(rec.get("f23")) if "f23" else 0.0,
+            high_52w=_safe_float(rec.get("f104")) if "f104" else 0.0,
+            low_52w=_safe_float(rec.get("f105")) if "f105" else 0.0,
+            turnover_rate=_safe_float(rec.get("f10")) if "f10" else 0.0,
+            timestamp=datetime.now(),
+            currency="CNY" if market in (Market.A, Market.INDEX) else "HKD",
+        )
+
+    def fetch_quotes(self, symbols: List[str]) -> Dict[str, Quote]:
+        """批量个股行情（通过 ulist.np 批量接口）。"""
+        if not symbols:
+            return {}
+        secids = [_symbol_to_secid(s) for s in symbols]
+        try:
+            data = self._http.get_json(
+                _ULIST_URL,
+                params={
+                    "fltt": 2,
+                    "invt": 2,
+                    "fields": "f2,f3,f4,f5,f6,f12,f14,f15,f16,f17,f18,f62",
+                    "secids": ",".join(secids),
+                },
+                headers=_HEADERS,
+            )
+        except HttpError as exc:
+            raise ProviderError(f"eastmoney.fetch_quotes: {exc}") from exc
+
+        diff = ((data or {}).get("data") or {}).get("diff") or []
+        out: Dict[str, Quote] = {}
+        for i, rec in enumerate(diff):
+            if i >= len(symbols):
+                break
+            sym = symbols[i]
+            price = _safe_float(rec.get("f2"))
+            if price <= 0:
+                continue
+            pct = _safe_float(rec.get("f3"))
+            change = _safe_float(rec.get("f4"))
+            market = detect_market(sym)
+            out[sym] = Quote(
+                symbol=sym,
+                name=str(rec.get("f14", "")),
+                code=str(rec.get("f12", "")),
+                market=market.value,
+                price=price,
+                prev_close=price - change if change else 0,
+                open=_safe_float(rec.get("f5")),
+                high=_safe_float(rec.get("f15")),
+                low=_safe_float(rec.get("f16")),
+                change=change,
+                pct_change=pct,
+                volume=_safe_float(rec.get("f6")),
+                amount=_safe_float(rec.get("f62")),
+                timestamp=datetime.now(),
+                currency="CNY" if market in (Market.A, Market.INDEX) else "HKD",
+            )
+        return out
+
+    # ── MARKET_INDEX ─────────────────────────────────────────────────────────
+
+    def fetch_market_index(self, code: str) -> Optional[MarketIndexSnapshot]:
+        """通过 push2 ulist.np 获取指数快照（上证/深证/恒生等）。"""
+        secid = _index_code_to_secid(code)
+        try:
+            data = self._http.get_json(
+                _ULIST_URL,
+                params={
+                    "fltt": 2,
+                    "invt": 2,
+                    "fields": "f2,f3,f4,f12,f14",
+                    "secids": secid,
+                },
+                headers=_HEADERS,
+            )
+        except HttpError as exc:
+            raise ProviderError(f"eastmoney.fetch_market_index({code}): {exc}") from exc
+
+        diff = ((data or {}).get("data") or {}).get("diff") or []
+        if not diff:
+            return None
+        rec = diff[0]
+        price = _safe_float(rec.get("f2"))
+        if price <= 0:
+            return None
+        pct = _safe_float(rec.get("f3"))
+        change = _safe_float(rec.get("f4"))
+        return MarketIndexSnapshot(
+            code=code,
+            name=str(rec.get("f14", "")),
+            price=price,
+            prev_close=price - change if change else 0,
+            change_pct=pct,
+            timestamp=datetime.now(),
+        )
 
 
 __all__ = ["EastmoneyProvider"]
