@@ -74,24 +74,26 @@ Provider 注册表
     ├─ TencentProvider    qt.gtimg.cn / web.ifzq.gtimg.cn（主选，字段最全）
     ├─ SinaProvider        hq.sinajs.cn / money.finance.sina.com.cn（实时行情）
     ├─ EastmoneyProvider   push2.eastmoney.com（板块/北向资金）
+    ├─ BaostockProvider    api.baostock.com（A股基本面+日K+资产负债表，免费无Token）
     ├─ AkShareProvider     akshare.net（宏观/基本面历史，最终备灾）
     └─ YFinanceProvider    yfinance（美股/港股指数，兜底）
 ```
 
 ### Provider × Capability 能力矩阵
 
-| Capability | Tencent | Sina | Eastmoney | AkShare | Yfinance |
-|---|---|---|---|---|---|
-| **QUOTE** | ✅ A/HK/INDEX/US | ✅ A/HK/INDEX | ✅ A/HK/INDEX（新增） | ❌ | ❌ |
-| **KLINE_DAILY** | ✅ A/HK/INDEX | ✅ A | ❌ | ❌ | ✅ US/GLOBAL |
-| **KLINE_MINUTE** | ✅ HK | ✅ A（仅A） | ❌ | ❌ | ❌ |
-| **MARKET_INDEX** | ✅ A/HK/INDEX/US | ✅ A/INDEX | ✅ A/HK/INDEX（新增） | ❌ | ✅ US/GLOBAL |
-| **FUNDAMENTALS** | ❌ | ❌ | ❌ | ✅ GLOBAL | ❌ |
-| **FUNDAMENTALS_HISTORY** | ❌ | ❌ | ❌ | ✅ GLOBAL | ❌ |
-| **SECTOR_RANKING** | ❌ | ❌ | ✅ GLOBAL（唯一） | ❌ | ❌ |
-| **SECTOR_CONSTITUENTS** | ❌ | ❌ | ✅ GLOBAL（唯一） | ❌ | ❌ |
-| **NORTH_FLOW** | ❌ | ❌ | ✅ GLOBAL（唯一） | ❌ | ❌ |
-| **MACRO** | ❌ | ❌ | ❌ | ✅ GLOBAL | ❌ |
+| Capability | Tencent | Sina | Eastmoney | **Baostock** | AkShare | Yfinance |
+|---|---|---|---|---|---|---|
+| **QUOTE** | ✅ A/HK/INDEX/US | ✅ A/HK/INDEX | ✅ A/HK/INDEX | ❌ | ❌ | ❌ |
+| **KLINE_DAILY** | ✅ A/HK/INDEX | ✅ A | ❌ | ✅ A股（第三备源） | ❌ | ✅ US/GLOBAL |
+| **KLINE_MINUTE** | ✅ HK | ✅ A | ❌ | ❌ | ❌ | ❌ |
+| **MARKET_INDEX** | ✅ A/HK/INDEX/US | ✅ A/INDEX | ✅ A/HK/INDEX | ❌ | ❌ | ✅ US/GLOBAL |
+| **FUNDAMENTALS** | ❌ | ❌ | ❌ | ✅ A股（YoY增速/行业分类） | ✅ GLOBAL | ❌ |
+| **FUNDAMENTALS_HISTORY** | ❌ | ❌ | ❌ | ✅ A股 | ✅ GLOBAL | ❌ |
+| **BALANCE_SHEET** | ❌ | ❌ | ❌ | ✅ A股（资产负债率/流动/速动比率） | ❌ | ❌ |
+| **SECTOR_RANKING** | ❌ | ❌ | ✅ GLOBAL（唯一） | ❌ | ❌ | ❌ |
+| **SECTOR_CONSTITUENTS** | ❌ | ❌ | ✅ GLOBAL（唯一） | ❌ | ❌ | ❌ |
+| **NORTH_FLOW** | ❌ | ❌ | ✅ GLOBAL（唯一） | ❌ | ❌ | ❌ |
+| **MACRO** | ❌ | ❌ | ❌ | ❌ | ✅ GLOBAL | ❌ |
 
 ### 已知能力缺口（未实现）
 

@@ -438,5 +438,5 @@ def test_get_gateway_registers_default_providers():
     reset_gateway(None)
     gw = get_gateway()
     names = {p.name for p in gw.providers()}
-    assert names == {"tencent", "sina", "eastmoney", "yfinance", "akshare"}
+    assert names == {"tencent", "sina", "eastmoney", "yfinance", "baostock", "akshare"}
     reset_gateway(None)
