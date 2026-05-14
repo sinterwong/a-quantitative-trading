@@ -163,6 +163,12 @@ class SinaProvider(Provider):
         if capability in (Capability.KLINE_DAILY, Capability.KLINE_MINUTE):
             if market == Market.HK:
                 return False
+        # 指数 K 线：Sina 的 normalize_to_sina 对上交所指数（000xxx）会错误归一
+        # 为 sz000300（深证路径），导致 Sina 返回 null；腾讯已全覆盖 INDEX K-line，
+        # 新浪不参与指数 K 线路由
+        if capability in (Capability.KLINE_DAILY, Capability.KLINE_MINUTE):
+            if market == Market.INDEX:
+                return False
         # MARKET_INDEX 不支持美股（新浪美股指数接口不同）
         if capability == Capability.MARKET_INDEX and market == Market.US:
             return False
