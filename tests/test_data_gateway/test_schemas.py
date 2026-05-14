@@ -152,3 +152,13 @@ def test_market_index_snapshot():
     idx = MarketIndexSnapshot(code="VIX", name="VIX", price=18.5, change_pct=-1.2)
     assert idx.is_valid is True
     assert MarketIndexSnapshot().is_valid is False
+
+
+# ── Capability 枚举 ───────────────────────────────────────────────────────────
+
+
+def test_capability_balance_sheet_exists():
+    """BALANCE_SHEET 是新的 capability 枚举成员"""
+    from core.data_gateway.capabilities import Capability
+    assert hasattr(Capability, "BALANCE_SHEET")
+    assert Capability.BALANCE_SHEET.value == "balance_sheet"
