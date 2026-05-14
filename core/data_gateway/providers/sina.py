@@ -268,6 +268,49 @@ class SinaProvider(Provider):
         url = f"{_KLINE_URL}?symbol={sina_code}&scale={scale}&ma=no&datalen={limit}"
         return self._fetch_and_parse_kline(url, sina_code, is_minute=True)
 
+    # ── MARKET_INDEX ─────────────────────────────────────────────────────────
+
+    def fetch_market_index(self, code: str) -> Optional[MarketIndexSnapshot]:
+        """A 股 / 指数快照。新浪指数前缀 s_，URL: hq.sinajs.cn/list=s_sh000001。
+
+        指数格式（6 字段）:
+            [name, price, prev_close, change, change_pct, volume]
+        与 A 股 34 字段格式不同，走独立解析路径。
+        """
+        sina_code = normalize_to_sina(code)
+        # 新浪指数前缀 s_，与普通股票区分
+        index_code = f"s_{sina_code}" if not sina_code.startswith("s_") else sina_code
+        try:
+            text = self._http.get_text(
+                f"{_QUOTE_URL}{index_code}",
+                headers=_HEADERS,
+                encoding="gbk",
+            )
+        except HttpError as exc:
+            raise ProviderError(f"sina.fetch_market_index({index_code}): {exc}") from exc
+
+        fields = _split_payload(text)
+        if len(fields) < 6:
+            return None
+        price = safe_float(fields[1])
+        if price <= 0:
+            return None
+        # fields[2] 是 change 金额（正负），prev_close = price - change
+        change = safe_float(fields[2])
+        prev_close = price - change
+        change_pct = safe_float(fields[4])
+
+        return MarketIndexSnapshot(
+            code=code,
+            name=fields[0].strip(),
+            price=price,
+            prev_close=prev_close,
+            change_pct=change_pct,
+            timestamp=datetime.now(),
+        )
+
+    # ── KLINE ────────────────────────────────────────────────────────────────
+
     def _fetch_and_parse_kline(
         self, url: str, sina_code: str, *, is_minute: bool
     ) -> pd.DataFrame:
