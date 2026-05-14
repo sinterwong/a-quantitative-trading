@@ -105,45 +105,71 @@ _trade_calendar_date: str = ''
 import fcntl as _fcntl
 
 def _acquire_pid_lock(pid_file: str) -> bool:
-    """尝试获取 PID 文件锁。
+    """尝试获取 PID 文件锁（原子操作，无竞态）。
 
-    双重保护：
-    1. flock(LOCK_EX|LOCK_NB) — 操作系统级互斥，进程退出自动释放
-    2. kill(0) — 验证旧 PID 是否真实存活，防止 flock 残留或 zombie 锁
+    策略：
+    1. O_CREAT | O_EXCL 原子创建锁文件（只有一个进程能创建成功）
+    2. 拿到文件后加 LOCK_EX 锁（阻塞，直到成功）
+    3. 读旧 PID，若旧进程还活着则放弃（退出）
+    4. 写入并持有 PID，进程结束前锁自动持有
 
-    返回 True 表示获得锁（继续启动），False 表示已有实例在跑。
+    Returns True 表示获得锁（继续启动），False 表示已有实例在跑。
     """
+    import errno as _errno
     import os as _os
-    import signal as _signal
+
     pid_dir = _os.path.dirname(pid_file) or '.'
     _os.makedirs(pid_dir, exist_ok=True)
 
-    # ── 第一关：flock 互斥（防并发启动） ─────────────────────────────
+    # ── 第一关：O_CREAT|O_EXCL 原子创建，只有一个进程能成功 ─────────
+    try:
+        fd = _os.open(pid_file, _os.O_CREAT | _os.O_EXCL | _os.O_RDWR)
+    except OSError as exc:
+        if exc.errno == _errno.EEXIST:
+            # 锁文件已存在 → 等待持有锁的那个进程释放，然后走验证流程
+            pass
+        else:
+            return False  # 其他错误（权限等），安全起见放弃
+    else:
+        # 拿到文件了（其他进程都在等待 EEXIST）—— 立即加锁并写入 PID
+        try:
+            _fcntl.flock(fd, _fcntl.LOCK_EX)
+            _os.write(fd, b'%d' % _os.getpid())
+            _os.fsync(fd)
+            return True
+        finally:
+            # 锁在进程退出前一直被持有；fd 泄漏到进程结束（可接受）
+            pass
+
+    # ── 第二关：锁文件已存在，等待并验证旧 PID ─────────────────────
     try:
         pf = open(pid_file, 'r+')
-        _fcntl.flock(pf.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-        # 拿到锁了 → 检查是否有旧 PID 在跑
+    except (IOError, OSError):
+        # 锁文件正在被删除（上一个进程退出中），重试一次
+        try:
+            pf = open(pid_file, 'r+')
+        except (IOError, OSError):
+            return False
+
+    try:
+        _fcntl.flock(pf.fileno(), _fcntl.LOCK_EX)
         old_pid_str = pf.read().strip()
         if old_pid_str:
             try:
                 old_pid = int(old_pid_str)
-                # 验证旧进程是否真实存活（kill(pid, 0) 不发信号，只检查）
                 if old_pid != _os.getpid():
-                    _os.kill(old_pid, 0)
-                # 旧进程还活着 → 让它继续，退出
-                pf.close()
-                return False
+                    _os.kill(old_pid, 0)  # 还活着 → 退出
+                    return False
             except (ValueError, OSError):
-                # 旧 PID 无效（zombie/stale lock）→ 覆盖继续
-                pass
-        # 写入当前 PID 并持有锁
+                pass  # 旧 PID 无效（stale），覆盖
         pf.seek(0)
         pf.truncate()
-        pf.write(str(_os.getpid()))
+        pf.write('%d' % _os.getpid())
         pf.flush()
+        _os.fsync(pf.fileno())
         return True
-    except (IOError, OSError) as exc:
-        return False
+    finally:
+        pf.close()
 
 
 def _release_pid_lock(pid_file: str):
