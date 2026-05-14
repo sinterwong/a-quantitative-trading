@@ -887,12 +887,8 @@ class DynamicStockSelectorV2:
             if len(selected) >= top_n * 3:
                 break
 
-        # 不足时用宽基ETF填充
-        for etf in FALLBACK_ETFS:
-            if etf not in seen_codes and len(selected) < top_n:
-                selected.append(etf)
-                seen_codes.add(etf)
-
+        # 不做 ETF 兜底：选不出有分数的股 → 返回空列表。
+        # 调用方（morning_runner）自行决定如何处理空结果（如发告警、跳过早报等）。
         return selected[:top_n]
 
     def get_stock_with_context(self, top_n: int = 5) -> List[Dict]:

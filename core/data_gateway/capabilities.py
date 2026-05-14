@@ -29,6 +29,13 @@ class Capability(str, Enum):
     FUNDAMENTALS_HISTORY = "fundamentals_history"  # 基本面历史时序 DataFrame（日频，前向填充）
 
 
+class MacroIndicator(str, Enum):
+    """宏观指标枚举。扩展此处时同步更新 AkShareProvider.fetch_macro。"""
+    PMI = "PMI"           # 制造业采购经理指数
+    M2 = "M2"             # 货币供应量 M2 同比
+    CREDIT = "CREDIT"     # 社融存量同比
+
+
 class Market(str, Enum):
     """市场类别。"""
 
@@ -58,6 +65,7 @@ class ProviderCapability:
 
 __all__ = [
     "Capability",
+    "MacroIndicator",
     "Market",
     "ProviderCapability",
 ]

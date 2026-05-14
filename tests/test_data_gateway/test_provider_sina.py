@@ -195,7 +195,7 @@ def test_fetch_kline_null_returns_empty():
     http = MagicMock()
     http.get_text.return_value = "null"
     p = SinaProvider(http=http)
-    df = p.fetch_kline("sh600519")
+    df = p.fetch_kline_daily("sh600519")
     assert df.empty
 
 
@@ -206,7 +206,7 @@ def test_fetch_kline_parses_json():
         '"low":"1228","close":"1234.5","volume":"12345000"}]'
     )
     p = SinaProvider(http=http)
-    df = p.fetch_kline("sh600519", interval="daily")
+    df = p.fetch_kline_daily("sh600519")
     assert len(df) == 1
     assert "date" in df.columns
     assert df["close"].iloc[0] == 1234.5
@@ -215,7 +215,7 @@ def test_fetch_kline_parses_json():
 def test_fetch_kline_unknown_interval_returns_empty():
     http = MagicMock()
     p = SinaProvider(http=http)
-    df = p.fetch_kline("sh600519", interval="bogus")
+    df = p.fetch_kline_minute("sh600519", interval="bogus")
     assert df.empty
     # 未发请求
     assert http.get_text.call_count == 0

@@ -42,6 +42,7 @@ sys.path.insert(0, PROJ_DIR)
 
 from flask import Flask, request, jsonify
 from services.portfolio import PortfolioService
+from core.data_gateway.capabilities import MacroIndicator
 
 app = Flask(__name__)
 
@@ -1751,16 +1752,19 @@ def get_macro_data(indicator):
     """
     GET /data/macro/PMI
     GET /data/macro/M2
+    GET /data/macro/CREDIT
 
     返回宏观指标的最新值和日期。
     """
-    valid = {'PMI', 'M2'}
-    if indicator not in valid:
+    try:
+        macro_ind = MacroIndicator(indicator)
+    except ValueError:
+        valid = {i.value for i in MacroIndicator}
         return err(f'Unknown macro indicator: {indicator}. Valid: {valid}', 400)
 
     try:
         from core.data_gateway import get_gateway
-        result = get_gateway().macro(indicator)
+        result = get_gateway().macro(macro_ind)
         if result is None or result.empty:
             return err(f'No data for {indicator}', 404)
         latest = result.iloc[-1]

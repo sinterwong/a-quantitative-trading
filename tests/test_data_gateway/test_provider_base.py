@@ -34,8 +34,10 @@ def test_provider_default_fetch_methods_return_empty():
     p = _NoOpProvider()
     assert p.fetch_quote("sh600519") is None
     assert p.fetch_quotes(["sh600519"]) == {}
-    assert isinstance(p.fetch_kline("sh600519"), pd.DataFrame)
-    assert p.fetch_kline("sh600519").empty
+    assert isinstance(p.fetch_kline_daily("sh600519"), pd.DataFrame)
+    assert p.fetch_kline_daily("sh600519").empty
+    assert isinstance(p.fetch_kline_minute("sh600519"), pd.DataFrame)
+    assert p.fetch_kline_minute("sh600519").empty
     assert p.fetch_fundamentals("sh600519") is None
     assert p.fetch_sectors() == []
     assert p.fetch_sector_constituents("BK0716") == []

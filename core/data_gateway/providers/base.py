@@ -16,7 +16,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from ..capabilities import Capability, ProviderCapability
+from ..capabilities import Capability, MacroIndicator, Market, ProviderCapability
 from ..schemas import (
     Fundamentals,
     MarketIndexSnapshot,
@@ -81,15 +81,28 @@ class Provider(ABC):
     def fetch_quotes(self, symbols: List[str]) -> Dict[str, Quote]:
         return {}
 
-    def fetch_kline(
+    def fetch_kline_daily(
         self,
         symbol: str,
-        interval: str = "daily",
         days: int = 120,
         adjust: str = "qfq",
         limit: int = 100,
     ) -> pd.DataFrame:
-        """interval: 'daily' / 'weekly' / 'monthly' / '1m' / '5m' / '15m' / '30m' / '60m'"""
+        """日 K 线（涵盖周/月/年，通过 adjust 参数区分）。
+
+        interval 参数从此方法中移除——日 K 和分钟 K 是不同的 Capability，
+        分别由 fetch_kline_daily / fetch_kline_minute 提供。"""
+        return pd.DataFrame()
+
+    def fetch_kline_minute(
+        self,
+        symbol: str,
+        interval: str = "5m",
+        limit: int = 100,
+    ) -> pd.DataFrame:
+        """分钟 K 线。interval: '1m' / '5m' / '15m' / '30m' / '60m'。
+
+        注意：目前仅腾讯 HK 行情支持分钟 K，其他 Provider 返回空 DataFrame。"""
         return pd.DataFrame()
 
     def fetch_fundamentals(self, symbol: str) -> Optional[Fundamentals]:
@@ -111,11 +124,10 @@ class Provider(ABC):
     def fetch_market_index(self, code: str) -> Optional[MarketIndexSnapshot]:
         return None
 
-    def fetch_macro(self, indicator: str) -> pd.DataFrame:
-        """indicator: 'PMI' / 'M2' / 'SHRZGM' ...
+    def fetch_macro(self, indicator: MacroIndicator) -> pd.DataFrame:
+        """indicator: MacroIndicator enum (PMI / M2 / CREDIT)。
 
-        返回 DataFrame(列约定: date, value),空 DataFrame 表示无数据。
-        """
+        返回 DataFrame(列约定: date, value)，空 DataFrame 表示无数据。"""
         return pd.DataFrame()
 
     def fetch_fundamentals_history(

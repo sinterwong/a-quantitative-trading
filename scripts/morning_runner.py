@@ -319,8 +319,7 @@ def run():
     _log.info('[Step0] Running dynamic stock selector...')
     candidates = fetch_selected_stocks(n=5)
     if not candidates:
-        _log.warning('[Step0] No stocks selected, exiting')
-        return
+        _log.warning('[Step0] No stocks selected, will still send degraded report')
 
     # Step 1: 同步 watchlist 到 Backend
     #   IntradayMonitor 09:31 第一轮扫描会从 watchlist 取标的，

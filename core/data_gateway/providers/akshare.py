@@ -16,7 +16,7 @@ import re
 
 import pandas as pd
 
-from ..capabilities import Capability, Market, ProviderCapability
+from ..capabilities import Capability, MacroIndicator, Market, ProviderCapability
 from ..schemas import Fundamentals
 from .base import Provider, ProviderError
 
@@ -64,8 +64,8 @@ class AkshareProvider(Provider):
             return True
         return market in self.declare().markets
 
-    def fetch_macro(self, indicator: str) -> pd.DataFrame:
-        """支持 indicator: PMI / M2 / CREDIT。"""
+    def fetch_macro(self, indicator: MacroIndicator) -> pd.DataFrame:
+        """支持 indicator: MacroIndicator.PMI / M2 / CREDIT。"""
         try:
             import akshare as ak
         except ImportError:
@@ -73,11 +73,11 @@ class AkshareProvider(Provider):
             return pd.DataFrame()
 
         try:
-            if indicator == "PMI":
+            if indicator == MacroIndicator.PMI:
                 return self._fetch_pmi(ak)
-            if indicator == "M2":
+            if indicator == MacroIndicator.M2:
                 return self._fetch_m2(ak)
-            if indicator == "CREDIT":
+            if indicator == MacroIndicator.CREDIT:
                 return self._fetch_credit(ak)
         except Exception as exc:
             raise ProviderError(f"akshare.fetch_macro({indicator}): {exc}") from exc

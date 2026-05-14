@@ -275,44 +275,53 @@ class TencentProvider(Provider):
 
     # ── KLINE ────────────────────────────────────────────────────────────────
 
-    def fetch_kline(
+    def fetch_kline_daily(
         self,
         symbol: str,
-        interval: str = "daily",
         days: int = 120,
         adjust: str = "qfq",
         limit: int = 100,
     ) -> pd.DataFrame:
         sym = normalize_to_tencent(symbol)
-        market = detect_market(sym)
-        period = _INTERVAL_MAP.get(interval)
-        if period is None:
-            return pd.DataFrame()
-
-        is_minute = interval in ("1m", "5m", "15m", "30m", "60m")
-        if is_minute and market != Market.HK:
-            return pd.DataFrame()  # 腾讯仅港股分钟 K
-
-        # 日 K:用 days 反推区间;分钟 K:固定 limit
-        if is_minute:
-            start, end = "", ""
-            n = limit
-        else:
-            end_dt = datetime.now()
-            start_dt = end_dt - timedelta(days=days * 2)
-            start = start_dt.strftime("%Y-%m-%d")
-            end = end_dt.strftime("%Y-%m-%d")
-            n = days
-
+        period = _INTERVAL_MAP.get("daily")
         adj = adjust if adjust in ("qfq", "hfq") else ""
-        param = f"{sym},{period},{start},{end},{n},{adj}"
+        end_dt = datetime.now()
+        start_dt = end_dt - timedelta(days=days * 2)
+        start = start_dt.strftime("%Y-%m-%d")
+        end = end_dt.strftime("%Y-%m-%d")
+        param = f"{sym},{period},{start},{end},{days},{adj}"
         url = f"{_KLINE_URL}?_var=k&param={param}"
 
         try:
             text = self._http.get_text(url, headers=_HEADERS, encoding="utf-8")
         except HttpError as exc:
-            raise ProviderError(f"tencent.fetch_kline({sym},{interval}): {exc}") from exc
+            raise ProviderError(f"tencent.fetch_kline_daily({sym}): {exc}") from exc
 
+        return self._parse_kline_response(text, sym, adj, period, is_minute=False)
+
+    def fetch_kline_minute(
+        self,
+        symbol: str,
+        interval: str = "5m",
+        limit: int = 100,
+    ) -> pd.DataFrame:
+        sym = normalize_to_tencent(symbol)
+        market = detect_market(sym)
+        if market != Market.HK:
+            return pd.DataFrame()  # 腾讯仅港股支持分钟 K
+        period = _INTERVAL_MAP.get(interval)
+        if period is None:
+            return pd.DataFrame()
+        url = f"{_KLINE_URL}?_var=k&param={sym},{period},,,{limit},"
+        try:
+            text = self._http.get_text(url, headers=_HEADERS, encoding="utf-8")
+        except HttpError as exc:
+            raise ProviderError(f"tencent.fetch_kline_minute({sym},{interval}): {exc}") from exc
+        return self._parse_kline_response(text, sym, "", period, is_minute=True)
+
+    def _parse_kline_response(
+        self, text: str, sym: str, adj: str, period: str, *, is_minute: bool
+    ) -> pd.DataFrame:
         eq = text.find("=")
         if eq >= 0:
             text = text[eq + 1:].strip().rstrip(";")
@@ -328,7 +337,6 @@ class TencentProvider(Provider):
         if not sym_data:
             return pd.DataFrame()
 
-        # 查找 bar 数组:qfq+period > period > 任意包含 period 的 key
         prefix = adj if adj else ""
         candidates = ([f"{prefix}{period}"] if prefix else []) + [
             period, f"qfq{period}", f"hfq{period}", "day",
@@ -368,7 +376,6 @@ class TencentProvider(Provider):
         df = pd.DataFrame(rows)
         time_col = "datetime" if is_minute else "date"
         if is_minute:
-            # 港股分钟时间戳形如 YYYYMMDDHHMM(SS)
             df[time_col] = df[time_col].apply(_parse_kline_dt)
         else:
             df[time_col] = pd.to_datetime(df[time_col], errors="coerce")

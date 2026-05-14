@@ -9,6 +9,7 @@ data_gateway.providers.sina — 新浪财经数据源
   │ QUOTE          │ ✓    │ ✓    │ ✓    │
   │ KLINE_DAILY    │ ✓    │ ✓    │ ✗    │
   │ KLINE_MINUTE   │ ✓    │ ✓    │ ✗    │
+  │ MARKET_INDEX   │ ✓    │ ✓    │ ✓    │  ← 新增（新浪 hq.sinajs.cn 支持 A/INDEX/HK 指数）
   └────────────────┴──────┴───────┴──────┘
 
 字段权威声明:
@@ -26,7 +27,7 @@ import pandas as pd
 
 from ..capabilities import Capability, Market, ProviderCapability
 from ..http import HttpClient, HttpError, get_http_client
-from ..schemas import Quote
+from ..schemas import MarketIndexSnapshot, Quote
 from ..symbols import detect_market, normalize_to_sina, safe_float
 from .base import Provider, ProviderError
 
@@ -151,16 +152,20 @@ class SinaProvider(Provider):
                 Capability.QUOTE,
                 Capability.KLINE_DAILY,
                 Capability.KLINE_MINUTE,
+                Capability.MARKET_INDEX,   # 新浪 hq.sinajs.cn/list=s_sh000001 指数接口
             }),
             markets=frozenset({Market.A, Market.INDEX, Market.HK}),
             priority_hint=0.80,
         )
 
     def supports(self, capability: Capability, market: Market) -> bool:
-        # 新浪港股 K 线常返回 'null',视为不支持
+        # 港股 K 线不稳定，视为不支持
         if capability in (Capability.KLINE_DAILY, Capability.KLINE_MINUTE):
             if market == Market.HK:
                 return False
+        # MARKET_INDEX 不支持美股（新浪美股指数接口不同）
+        if capability == Capability.MARKET_INDEX and market == Market.US:
+            return False
         return super().supports(capability, market)
 
     def field_authority(self) -> Dict[Capability, Dict[str, float]]:
@@ -233,27 +238,86 @@ class SinaProvider(Provider):
 
     # ── KLINE ────────────────────────────────────────────────────────────────
 
-    def fetch_kline(
+    def fetch_kline_daily(
         self,
         symbol: str,
-        interval: str = "daily",
         days: int = 120,
         adjust: str = "qfq",
         limit: int = 100,
     ) -> pd.DataFrame:
+        """日 K 线。新浪港股 K 线不稳定，supports() 已排除 HK。"""
+        sina_code = normalize_to_sina(symbol)
+        scale = _PERIOD_TO_SCALE.get("daily")
+        if scale is None:
+            return pd.DataFrame()
+        n = min(days, 6000)
+        url = f"{_KLINE_URL}?symbol={sina_code}&scale={scale}&ma=no&datalen={n}"
+        return self._fetch_and_parse_kline(url, sina_code, is_minute=False)
+
+    def fetch_kline_minute(
+        self,
+        symbol: str,
+        interval: str = "5m",
+        limit: int = 100,
+    ) -> pd.DataFrame:
+        """分钟 K 线。新浪港股 K 线不稳定，supports() 已排除 HK。"""
+        sina_code = normalize_to_sina(symbol)
         scale = _PERIOD_TO_SCALE.get(interval)
         if scale is None:
             return pd.DataFrame()
+        url = f"{_KLINE_URL}?symbol={sina_code}&scale={scale}&ma=no&datalen={limit}"
+        return self._fetch_and_parse_kline(url, sina_code, is_minute=True)
 
-        is_minute = interval in ("1m", "5m", "15m", "30m", "60m")
-        sina_code = normalize_to_sina(symbol)
-        n = limit if is_minute else min(days, 6000)
-        url = f"{_KLINE_URL}?symbol={sina_code}&scale={scale}&ma=no&datalen={n}"
+    # ── MARKET_INDEX ─────────────────────────────────────────────────────────
 
+    def fetch_market_index(self, code: str) -> Optional[MarketIndexSnapshot]:
+        """A 股 / 指数快照。新浪指数前缀 s_，URL: hq.sinajs.cn/list=s_sh000001。
+
+        指数格式（6 字段）:
+            [name, price, prev_close, change, change_pct, volume]
+        与 A 股 34 字段格式不同，走独立解析路径。
+        """
+        sina_code = normalize_to_sina(code)
+        # 新浪指数前缀 s_，与普通股票区分
+        index_code = f"s_{sina_code}" if not sina_code.startswith("s_") else sina_code
+        try:
+            text = self._http.get_text(
+                f"{_QUOTE_URL}{index_code}",
+                headers=_HEADERS,
+                encoding="gbk",
+            )
+        except HttpError as exc:
+            raise ProviderError(f"sina.fetch_market_index({index_code}): {exc}") from exc
+
+        fields = _split_payload(text)
+        if len(fields) < 6:
+            return None
+        # 字段: [0]name [1]price [2]change(金额) [3]change_pct(%) [4]volume [5]amount
+        price = safe_float(fields[1])
+        if price <= 0:
+            return None
+        change = safe_float(fields[2])
+        prev_close = price - change          # prev_close = price - change金额
+        change_pct = safe_float(fields[3])   # change_pct 直接从字段3取
+
+        return MarketIndexSnapshot(
+            code=code,
+            name=fields[0].strip(),
+            price=price,
+            prev_close=prev_close,
+            change_pct=change_pct,
+            timestamp=datetime.now(),
+        )
+
+    # ── KLINE ────────────────────────────────────────────────────────────────
+
+    def _fetch_and_parse_kline(
+        self, url: str, sina_code: str, *, is_minute: bool
+    ) -> pd.DataFrame:
         try:
             text = self._http.get_text(url, headers=_HEADERS, encoding="utf-8")
         except HttpError as exc:
-            raise ProviderError(f"sina.fetch_kline({sina_code},{interval}): {exc}") from exc
+            raise ProviderError(f"sina.kline({sina_code}): {exc}") from exc
 
         s = text.strip()
         if s == "null" or s.startswith("null"):
