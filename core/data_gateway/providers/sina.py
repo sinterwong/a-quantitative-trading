@@ -292,13 +292,13 @@ class SinaProvider(Provider):
         fields = _split_payload(text)
         if len(fields) < 6:
             return None
+        # 字段: [0]name [1]price [2]change(金额) [3]change_pct(%) [4]volume [5]amount
         price = safe_float(fields[1])
         if price <= 0:
             return None
-        # fields[2] 是 change 金额（正负），prev_close = price - change
         change = safe_float(fields[2])
-        prev_close = price - change
-        change_pct = safe_float(fields[4])
+        prev_close = price - change          # prev_close = price - change金额
+        change_pct = safe_float(fields[3])   # change_pct 直接从字段3取
 
         return MarketIndexSnapshot(
             code=code,
