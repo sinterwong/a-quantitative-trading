@@ -142,6 +142,16 @@ def test_supports_minute_only_hk():
     assert p.supports(Capability.KLINE_DAILY, Market.A) is True
 
 
+def test_supports_us_kline_daily_excluded():
+    """腾讯美股日K只返回1条历史数据（接口限制），应排除，走yfinance。"""
+    p = TencentProvider()
+    assert p.supports(Capability.KLINE_DAILY, Market.US) is False
+    assert p.supports(Capability.KLINE_DAILY, Market.HK) is True
+    assert p.supports(Capability.KLINE_DAILY, Market.A) is True
+    # QUOTE 对 US 仍然支持（腾讯美股行情有数据）
+    assert p.supports(Capability.QUOTE, Market.US) is True
+
+
 def test_field_authority_declares_88_fields():
     """腾讯独家的 88-field 字段应当声明高权威(> 1.0)。"""
     auth = TencentProvider().field_authority()

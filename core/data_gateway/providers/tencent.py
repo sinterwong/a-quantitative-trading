@@ -227,6 +227,9 @@ class TencentProvider(Provider):
         # 腾讯分钟 K 仅港股可用
         if capability == Capability.KLINE_MINUTE and market != Market.HK:
             return False
+        # 腾讯美股日K 只返回最近1个交易日，无历史数据（接口限制），走 yfinance
+        if capability == Capability.KLINE_DAILY and market == Market.US:
+            return False
         return super().supports(capability, market)
 
     def field_authority(self) -> Dict[Capability, Dict[str, float]]:
