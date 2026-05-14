@@ -32,7 +32,7 @@ from typing import Optional
 import pandas as pd
 
 from ..capabilities import Capability, Market, ProviderCapability
-from ..schemas import Fundamentals, Quote
+from ..schemas import BalanceSheet, Fundamentals, Quote
 from .base import Provider, ProviderError
 
 logger = logging.getLogger("data_gateway.baostock")
@@ -105,6 +105,11 @@ def _symbol_to_bs(code: str) -> str:
     支持 A股（sh/sz），不支持港股/美股/指数。
     """
     code = code.strip().lower()
+    # 已带 sh./sz. 前缀，直接返回
+    if code.startswith("sh."):
+        return code
+    if code.startswith("sz."):
+        return code
     if code.startswith("sh"):
         return f"sh.{code[2:]}"
     if code.startswith("sz"):
@@ -128,6 +133,7 @@ class BaostockProvider(Provider):
                 Capability.KLINE_DAILY,
                 Capability.FUNDAMENTALS,
                 Capability.FUNDAMENTALS_HISTORY,
+                Capability.BALANCE_SHEET,
             }),
             markets=frozenset({Market.A}),
             priority_hint=0.75,  # 稳定免费源，冷启动评分较高
@@ -224,6 +230,8 @@ class BaostockProvider(Provider):
             cashflow = self._fetch_cashflow(session, bs_code)
             operation = self._fetch_operation(session, bs_code)
             dupont = self._fetch_dupont(session, bs_code)
+            growth = self._fetch_growth(session, bs_code)
+            industry = self._fetch_industry(session, bs_code)
         except Exception as exc:
             raise ProviderError(f"baostock fundamentals fetch failed: {exc}") from exc
 
@@ -261,12 +269,20 @@ class BaostockProvider(Provider):
             roe_ttm=roe_val,
             profit_ttm=_safe_float(row.get("netProfit")),
             revenue_ttm=revenue_val,
+            industry=industry,
         )
 
         # 现金流
         if cashflow is not None and not cashflow.empty:
             cf_row = cashflow.iloc[0]
             fundamentals.ocf_to_profit = _safe_float(cf_row.get("CFOToNP"))
+
+        # YoY 增速（来自 growth_data，小数格式如 -0.045049 = -4.5%，无需 ×100）
+        if growth is not None and not growth.empty:
+            g_row = growth.iloc[0]
+            fundamentals.profit_yoy = _safe_float(g_row.get("YOYNI"))
+            fundamentals.eps_yoy = _safe_float(g_row.get("YOYEPSBasic"))
+            fundamentals.asset_yoy = _safe_float(g_row.get("YOYAsset"))
 
         # 营收 YoY：找最近两个同季度对比（通常用年报 Q4 vs Q4）
         if len(profit_df) >= 2:
@@ -337,6 +353,74 @@ class BaostockProvider(Provider):
                     if df is not None and not df.empty:
                         return df
         return pd.DataFrame()
+
+    def _fetch_growth(self, session: _BaostockSession, bs_code: str) -> pd.DataFrame:
+        """拉取最新一期 growth_data（YoY 增速）。"""
+        year = datetime.now().year
+        for offset in range(4):
+            y = year - offset
+            for q in [4, 3, 2, 1]:
+                rs = session._bs.query_growth_data(bs_code, year=y, quarter=q)
+                if rs.error_msg == "success":
+                    df = rs.get_data()
+                    if df is not None and not df.empty:
+                        return df
+        return pd.DataFrame()
+
+    def _fetch_balance(self, session: _BaostockSession, bs_code: str) -> pd.DataFrame:
+        """拉取最新一期 balance_data（资产负债）。"""
+        year = datetime.now().year
+        for offset in range(4):
+            y = year - offset
+            for q in [4, 3, 2, 1]:
+                rs = session._bs.query_balance_data(bs_code, year=y, quarter=q)
+                if rs.error_msg == "success":
+                    df = rs.get_data()
+                    if df is not None and not df.empty:
+                        return df
+        return pd.DataFrame()
+
+    def _fetch_industry(self, session: _BaostockSession, bs_code: str) -> str:
+        """通过 stock_industry 查询行业分类。"""
+        try:
+            rs = session._bs.query_stock_industry(code=bs_code)
+            if rs.error_msg == "success":
+                df = rs.get_data()
+                if df is not None and not df.empty:
+                    return str(df.iloc[0].get("industry", "") or "")
+        except Exception:
+            pass
+        return ""
+
+    def fetch_balance_sheet(self, symbol: str) -> BalanceSheet:
+        """获取 A股资产负债表快照。"""
+        try:
+            session = _get_session()
+        except Exception as exc:
+            raise ProviderError(f"baostock 会话获取失败: {exc}") from exc
+
+        bs_code = _symbol_to_bs(symbol)
+        logger.debug("fetch_balance_sheet %s", symbol)
+
+        try:
+            df = self._fetch_balance(session, bs_code)
+        except Exception as exc:
+            raise ProviderError(f"baostock balance_sheet fetch failed: {exc}") from exc
+
+        if df is None or df.empty:
+            return BalanceSheet(symbol=symbol)
+
+        row = df.iloc[0]
+        # balance_data 只有比率字段，无绝对值
+        return BalanceSheet(
+            symbol=symbol,
+            total_asset=0.0,  # balance_data 不提供绝对值
+            total_liability=0.0,
+            debt_to_equity=_safe_float(row.get("liabilityToAsset")) * 100,  # 小数→百分比
+            current_ratio=_safe_float(row.get("currentRatio")),
+            quick_ratio=_safe_float(row.get("quickRatio")),
+            equity=0.0,  # assetToEquity 是杠杆倍数，不是股东权益金额
+        )
 
     def _fetch_stock_name(self, session: _BaostockSession, bs_code: str) -> str:
         """通过 stock_basic 查询股票名称。"""
