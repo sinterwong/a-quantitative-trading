@@ -72,17 +72,60 @@ DataGateway  ← 薄外观（core/data_layer.py 转发至此）
     ▼
 Provider 注册表
     ├─ TencentProvider    qt.gtimg.cn / web.ifzq.gtimg.cn（主选，字段最全）
-    ├─ SinaProvider        sina.com.cn（实时行情备用）
-    ├─ EastmoneyProvider   eastmoney.com（板块/资金流/指数）
-    ├─ AkShareProvider     akshare.net（最终备灾，稳定性差）
-    └─ YFinanceProvider    yfinance（美股/港股指数）
+    ├─ SinaProvider        hq.sinajs.cn / money.finance.sina.com.cn（实时行情）
+    ├─ EastmoneyProvider   push2.eastmoney.com（板块/北向资金）
+    ├─ AkShareProvider     akshare.net（宏观/基本面历史，最终备灾）
+    └─ YFinanceProvider    yfinance（美股/港股指数，兜底）
 ```
+
+### Provider × Capability 能力矩阵
+
+| Capability | Tencent | Sina | Eastmoney | AkShare | Yfinance |
+|---|---|---|---|---|---|
+| **QUOTE** | ✅ A/HK/INDEX/US | ✅ A/HK/INDEX | ✅ A/HK/INDEX（新增） | ❌ | ❌ |
+| **KLINE_DAILY** | ✅ A/HK/INDEX | ✅ A | ❌ | ❌ | ✅ US/GLOBAL |
+| **KLINE_MINUTE** | ✅ HK | ✅ A（仅A） | ❌ | ❌ | ❌ |
+| **MARKET_INDEX** | ✅ A/HK/INDEX/US | ✅ A/INDEX | ✅ A/HK/INDEX（新增） | ❌ | ✅ US/GLOBAL |
+| **FUNDAMENTALS** | ❌ | ❌ | ❌ | ✅ GLOBAL | ❌ |
+| **FUNDAMENTALS_HISTORY** | ❌ | ❌ | ❌ | ✅ GLOBAL | ❌ |
+| **SECTOR_RANKING** | ❌ | ❌ | ✅ GLOBAL（唯一） | ❌ | ❌ |
+| **SECTOR_CONSTITUENTS** | ❌ | ❌ | ✅ GLOBAL（唯一） | ❌ | ❌ |
+| **NORTH_FLOW** | ❌ | ❌ | ✅ GLOBAL（唯一） | ❌ | ❌ |
+| **MACRO** | ❌ | ❌ | ❌ | ✅ GLOBAL | ❌ |
+
+### 已知能力缺口（未实现）
+
+| 优先级 | 缺口 | 说明 |
+|---|---|---|
+| **P0** | Sina → INDEX K-line | `normalize_to_sina("000300")` 深交所路径归一错误，腾讯已全覆盖，Sina 已排除 |
+| **P0** | Tencent → US KLINE_DAILY | `web.ifzq.gtimg.cn` 接口仅返回1条历史数据，yfinance 已独家承接 |
+| **P1** | AkShare → 港股实时行情 | 所有港股行情接口（stock_zh_a_spot_em 等）均 ConnectionError，依赖腾讯/东方财富/新浪三家兜底 |
+| **P1** | Eastmoney → KLINE_DAILY | `push2his.eastmoney.com` RemoteDisconnected，接口被封禁，无法绕过 |
 
 ### 选源策略
 
-**可合并数据类型**（Quote 基本面）：并发问 top-K provider，字段级互补合并
+**可合并数据类型**（Quote、Fundamentals）：并发问 top-K provider，字段级互补合并
 
-**不可合并类型**（K 线/板块/北向等）：按健康度降序逐个尝试，第一个成功即返回
+```
+请求 quote:sh600519
+  → 并发问 Tencent + Sina（top-2）
+  → 各返回一份 Quote dataclass
+  → merge_field_level() 对每字段独立选最优来源
+     score = provider_health × field_authority
+  → 合并成一份完整 Quote
+```
+
+**不可合并类型**（K线/板块/北向等）：按健康度降序逐个尝试，第一个成功即返回
+
+### 字段权威声明
+
+Provider 可声明对特定字段的权威度权重（默认 1.0），影响字段级合并时的优选：
+
+| Provider | 字段 | 权威权重 |
+|---|---|---|
+| Tencent | `pe_ttm / pb / market_cap / float_cap / high_52w / low_52w` | 1.3 |
+| Tencent | `turnover_rate / amplitude / limit_up / limit_down` | 1.2 |
+| Sina | `bid1_price / bid1_vol / ask1_price / ask1_vol` | 1.2 |
 
 ### 缓存策略
 
@@ -92,9 +135,16 @@ Provider 注册表
 | 基本面数据 | 60s |
 | 板块排名/成分股 | 60s |
 | 北向资金/指数 | 60s |
-| 日 K 线 | 300s（网络）/ 就近归档（Parquet）|
+| 日 K 线 | 300s |
+| 分钟 K 线 | 60s |
 | 宏观数据 | 24h |
 | 基本面历史时序 | 24h |
+
+### 设计原则
+
+- **Provider 声明"能力巨大"**：子类各取所需，`declare()` 声明能支持的全部能力，gateway 按需路由
+- **Schema 与数据源解耦**：`schemas.py` 定义系统自身需要的数据形态，Provider 负责将原始字段映射到契约
+- **冷启动评分**：`priority_hint` 字段决定无历史数据时的初始排序（腾讯/新浪 0.80+，东方财富 0.55，akshare 0.30）
 
 ---
 
@@ -164,10 +214,15 @@ Provider 注册表
 from core.data_gateway import get_gateway
 
 gw = get_gateway()
-quote = gw.quote('000001.SH')          # 实时行情（字段级合并）
-kline = gw.kline('000001.SH', days=120)  # 日 K 线
-sectors = gw.sectors(limit=50)        # 板块排名
-north = gw.north_flow()               # 北向资金
+quote = gw.quote('600519.SH')                        # 实时行情（字段级合并）
+kline_day = gw.kline('600519.SH', interval='daily', days=120)   # 日K
+kline_min = gw.kline('00700.HK', interval='5m', limit=100)      # 分钟K（仅HK）
+index = gw.market_index('sh000001')                  # 指数快照
+sectors = gw.sectors(limit=50)                       # 板块排名
+north = gw.north_flow()                             # 北向资金
+macro = gw.macro('PMI')                             # 宏观数据（MacroIndicator.PMI）
+fundamentals = gw.fundamentals('600519.SH')          # 基本面快照
+fundamentals_history = gw.fundamentals_history('600519.SH')  # 基本面历史时序
 ```
 
 ### 因子流水线 (`core/pipeline_factory.py`)
