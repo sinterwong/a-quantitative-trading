@@ -35,7 +35,7 @@ python main.py --mode scheduler          # 仅定时任务
 
 | 时间 | 任务 | 说明 |
 |------|------|------|
-| 08:30 | morning_runner | 选股 → watchlist → RSI 信号 → 模拟下单 → 飞书早报 |
+| 09:30 | morning_runner | 选股 → watchlist → RSI 信号 → 模拟下单 → 飞书早报 |
 | 09:31 | IntradayMonitor | 启动盘中 5 分钟轮询（持续到收盘） |
 | 15:00 | afternoon_report | 收盘晚报（持仓快照 + 收益 → 飞书） |
 | 15:10 | /analysis/run | 日终选股分析（DynamicStockSelectorV2） |

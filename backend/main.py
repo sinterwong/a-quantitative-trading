@@ -3,7 +3,7 @@ main.py — Backend service entry point
 =====================================
 Starts the HTTP API server as a persistent background process.
 Runs the unified Scheduler for full-day automation:
-  08:30  morning_runner    — 选股→watchlist→RSI信号→下单→早报飞书
+  09:30  morning_runner    — 选股→watchlist→RSI信号→下单→早报飞书
   09:31  IntradayMonitor   — 盘中信号扫描（每5分钟 RSI 金叉/死叉）
   15:00  afternoon_report  — 收盘晚报→飞书推送
   15:10  /analysis/run     — 日终 DynamicStockSelectorV2 选股分析
@@ -220,7 +220,7 @@ class Scheduler:
     """
     统一调度器 — 交易日自动化核心引擎。
     每日定时任务（北京时间）：
-      08:30  — 早盘自动化（选股→watchlist→RSI信号→下单→早报飞书）
+      09:30  — 早盘自动化（选股→watchlist→RSI信号→下单→早报飞书）
       09:31  — 盘中信号监控开启（IntradayMonitor，每5分钟扫 RSI 金叉/死叉）
       15:00  — 收盘晚报（持仓快照→日收益→飞书推送）
       15:10  — 日终选股分析（DynamicStockSelectorV2 → 写入 analysis_*.json）
@@ -254,8 +254,8 @@ class Scheduler:
     # ── 任务触发方法 ────────────────────────────────────────────────
 
     def _trigger_morning_runner(self):
-        """08:30 — 调用 morning_runner.run() 完整早盘流程。"""
-        self.logger.info('[Scheduler] 08:30 — triggering morning_runner')
+        """09:30 — 调用 morning_runner.run() 完整早盘流程。"""
+        self.logger.info('[Scheduler] 09:30 — triggering morning_runner')
         try:
             import importlib.util, sys as _sys, os as _os
             scripts_dir = os.path.join(PROJ_DIR, 'scripts')
@@ -538,7 +538,7 @@ class Scheduler:
                 self._triggered_date = today_str
                 self.logger.info('[Scheduler] 新的一天 %s，重置触发记录', today_str)
 
-            # P2-19: 非交易日整体休眠至次日 08:25（08:30 任务前 5 分钟），
+            # P2-19: 非交易日整体休眠至次日 09:25（09:30 任务前 5 分钟），
             # 避免无意义的 30 秒轮询。AKShare 不可用时 is_trading_day()
             # 自动降级为周一~周五判断。
             if not is_trading_day():
