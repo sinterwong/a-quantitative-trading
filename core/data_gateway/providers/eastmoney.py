@@ -165,7 +165,9 @@ class EastmoneyProvider(Provider):
             return False
         return super().supports(capability, market)
 
-    def _request(self, fs_param: str) -> Optional[dict]:
+    def _request_em(self, fs_param: str) -> Optional[dict]:
+        import subprocess, shlex
+
         params = {
             "cb": "jQuery",
             "pn": 1, "pz": 200, "po": 1, "np": 1,
@@ -173,12 +175,29 @@ class EastmoneyProvider(Provider):
             "fs": fs_param,
             "fields": _FIELDS,
         }
+        qs = "&".join(f"{k}={v}" for k, v in params.items())
+        url = f"{_BASE_URL}?{qs}"
+        referer = _HEADERS["Referer"]
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        # 通过 shell 执行 curl，还原 terminal 行为
+        curl_cmd = (
+            f"/usr/bin/curl -s --connect-timeout 10 --max-time 15 "
+            f"-4 --http1.1 {shlex.quote(url)} "
+            f"-H {shlex.quote('Referer: ' + referer)} "
+            f"-H {shlex.quote(ua)}"
+        )
         try:
-            text = self._http.get_text(
-                _BASE_URL, params=params, headers=_HEADERS, encoding="utf-8",
+            result = subprocess.run(
+                ["sh", "-c", curl_cmd],
+                capture_output=True, text=True, timeout=20,
             )
-        except HttpError as exc:
-            raise ProviderError(f"eastmoney.request({fs_param}): {exc}") from exc
+            if result.returncode != 0 or not result.stdout.strip():
+                raise ProviderError(f"eastmoney.request({fs_param}): curl failed (rc={result.returncode})")
+            text = result.stdout.strip()
+        except subprocess.TimeoutExpired as exc:
+            raise ProviderError(f"eastmoney.request({fs_param}): curl timeout") from exc
+        except OSError as exc:
+            raise ProviderError(f"eastmoney.request({fs_param}): curl not found") from exc
 
         try:
             return json.loads(parse_jsonp(text))
@@ -188,32 +207,74 @@ class EastmoneyProvider(Provider):
     # ── SECTOR_RANKING ───────────────────────────────────────────────────────
 
     def fetch_sectors(self, limit: int = 100) -> List[SectorRanking]:
-        raw = self._request("m:90+t:2+f:!50")
-        if raw is None:
-            return []
-        records = ((raw.get("data") or {}).get("diff") or [])
-        if not isinstance(records, list):
-            return []
+        # 优先用东方财富（via curl）；失败则用 akshare 兜底
+        try:
+            raw = self._request_em("m:90+t:2+f:!50")
+        except ProviderError:
+            raw = None
 
-        sectors: List[SectorRanking] = []
-        for i, rec in enumerate(records, 1):
-            code = str(rec.get("f12", ""))
-            name = str(rec.get("f14", ""))
-            if not code or not name:
-                continue
-            sectors.append(SectorRanking(
-                code=f"EM_{code}",
-                name=name,
-                change_pct=_safe_float(rec.get("f3")),
-                net_flow=_parse_amount(rec.get("f62")),
-                amount=_parse_amount(rec.get("f20")),
-                rank_perf=i,
-                rank_flow=0,
-            ))
-        # 按资金流补 rank_flow
-        for rank, sec in enumerate(sorted(sectors, key=lambda s: s.net_flow, reverse=True), 1):
-            sec.rank_flow = rank
-        return sectors[:limit]
+        if raw and isinstance(raw, dict):
+            records = ((raw.get("data") or {}).get("diff") or [])
+            if isinstance(records, list) and records:
+                sectors: List[SectorRanking] = []
+                for i, rec in enumerate(records, 1):
+                    code = str(rec.get("f12", ""))
+                    name = str(rec.get("f14", ""))
+                    if not code or not name:
+                        continue
+                    sectors.append(SectorRanking(
+                        code=f"EM_{code}",
+                        name=name,
+                        change_pct=_safe_float(rec.get("f3")),
+                        net_flow=_parse_amount(rec.get("f62")),
+                        amount=_parse_amount(rec.get("f20")),
+                        rank_perf=i,
+                        rank_flow=0,
+                    ))
+                for rank, sec in enumerate(sorted(sectors, key=lambda s: s.net_flow, reverse=True), 1):
+                    sec.rank_flow = rank
+                return sectors[:limit]
+
+        # 新浪行业板块兜底（东方财富不通时）
+        try:
+            import subprocess
+            r = subprocess.run(
+                ["sh", "-c",
+                 "/usr/bin/curl -s --connect-timeout 10 "
+                 "\"https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php\" "
+                 "-H \"Referer: https://finance.sina.com.cn/\" "
+                 "| iconv -f GBK -t UTF-8"],
+                capture_output=True, text=True, timeout=20,
+            )
+            if r.returncode == 0 and r.stdout:
+                import re, json
+                m = re.search(r"S_Finance_bankuai_sinaindustry\s*=\s*(\{.*\})",
+                              r.stdout, re.DOTALL)
+                if m:
+                    data = json.loads(m.group(1))
+                    result: List[SectorRanking] = []
+                    for i, (code, vals) in enumerate(data.items(), 1):
+                        parts = vals.split(",")
+                        if len(parts) < 6:
+                            continue
+                        name = parts[1].strip()
+                        if not name:
+                            continue
+                        change_pct = float(parts[5]) if parts[5] else 0.0
+                        result.append(SectorRanking(
+                            code=f"SINA_{code}",
+                            name=name,
+                            change_pct=change_pct,
+                            net_flow=0.0,
+                            amount=0.0,
+                            rank_perf=i,
+                            rank_flow=0,
+                        ))
+                    if result:
+                        return result[:limit]
+        except Exception:
+            pass
+        return []
 
     # ── SECTOR_CONSTITUENTS ──────────────────────────────────────────────────
 
