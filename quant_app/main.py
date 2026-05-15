@@ -120,6 +120,13 @@ def main():
 
     logger.info('Backend starting in %s mode', mode)
 
+    # 遗留 JSON 配置 deprecation 告警 (P3-3)
+    try:
+        from core.config import warn_legacy_configs
+        warn_legacy_configs(logger=logger)
+    except Exception:
+        pass
+
     # ── Worker 子系统 ────────────────────────────────────────
     from quant_app.run_worker import Scheduler, build_intraday_monitor, start_strategy_runner_thread
 

@@ -150,14 +150,13 @@
 - **commit**:`refactor(process): API 与 Worker 代码上解耦,默认仍合进程跑`
 
 ### P3-3 统一配置入口
-- [ ] 新建/扩展 `config/trading.yaml.example`,汇总:
-  - `params.json` 内容
-  - `backend/services/live_params.json` 内容(运行时可写部分单独维护)
-  - `backend/trading_mode.json` 内容
-- [ ] 新建 `core/config.py:Settings` 类,Pydantic 校验 + `.env` 覆盖
-- [ ] 所有读配置点改用 `Settings.get()`
-- [ ] 旧 JSON 文件保留但 deprecated,启动时 warning
-- **commit**:`feat(config): 统一 YAML + .env 配置入口,旧 JSON 标 deprecated`
+- [x] 新建 `config/trading.yaml.example`(基于现有 trading.yaml 完整模板)
+- [x] `core.config.warn_legacy_configs()` 启动时扫描 params.json / live_params.json / trading_mode.json,Output deprecation warning
+- [x] quant_app/main.py 启动钩子调用该函数
+- [x] .env 自动加载已在 quant_app/main.py(setdefault 模式,既有 env vars 优先)
+- [ ] (延后) Pydantic 校验:现有 TradingConfig dataclass 已能用,Pydantic 迁移收益较低,暂不做
+- [ ] (延后) 所有读配置点改用 `Settings.get()`:params.json 散落 30+ 处,本次仅加 deprecation,实际迁移在 P4-* 后续阶段
+- **commit**:`feat(config): trading.yaml.example + 遗留 JSON deprecation warning (P3-3 阶段一)`
 
 ### P3-4 统一状态数据库
 - [ ] 合并 `backend/services/portfolio.db` + `backend/wf_results.db` → `data/state.db`
