@@ -1,200 +1,234 @@
-# TODO — 模型层数据共振重构(2026-05-15)
+# TODO — 架构内聚重构(2026-05-15 启动)
 
-> 评估基线 commit: `e5a0c37`(数据层 Gateway 统一出口已就绪)
-> **状态:全部 21 项完成,1425 测试通过 · 全量无回退**
-> 分支:`feat/model-layer-resonance-with-data` (待发 PR)
+> 评估基线 commit: master HEAD
+> 分支:`refactor/architecture-cohesion`
+> 目标:消除模块越权 + 重复实现 + 进程纠缠,建立清晰的层界
 
----
+## 产品定位(已锁定,作为本次所有取舍的依据)
 
-## Wave 0 — 合规闭环(P0,已完成 ✅)
+> **单租户准生产实盘 + 研究台,虚拟模拟盘(无真实券商),单 OS 单进程不可多开,
+> 为未来微服务化(Docker)打基础,UI 保持 Streamlit。**
 
-> 目标:任何模型层网络请求均经 Gateway,享受熔断 + 健康度 + 多源融合保护。
-
-### W0-1 暴露 `BALANCE_SHEET` 公开 API
-- [x] `Provider` 抽象基类增加 `fetch_balance_sheet`,默认 None
-- [x] `Gateway.balance_sheet(symbol)` 公开 API,走 `_merged_fetch` 字段级合并
-- [x] `data_gateway.__init__` 导出 `BalanceSheet`
-- [x] `_DEFAULT_TTL[Capability.BALANCE_SHEET] = 86400.0`
-- [x] 测试覆盖路由 / 缓存 / 无源 / 多源合并 (4 个)
-
-### W0-2 Regime 走 Gateway
-- [x] `_fetch_index_data()` 改用 `gw.kline('sh000001', ...)`
-- [x] 兼容 provider 间列名差异(date / timestamp)
-- [x] `RegimeInfo.source` 默认值改为 `'gateway'`
-- [x] 同步 docstring 和注释,删除所有 akshare 引用
-- [x] 测试覆盖 gateway 调用 / 空返回 / timestamp 列 (3 个)
-
-### W0-3 `MARGIN_FLOW` capability + 融资融券因子接通
-- [x] 新增 `Capability.MARGIN_FLOW`
-- [x] `Provider.fetch_margin_flow(symbol, start, end)`
-- [x] `AkshareProvider` 实现 + `_normalize_margin` 列名归一
-- [x] `Gateway.margin_flow(symbol, start, end)` 4h TTL
-- [x] `MarginDataStore._fetch()` 改走 gateway,删 `import akshare`
-- [x] 测试覆盖路由 / 缓存 / 因子集成 (15 个)
-
-### W0-4 `NEWS_HEADLINES` capability + 新闻因子接通
-- [x] `Capability.NEWS_HEADLINES` + `Provider.fetch_news_headlines`
-- [x] `AkshareProvider.fetch_news_headlines` 包装 `stock_news_em`
-- [x] `Gateway.news_headlines(symbol, n)` 30min TTL
-- [x] `nlp._fetch_news_eastmoney()` 改走 gateway
-- [x] 测试覆盖 gateway 调用 + 异常降级 (2 个)
+衍生约束:
+- ❌ 不做多用户/多租户隔离
+- ❌ 不接入真实券商(Futu/IBKR 实盘),保留 `SimulatedBroker` 即可
+- ✅ 必须有 OS 级单实例锁,防误多开
+- ✅ 代码结构允许"API + Worker"逻辑分离(但本次仍在一个进程跑)
+- ✅ 单一 YAML 配置源 + `.env` 覆盖
+- ✅ 用例(use case)层贯通 UI/API/Cron/CLI
 
 ---
 
-## Wave 1 — 基本面字段红利消费(P0,已完成 ✅)
+## Phase 1 — 命名清晰化 + 死代码清理(P0,~1 周)
 
-### W1-1 AkshareProvider 扩列(A股 eps_yoy/asset_yoy/dividend_yield)
-- [x] `_normalize_indicator_em` 输出 eps_yoy(EPSJBHBZC) / asset_yoy(TOTALASSETSGRRATE) / dividend_yield
-- [x] 顺带修复季频→日频 reindex 丢值 bug(union-reindex-ffill)
-- [x] 测试 5 个新用例
+### P1-1 产品定位 + 模块地图写入仓库
+- [ ] `README.md` 顶部增加"定位 / 范围 / 不做什么"段落
+- [ ] 新建 `docs/ARCHITECTURE_TARGET.md`:目标 8 层架构图 + 3 个垂直切片图(为对照基准)
+- [ ] 旧的 `docs/ARCHITECTURE.md` 重命名为 `ARCHITECTURE_CURRENT.md`(诚实记录当下,不删)
+- **验收**:任何新成员读完两份文档能说出"这是个什么系统"
+- **commit**:`docs: 明确产品定位与目标架构基线`
 
-### W1-2 BaostockProvider 扩列(balance sheet 日频化)
-- [x] `_fetch_balance_history`(4 年所有季度)+ `fetch_fundamentals_history`
-- [x] `_normalize_balance_history`:输出 debt_to_equity/current_ratio/quick_ratio 日频时序
-- [x] Gateway `fundamentals_history` 改造为多 provider 列级合并(Baostock + Akshare 字段互补)
-- [x] 测试 3 个新用例
+### P1-2 审计 `scripts/quant/` 30+ 文件
+- [ ] 新建 `docs/audit/scripts_quant_audit.md`,逐文件标注:
+  - 是否被外部脚本/backend 引用(`git grep`)
+  - 是否被 `core/` 等价实现替代
+  - 处置建议:KEEP / DELETE / MERGE_INTO_CORE / DEPRECATE
+- [ ] 重点验证以下高度疑似重复的文件:
+  - `data_loader.py / data_provider.py`(已标 backtest-only,确认范围)
+  - `regime_detector.py`(对照 `core/regime.py`)
+  - `selection_pool.py / strategy_ensemble.py`(对照 `core/strategies/`)
+  - `news_scorer.py`(对照 `core/factors/nlp.py`)
+  - `signal_generator.py / regime_signal.py / regime_selector.py / combo_signal.py`
+  - `position_sizer.py / trend_confirmed_rotation.py`
+- **commit**:`docs(audit): scripts/quant 30 个文件去留盘点`
 
-### W1-3 扩展 FundamentalDataManager + pipeline_factory 白名单
-- [x] white_list 从 7 列扩到 13 列
-- [x] docstring 更新各字段来源
-- [x] 测试拦截 `_safe_add` 验证白名单生效
+### P1-3 审计 `backend/services/` 17 个文件
+- [ ] 新建 `docs/audit/backend_services_audit.md`,逐文件标注职责 + 越权点
+- [ ] 重点关注:
+  - `intraday_monitor.py` 1831 行 → 拆分预案
+  - `signals.py` 999 行 → 与 `core/factor_pipeline.py` 关系
+  - `single_stock_analysis.py` 865 行 → 提为 use case 的最佳样板
+  - `portfolio.py` 直接 `qt.gtimg.cn`(合规债)
+  - `report_sender.py` 直接 `qt.gtimg.cn`
+- **commit**:`docs(audit): backend/services 17 个文件职责盘点`
 
-### W1-4 重构 EarningsSurpriseFactor 优先消费 eps_yoy
-- [x] `evaluate()` 优先 eps_yoy / 100,fallback eps_ttm 自算
-- [x] 测试 3 个新用例
+### P1-4 第一批确认死代码删除
+> 仅删除 P1-2/P1-3 中明确标注 `DELETE` 且无引用的文件;每批 ≤5 个文件,分批 commit
+- [ ] 删除批次 A:孤立无引用文件
+- [ ] 删除批次 B:被 `core/` 替代的副本
+- [ ] 每批跑全量 `pytest tests/ -q` 确认不回退
+- **commit**(分批):`chore: 删除已审计的孤立/重复文件 (批次 N)`
 
-### W1-5 新增 FinancialHealthFactor
-- [x] 合成 `-z(debt_to_equity) + z(current_ratio) + z(ocf_to_profit)`
-- [x] 注册到 FactorRegistry
-- [x] 测试 5 个新用例
-
-### W1-6 新增 DividendYieldFactor
-- [x] 股息率历史百分位
-- [x] 注册 + 4 个测试
-
-### W1-7 新增 AssetGrowthFactor
-- [x] 反向因子(Cooper/Gulen/Schill 2008)
-- [x] 极端值 clip(-50, 500)
-- [x] 注册 + 5 个测试
-
----
-
-## Wave 2 — 情绪因子自动化(P1,已完成 ✅)
-
-### W2-1 `NorthboundFlowFactor` 自动 fetch
-- [x] Provider 增 `fetch_north_flow_history`,AkshareProvider 实装
-- [x] Gateway `north_flow_history(days)` 4h TTL
-- [x] 因子层 `_get_sentiment` 自动 fetch
-- [x] 测试 3 个新用例
-
-### W2-2 新增 `SouthboundFlowFactor`(港股)
-- [x] AkshareProvider 同时拉 北向 + 南向(best-effort)
-- [x] `_normalize_north_history` 抽象 col_name 参数
-- [x] 注册到 FactorRegistry
-- [x] 测试 6 个新用例
-
-### W2-3 NewsSentimentFactor 入 pipeline
-- [x] 条件:symbol 非空 + MINIMAX_API_KEY 存在
-- [x] 权重 0.05(防 LLM 单点失败)
-- [x] 测试 3 个新用例
+### P1-5 虚拟券商定位明确化
+- [ ] `core/brokers/`:确认仅 `SimulatedBroker` 为 supported,其它(Futu 等)标 deprecated
+- [ ] `config/trading.yaml.example`:默认 broker=simulated
+- [ ] 文档说明"本系统不接入真实券商,只跑虚拟盘"
+- **commit**:`feat(broker): 明确虚拟券商定位,标 Futu 等为 deprecated`
 
 ---
 
-## Wave 3 — 板块层(P1,已完成 ✅)
+## Phase 2 — Use Case 层 + Backend 瘦身(P0,~3 周)
 
-### W3-1 新增 `SectorFlowFactor`
-- [x] 新建 `core/factors/sector.py`
-- [x] `SectorFlowStore`:日频持久化 sectors() 快照
-- [x] `SectorFlowFactor`:消费板块 net_flow z-score
-- [x] 注册到 FactorRegistry
-- [x] 测试 13 个
+### P2-1 建立 use case 层骨架
+- [ ] 新建 `core/use_cases/` 包
+- [ ] 定义 `BaseUseCase`(可选)+ 通用约定(输入/输出 dataclass,异常)
+- [ ] 增加 `tests/test_use_cases/__init__.py`
+- **commit**:`feat(use_cases): 建立 use case 层骨架`
 
-### W3-2 新增 `SectorBreadthFactor`
-- [x] `SectorBreadthStore`:对每个板块取 sector_constituents,算涨家占比
-- [x] `SectorBreadthFactor`:z-score(rolling_mean(breadth - 0.5))
-- [x] 注册 + 6 个测试
+### P2-2 use case 1:`analyze_stock`
+- [ ] 把 `backend/services/single_stock_analysis.py` 的 `analyze_a_share / analyze_hk_share` 搬入 `core/use_cases/analyze_stock.py`
+- [ ] `AnalysisRequest / AnalysisReport` dataclass 也移动
+- [ ] `backend/services/single_stock_analysis.py` 退化为 ≤30 行的 wrapper(import 转发)
+- [ ] `backend/api.py:analyze_a_stock_endpoint` 改为薄壳调用
+- [ ] 现有测试不回退
+- **commit**:`refactor(use_case): 抽出 analyze_stock 用例,backend 退化为壳`
 
-### W3-3 重构 `SectorRotationStrategyV2`
-- [x] 弃用硬编码 ETF 列表,universe 由 `gw.sectors()` 实时发现
-- [x] 板块打分:combined(z(flow) + change_pct) / flow-only / perf-only
-- [x] `latest_signal()` 输出 top 板块 + 成分股 buy 列表
-- [x] V1 类向后兼容
-- [x] 7 个测试
+### P2-3 use case 2:`generate_intraday_signals`
+- [ ] 从 `backend/services/intraday_monitor.py` 抽出"信号生成"逻辑到 `core/use_cases/intraday_signals.py`
+- [ ] 输入:`Watchlist + RegimeInfo + PriceSnapshot`,输出:`List[Signal]`
+- [ ] intraday_monitor.py 改为编排:取数据 → 调 use case → 执行 + 告警
+- [ ] 单元测试覆盖 use case
+- **commit**:`refactor(use_case): 抽出 intraday_signals,IntradayMonitor 瘦身 step1`
 
-### W3-4 DynamicStockSelector 加 net_flow 维度
-- [x] `calc_flow_momentum_score(bk_code, today_net_flow, window=5)` 通过 SectorFlowStore 取历史
-- [x] 当日 z-score 折算 ±10 分 bonus
-- [x] 与 sentiment_bonus 同量级,不挤占现有 perf/flow rank
-- [x] 4 个测试
+### P2-4 use case 3:`run_morning_workflow`
+- [ ] `scripts/morning_runner.py` 业务逻辑搬入 `core/use_cases/morning_workflow.py`
+- [ ] morning_runner.py 退化为 ≤50 行的 CLI 入口
+- [ ] use case 输出 `MorningReport` dataclass
+- **commit**:`refactor(use_case): 抽出 morning_workflow,morning_runner.py 退化为 CLI 壳`
 
----
+### P2-5 use case 4:`backtest`
+- [ ] 整合 `core/backtest_engine.py` + `scripts/quant/backtest.py` 等的入口
+- [ ] `core/use_cases/backtest.py` 提供统一 `run_backtest(BacktestRequest) → BacktestResult`
+- [ ] CLI 入口保留在 `scripts/quant/backtest_cli.py` 但只调 use case
+- **commit**:`refactor(use_case): 抽出 backtest 用例`
 
-## Wave 4 — Regime 多维度化(P2,已完成 ✅)
+### P2-6 use case 5:`compose_portfolio`
+- [ ] 整合 `core/portfolio_optimizer.py + portfolio_allocator.py` 为统一入口
+- [ ] use case 输入持仓现状 + universe + 风险参数,输出建议持仓比例
+- [ ] 不下单,只产出 PortfolioAdvice
+- **commit**:`refactor(use_case): 抽出 compose_portfolio 用例`
 
-### W4-1 Regime 引入 VIX 分位
-- [x] `gw.kline('^VIX', days=300)` 拉 1 年历史
-- [x] `_fetch_vix_percentile()` 计算百分位(0-100)
-- [x] `RegimeInfo.vix_percentile` 字段
-- [x] 逻辑:VIX 分位 >= 80 在非 BULL/BEAR 且 ATR 未到阈值时强制 VOLATILE
-- [x] BULL/BEAR 信号优先级高于 VIX
-- [x] 6 个测试
+### P2-7 拆分 `intraday_monitor.py`(1831 行)
+- [ ] 按职责拆分为 5 个 ≤400 行子模块:
+  - `intraday/data.py` — 行情拉取
+  - `intraday/signaling.py` — 调 use case 生成信号
+  - `intraday/risk.py` — 风控过滤
+  - `intraday/execution.py` — 模拟下单
+  - `intraday/alerts.py` — 告警/记录
+- [ ] 原 `intraday_monitor.py` 改为 ≤150 行的编排器
+- **commit**:`refactor(intraday): IntradayMonitor 拆分为 5 个职责模块`
 
-### W4-2(暂缓)新增 `OvernightOverseasFactor`
-> 风险较大,等 W4-1 实盘验证后单独立项
-
----
-
-## Wave 5 — Pipeline / ML 装配(P2,已完成 ✅)
-
-### W5-1 FeatureStore 解锁外部数据因子
-- [x] `external_data` 参数 + `_FACTOR_DATA_REQUIREMENTS` 映射
-- [x] financial_data / sentiment_data / sector_flow_data / breadth_data 等键
-- [x] 注入对应字段时自动从 `_SKIP_IN_DEFAULT` 解锁
-- [x] `_extract_factor_features` 用注入数据构造因子
-- [x] 4 个测试
-
-### W5-2 pipeline 重平衡 + 数据质量感知降权
-- [x] 权重:技术 0.55 / 基本面 0.30(8 因子)/ 宏观 0.05 / 情绪 0.05 / 保留 0.05
-- [x] 基本面层新加 EarningsSurprise / FinancialHealth / DividendYield / AssetGrowth
-- [x] `fundamental_quality_mult`:financial_data 缺失时基本面因子权重 ×0.5
-- [x] 3 个测试
+### P2-8 backend api.py 端点瘦身
+- [ ] 57 个端点逐组改造为"鉴权 → 调 use case → 序列化"模式
+- [ ] 每端点平均 ≤25 行
+- [ ] 分组分批 commit(positions / signals / orders / analysis / params)
+- **commit**(分批):`refactor(api): {资源组} 端点退化为薄壳调 use case`
 
 ---
 
-## 总览
+## Phase 3 — 进程模型 + 配置/状态收口(P1,~1 周)
 
-**新增/扩展能力**:
-- Capability: 3 个新增(BALANCE_SHEET, MARGIN_FLOW, NEWS_HEADLINES)
-- Provider 方法: 5 个新增(fetch_balance_sheet, fetch_margin_flow, fetch_news_headlines,
-  fetch_north_flow_history, BaostockProvider.fetch_fundamentals_history)
-- Gateway 公开 API: 4 个新增(balance_sheet, margin_flow, news_headlines, north_flow_history)
-- 因子: 5 个新增(FinancialHealth, DividendYield, AssetGrowth, SouthboundFlow,
-  SectorFlow, SectorBreadth),总因子数从 18 升到 22
-- Strategy: SectorRotationStrategyV2 数据驱动版
+### P3-1 OS 级单实例锁
+- [ ] 把现有 `core/strategy_runner.py` 的 PID lock 抽象成 `core/single_instance.py`
+- [ ] `backend/main.py` 启动时加 `acquire_singleton("quant-system")`
+- [ ] 已运行时抛 `SystemExit`,提示用户先停止已有实例
+- [ ] 测试:同时启动两次,第二次必失败
+- **commit**:`feat(ops): 全局 OS 单实例锁,防误多开`
 
-**测试**:
-- 全量 1425 通过 + 35 subtests,无回退
-- 新增/修改测试 ~100 个
+### P3-2 进程逻辑分离(API vs Worker)
+> 注:仍跑在同一 Python 进程内,但代码上让两者解耦,未来可一行配置切到独立进程。
+- [ ] backend/main.py 拆分为:
+  - `quant_app/serve_api.py` — Flask 应用工厂,只挂 API 路由
+  - `quant_app/run_worker.py` — Scheduler + IntradayMonitor 后台线程
+  - `quant_app/main.py` — 启动器:按 mode(`all`/`api`/`worker`)选择装配
+- [ ] 默认 `all`(本次行为不变)
+- [ ] 加 mode=`api` / mode=`worker` 测试可独立启动
+- **commit**:`refactor(process): API 与 Worker 代码上解耦,默认仍合进程跑`
 
-**合规**:
-- 因子层 / Regime 层 3 处绕过 Gateway 的网络调用全部消灭
-- 任何 model 层网络请求都享受熔断 + 健康度 + 缓存保护
+### P3-3 统一配置入口
+- [ ] 新建/扩展 `config/trading.yaml.example`,汇总:
+  - `params.json` 内容
+  - `backend/services/live_params.json` 内容(运行时可写部分单独维护)
+  - `backend/trading_mode.json` 内容
+- [ ] 新建 `core/config.py:Settings` 类,Pydantic 校验 + `.env` 覆盖
+- [ ] 所有读配置点改用 `Settings.get()`
+- [ ] 旧 JSON 文件保留但 deprecated,启动时 warning
+- **commit**:`feat(config): 统一 YAML + .env 配置入口,旧 JSON 标 deprecated`
+
+### P3-4 统一状态数据库
+- [ ] 合并 `backend/services/portfolio.db` + `backend/wf_results.db` → `data/state.db`
+- [ ] schema 版本表 + 迁移脚本
+- [ ] 旧路径保留软链接 / fallback 读取一段时间
+- [ ] 测试:迁移后所有读写测试通过
+- **commit**:`feat(state): 统一 SQLite 状态库 + schema 版本管理`
+
+---
+
+## Phase 4 — UI 重构 + 端到端契约(P1,~2 周)
+
+### P4-1 streamlit_app.py 拆为 pages/
+- [ ] 1850 行单文件拆为:
+  - `streamlit_app.py` — 入口 + 公共组件 ≤200 行
+  - `pages/01_总览.py`
+  - `pages/02_个股分析.py`
+  - `pages/03_信号面板.py`
+  - `pages/04_持仓与订单.py`
+  - `pages/05_研究.py`
+- [ ] 每个 page ≤400 行
+- **commit**:`refactor(ui): Streamlit 拆为多页面结构`
+
+### P4-2 UI 数据源全部走 backend API
+- [ ] 移除 streamlit 内的 `qt.gtimg.cn` 直连
+- [ ] 移除 streamlit 内的 `_fetch_news_eastmoney` 直接调用因子
+- [ ] 全部改为调 `BACKEND_URL` 的对应端点
+- [ ] 若 backend 缺端点则在 backend 加(走 use case 层)
+- **commit**:`refactor(ui): UI 不再直连数据源,全部经 backend`
+
+### P4-3 OpenAPI schema + 契约测试
+- [ ] 用 `flask-smorest` 或 `apispec` 自动生成 OpenAPI 3.0 schema
+- [ ] `backend/openapi.json` 由代码生成而非手维护
+- [ ] 新增 `tests/test_api_contract.py`:每个端点 200/4xx 响应符合 schema
+- **commit**:`feat(api): 自动生成 OpenAPI schema + 契约测试`
+
+---
+
+## Phase 5 — 收官 + 文档(P2,~3 天)
+
+### P5-1 ARCHITECTURE_CURRENT.md 更新为最终态
+- [ ] 把 ARCHITECTURE_TARGET.md 的图改写进 ARCHITECTURE_CURRENT.md
+- [ ] 删除已完成对照文件
+- **commit**:`docs: 架构文档收敛到最终态`
+
+### P5-2 README 操作手册
+- [ ] 启动方式(`all` / `api` / `worker`)
+- [ ] 配置文件位置 + 优先级
+- [ ] 常见运维操作(查日志 / 强制重置 / 备份 state.db)
+- **commit**:`docs: README 操作手册`
+
+### P5-3 全量回归 + 性能基线
+- [ ] `pytest tests/ -q`(目标 ≥ 1425 passed)
+- [ ] 启动时间基线(目标 < 5s)
+- [ ] 内存占用基线
+- **commit**:`chore: 架构重构收官,记录性能基线`
 
 ---
 
 ## 验证清单(每个 commit)
 
-- [x] 关联单元测试通过(`pytest tests/test_xxx.py -x -q`)
-- [x] 全量测试不回退(`pytest tests/ -q`,最终 1425 passed)
-- [x] commit message 简洁说明"做了什么 / 为什么"
+- [ ] 关联单元测试通过
+- [ ] 全量测试不回退(`pytest tests/ -q`)
+- [ ] commit message:`{type}({scope}): {what} + {why}`
+- [ ] 若涉及 schema/API 变更,文档同步
 
 ---
 
 ## 不在本次范围
 
-- 外部信号生成器 `core/external_signal.py` 中的 akshare/yfinance 绕过(单独周期)
-- backend/services/* 的腾讯/东财直连(API 服务层,非模型层)
-- `core/level2.py` Level2 因子(数据层未就绪)
-- ML 模型架构升级(XGBoost → LightGBM)
-- Pairs Trading 策略
-- OvernightOverseasFactor(W4-2 暂缓)
+| 项 | 排除原因 |
+|---|---|
+| 真实券商接入(Futu/IBKR) | 产品定位明确不做 |
+| 多用户/多租户 | 单租户 |
+| Docker 化部署脚本 | 本次只打基础,真正容器化下个周期 |
+| 前端框架升级(Next.js 等) | 维持 Streamlit |
+| ML 模型架构升级 | 与本次重构正交 |
+| 数据源新增 | 与本次重构正交 |
