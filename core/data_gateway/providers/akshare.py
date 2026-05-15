@@ -491,6 +491,29 @@ class AkshareProvider(Provider):
             yoy = ((rev / rev_prev.replace(0, np.nan)) - 1) * 100
             result["revenue_yoy"] = yoy.replace([np.inf, -np.inf], np.nan)
 
+        # EPS YoY:优先用 AkShare 直接字段(EPSJBHBZC = 基本每股收益同比),fallback 自算
+        if "EPSJBHBZC" in df.columns:
+            result["eps_yoy"] = pd.to_numeric(df["EPSJBHBZC"], errors="coerce")
+        elif "EPSJB" in df.columns:
+            eps = pd.to_numeric(df["EPSJB"], errors="coerce")
+            eps_prev = eps.shift(1)
+            yoy = ((eps / eps_prev.replace(0, np.nan)) - 1) * 100
+            result["eps_yoy"] = yoy.replace([np.inf, -np.inf], np.nan)
+
+        # 总资产 YoY:优先用 TOTALASSETSGRRATE 直接字段,fallback 自算 TOTALASSETS
+        if "TOTALASSETSGRRATE" in df.columns:
+            result["asset_yoy"] = pd.to_numeric(df["TOTALASSETSGRRATE"], errors="coerce")
+        elif "TOTALASSETS" in df.columns:
+            ta = pd.to_numeric(df["TOTALASSETS"], errors="coerce")
+            ta_prev = ta.shift(1)
+            yoy = ((ta / ta_prev.replace(0, np.nan)) - 1) * 100
+            result["asset_yoy"] = yoy.replace([np.inf, -np.inf], np.nan)
+
+        # 股息率(%):indicator_em 偶尔提供 STDIVIDENDPS(每股股息);
+        # 历史比率口径无统一字段,因子层会优先消费此列,无值时由 Fundamentals 快照补充
+        if "DIVIDENDYIELD" in df.columns:
+            result["dividend_yield"] = pd.to_numeric(df["DIVIDENDYIELD"], errors="coerce")
+
         # 以下字段在此数据源中不可得：
         #   pe_ttm, pb, ocf_to_profit, holder_num
         # 其对应因子在 financial_data 缺失这些字段时返回零值，这是预期行为。
@@ -502,12 +525,14 @@ class AkshareProvider(Provider):
         quarterly = quarterly[~quarterly.index.duplicated(keep="last")]
 
         # 季频 → 日频（前向填充）
+        # 季末日期(如 03-31 / 06-30)常落在周末,直接 reindex 会丢值。
+        # 标准模式:先把季末日并入 daily_idx → ffill → 再裁切到 daily_idx。
         start_dt = pd.Timestamp(start) if start else quarterly.index.min()
         end_dt = pd.Timestamp(end) if end else pd.Timestamp.now()
         daily_idx = pd.bdate_range(start=start_dt, end=end_dt)  # 工作日
 
-        daily = quarterly.reindex(daily_idx)
-        daily = daily.ffill()
+        union_idx = quarterly.index.union(daily_idx).sort_values()
+        daily = quarterly.reindex(union_idx).ffill().reindex(daily_idx)
 
         return daily
 

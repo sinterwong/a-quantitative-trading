@@ -159,3 +159,63 @@ def test_akshare_macro_missing_library_returns_empty():
     finally:
         if real_ak is not None:
             sys.modules["akshare"] = real_ak
+
+
+# ── Akshare: _normalize_indicator_em 新增字段 (W1-1) ────────────────────────
+
+
+def test_akshare_normalize_indicator_em_eps_yoy_direct():
+    """直接字段 EPSJBHBZC 存在时优先消费。"""
+    raw = pd.DataFrame({
+        "REPORT_DATE": ["2024-03-31", "2024-06-30", "2024-09-30"],
+        "EPSJB": [0.5, 1.1, 1.6],
+        "EPSJBHBZC": [None, 25.0, 30.0],   # 直接 YoY %
+    })
+    daily = AkshareProvider._normalize_indicator_em(raw, "2024-04-01", "2024-10-01")
+    assert "eps_yoy" in daily.columns
+    last_val = daily["eps_yoy"].dropna().iloc[-1]
+    assert abs(last_val - 30.0) < 1e-6
+
+
+def test_akshare_normalize_indicator_em_eps_yoy_fallback_self_compute():
+    """无 EPSJBHBZC 时从 EPSJB 自算 YoY。"""
+    raw = pd.DataFrame({
+        "REPORT_DATE": ["2024-03-31", "2024-06-30"],
+        "EPSJB": [1.0, 1.5],   # 50% YoY
+    })
+    daily = AkshareProvider._normalize_indicator_em(raw, "2024-04-01", "2024-07-01")
+    eps_yoy = daily["eps_yoy"].dropna()
+    assert not eps_yoy.empty
+    # YoY = (1.5 - 1.0) / 1.0 * 100 = 50
+    assert abs(eps_yoy.iloc[-1] - 50.0) < 1e-6
+
+
+def test_akshare_normalize_indicator_em_asset_yoy_direct():
+    raw = pd.DataFrame({
+        "REPORT_DATE": ["2024-03-31", "2024-06-30"],
+        "ROEJQ": [10.0, 11.0],
+        "TOTALASSETSGRRATE": [None, 8.5],
+    })
+    daily = AkshareProvider._normalize_indicator_em(raw, "2024-04-01", "2024-07-01")
+    assert "asset_yoy" in daily.columns
+    assert abs(daily["asset_yoy"].dropna().iloc[-1] - 8.5) < 1e-6
+
+
+def test_akshare_normalize_indicator_em_asset_yoy_fallback():
+    raw = pd.DataFrame({
+        "REPORT_DATE": ["2024-03-31", "2024-06-30"],
+        "TOTALASSETS": [1000.0, 1100.0],   # +10% YoY
+    })
+    daily = AkshareProvider._normalize_indicator_em(raw, "2024-04-01", "2024-07-01")
+    assert "asset_yoy" in daily.columns
+    assert abs(daily["asset_yoy"].dropna().iloc[-1] - 10.0) < 1e-6
+
+
+def test_akshare_normalize_indicator_em_dividend_yield_passes_through():
+    raw = pd.DataFrame({
+        "REPORT_DATE": ["2024-06-30"],
+        "DIVIDENDYIELD": [3.2],
+    })
+    daily = AkshareProvider._normalize_indicator_em(raw, "2024-07-01", "2024-07-15")
+    assert "dividend_yield" in daily.columns
+    assert abs(daily["dividend_yield"].dropna().iloc[-1] - 3.2) < 1e-6
