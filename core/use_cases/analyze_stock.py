@@ -52,6 +52,9 @@ class AnalysisRequest:
     include_news: bool = False
     include_ml: bool = False
     sector: Optional[str] = None        # 行业名称，如"白酒"，用于横向对比
+    # 可选：调用方直接注入的 LLM provider；为 None 时走 core.llm_provider 服务定位器。
+    # 不在 from_body() 中读取——只用于 in-process 调用 / 测试注入。
+    llm_provider: Optional[Any] = field(default=None, repr=False, compare=False)
 
     @classmethod
     def from_body(cls, body: Dict[str, Any]) -> 'AnalysisRequest':
@@ -367,7 +370,7 @@ def analyze_a_share(req: AnalysisRequest) -> AnalysisReport:
 
     # 8) LLM 综合解读（可选）
     if req.include_llm:
-        report.llm_summary = _try_llm_summary(report)
+        report.llm_summary = _try_llm_summary(report, llm_provider=req.llm_provider)
 
     # 9) 投资建议（融合 combined_score + Regime + 基本面）
     report.recommendation = _make_recommendation(
@@ -585,7 +588,7 @@ def analyze_hk_share(req: AnalysisRequest) -> AnalysisReport:
 
     # LLM 解读对港股仍可用（基于已有快照 + 因子）
     if req.include_llm:
-        report.llm_summary = _try_llm_summary(report)
+        report.llm_summary = _try_llm_summary(report, llm_provider=req.llm_provider)
 
     # 投资建议（无 regime 时只用 combined_score + 风险）
     report.recommendation = _make_recommendation(
@@ -672,13 +675,25 @@ _LLM_SYSTEM_PROMPT = (
 )
 
 
-def _try_llm_summary(report: AnalysisReport) -> Dict[str, Any]:
-    """调用 LLM 对结构化分析做一次综合解读。"""
-    try:
-        from backend.services.llm.factory import create_provider
-        provider = create_provider()
-    except Exception as exc:
-        return {'available': False, 'reason': f'llm_provider_unavailable: {exc}'}
+def _try_llm_summary(
+    report: AnalysisReport,
+    llm_provider: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """调用 LLM 对结构化分析做一次综合解读。
+
+    Args:
+        report: 已经填好其它字段的分析报告。
+        llm_provider: 可选——直接注入一个 provider（测试 / 多 provider 场景）。
+            为 ``None`` 时回退到 :func:`core.llm_provider.create_provider`，
+            该工厂由 backend 启动时注册。
+    """
+    if llm_provider is None:
+        try:
+            from core.llm_provider import create_provider
+            llm_provider = create_provider()
+        except Exception as exc:
+            return {'available': False, 'reason': f'llm_provider_unavailable: {exc}'}
+    provider = llm_provider
 
     try:
         import json
