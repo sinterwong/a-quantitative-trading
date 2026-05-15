@@ -11,7 +11,7 @@ SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), '..', 'scripts')
 sys.path.insert(0, SCRIPTS_DIR)
 
 from dynamic_selector import (
-    DynamicStockSelectorV2,
+    DynamicStockSelector,
     safe_float,
     safe_int,
     _read_file_cache,
@@ -57,10 +57,10 @@ class TestSectorKeywords:
             assert all(isinstance(kw, str) for kw in keywords)
 
 
-class TestDynamicSelectorV2:
+class TestDynamicSelector:
     def test_weight_sum(self):
         """Weights should sum to 1.0"""
-        selector = DynamicStockSelectorV2()
+        selector = DynamicStockSelector()
         total = (
             selector.WEIGHT_NEWS
             + selector.WEIGHT_SECTOR
@@ -72,7 +72,7 @@ class TestDynamicSelectorV2:
 
     def test_default_weights_known(self):
         """Verify known weight values"""
-        selector = DynamicStockSelectorV2()
+        selector = DynamicStockSelector()
         assert selector.WEIGHT_NEWS == 0.15
         assert selector.WEIGHT_SECTOR == 0.35
         assert selector.WEIGHT_FLOW == 0.25
@@ -81,19 +81,19 @@ class TestDynamicSelectorV2:
 
     def test_cache_initialized_empty(self):
         """Cache dicts should be initialized as empty"""
-        selector = DynamicStockSelectorV2()
+        selector = DynamicStockSelector()
         assert isinstance(selector.news_cache, list)
         assert isinstance(selector.sectors_raw, list)
         assert isinstance(selector._constituent_cache, dict)
 
     def test_consistency_score_bounds(self):
         """Score returns 0-100 even with no data"""
-        selector = DynamicStockSelectorV2()
+        selector = DynamicStockSelector()
         score = selector.calc_consistency_score_for_bk('nonexistent_bk')
         assert 0 <= score <= 100
 
     def test_tech_score_bounds(self):
         """Tech score returns 0-100 even with no data"""
-        selector = DynamicStockSelectorV2()
+        selector = DynamicStockSelector()
         score = selector.calc_tech_score_for_bk('nonexistent_bk')
         assert 0 <= score <= 100

@@ -654,8 +654,8 @@ class IntradayMonitor:
             PROJ_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             if PROJ_DIR not in _sys.path:
                 _sys.path.insert(0, PROJ_DIR)
-            from scripts.dynamic_selector import DynamicStockSelectorV2
-            sel = DynamicStockSelectorV2()
+            from scripts.dynamic_selector import DynamicStockSelector
+            sel = DynamicStockSelector()
             sel.fetch_market_news(30)
             sel.fetch_sectors()
             sel.calc_all_scores()
@@ -1712,8 +1712,8 @@ class IntradayMonitor:
             SCRIPTS_DIR = os.path.join(PROJ_DIR, 'scripts')
             if SCRIPTS_DIR not in _sys.path:
                 _sys.path.insert(0, SCRIPTS_DIR)
-            from dynamic_selector import DynamicStockSelectorV2
-            sel = DynamicStockSelectorV2()
+            from dynamic_selector import DynamicStockSelector
+            sel = DynamicStockSelector()
             sel.fetch_sectors()
             return sel.sector_scores  # {bk_code: {name, flow, ...}}
         except Exception as e:

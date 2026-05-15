@@ -23,7 +23,7 @@ ssl_context.verify_mode = ssl.CERT_NONE
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPTS_DIR)
 
-from dynamic_selector import DynamicStockSelectorV2 as DynamicStockSelector
+from dynamic_selector import DynamicStockSelector
 
 
 def get_stocks_tencent(codes):

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-dynamic_selector.py - 多维度动态选股模块 V2
+dynamic_selector.py - 多维度动态选股模块
 ==========================================
 五个评分维度：
 1. 新闻热度分 (15%) - 政策/业绩/产品/资金/传闻 分类加权
@@ -349,7 +349,7 @@ FALLBACK_ETFS = ['510300.SH', '159915.SZ', '512690.SH']  # 沪深300、创业板
 # 主类
 # ============================================================
 
-class DynamicStockSelectorV2:
+class DynamicStockSelector:
 
     WEIGHT_NEWS = 0.15       # 新闻热度（降低，消息有噪声）
     WEIGHT_SECTOR = 0.35   # 板块行情（涨跌幅排名，硬数据）

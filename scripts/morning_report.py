@@ -215,7 +215,7 @@ def _fetch_selected_stocks(n: int = 5) -> List[Dict]:
     try:
         sys.path.insert(0, SCRIPT_DIR)
         import dynamic_selector
-        sel = dynamic_selector.DynamicStockSelectorV2()
+        sel = dynamic_selector.DynamicStockSelector()
         sel.fetch_market_news(30)
         sel.fetch_sectors()
         sel.calc_all_scores()                        # ← 关键步骤，不可省略
