@@ -157,13 +157,15 @@ def _auto_register() -> None:
     registry.register(DividendYieldFactor, default_params={'lookback_years': 3})
     registry.register(AssetGrowthFactor, default_params={'rolling_window': 60})
 
-    # 情绪因子（A-4）
+    # 情绪因子（A-4 + W2-2）
     from core.factors.sentiment import (
         MarginTradingFactor, NorthboundFlowFactor, ShortInterestFactor,
+        SouthboundFlowFactor,
     )
     registry.register(MarginTradingFactor, default_params={'short_window': 5, 'long_window': 20})
     registry.register(NorthboundFlowFactor, default_params={'window': 5})
     registry.register(ShortInterestFactor, default_params={'window': 10})
+    registry.register(SouthboundFlowFactor, default_params={'window': 5})
 
     # ML 预测因子（B-1）
     from core.ml.price_predictor import MLPredictionFactor

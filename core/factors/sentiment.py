@@ -374,7 +374,97 @@ class NorthboundFlowFactor(Factor):
 
 
 # ---------------------------------------------------------------------------
-# 3. 融券余额变化率因子（做空压力）
+# 3. 南向资金净流入因子（港股专用，W2-2）
+# ---------------------------------------------------------------------------
+
+class SouthboundFlowFactor(Factor):
+    """
+    南向资金净流入强度因子(港股 universe 专用)。
+
+    机制与 NorthboundFlowFactor 镜像:
+      - 内地资金通过港股通净买入 → 港股买盘动力
+      - z > threshold:南向持续大额净买入 → BUY
+      - z < -threshold:南向持续大额净卖出 → SELL
+
+    Parameters
+    ----------
+    sentiment_data : pd.DataFrame, optional
+        需含 'south_flow' 列(亿元/天)。
+        为 None 时自动通过 gw.north_flow_history(...) 拉取(返回的
+        DataFrame 同时含 north_flow / south_flow)。
+    window : 平滑窗口(默认 5 天)
+    history_days : 自动拉取天数(默认 252)
+    """
+
+    name = 'SouthboundFlow'
+    category = FactorCategory.SENTIMENT
+
+    def __init__(
+        self,
+        sentiment_data: Optional[pd.DataFrame] = None,
+        window: int = 5,
+        threshold: float = 1.0,
+        symbol: str = '',
+        history_days: int = 252,
+    ):
+        self.sentiment_data = sentiment_data
+        self.window = window
+        self.threshold = threshold
+        self.symbol = symbol
+        self.history_days = history_days
+
+    def _get_sentiment(self, price_index: pd.Index) -> Optional[pd.DataFrame]:
+        if self.sentiment_data is not None:
+            return self.sentiment_data
+        try:
+            from core.data_gateway import get_gateway
+            df = get_gateway().north_flow_history(days=self.history_days)
+            if df is not None and not df.empty:
+                return df
+        except Exception as e:
+            logger.warning('SouthboundFlowFactor auto-fetch failed: %s', e)
+        return None
+
+    def evaluate(self, data: pd.DataFrame) -> pd.Series:
+        sentiment = self._get_sentiment(data.index)
+        flow = _align_sentiment(sentiment, data.index, 'south_flow')
+
+        if flow.isna().all():
+            return pd.Series(0.0, index=data.index)
+
+        smoothed = flow.fillna(0.0).rolling(self.window, min_periods=1).mean()
+        return self.normalize(smoothed)
+
+    def signals(
+        self,
+        factor_values: pd.Series,
+        price: float,
+        threshold: float = 1.0,
+    ) -> List[Signal]:
+        latest = factor_values.iloc[-1]
+        from datetime import datetime
+
+        if latest > threshold:
+            strength = min((latest - threshold) / threshold, 1.0)
+            return [Signal(
+                timestamp=datetime.now(), symbol=self.symbol,
+                direction='BUY', strength=strength,
+                factor_name=self.name, price=price,
+                metadata={'south_flow_zscore': round(float(latest), 3)},
+            )]
+        if latest < -threshold:
+            strength = min((abs(latest) - threshold) / threshold, 1.0)
+            return [Signal(
+                timestamp=datetime.now(), symbol=self.symbol,
+                direction='SELL', strength=strength,
+                factor_name=self.name, price=price,
+                metadata={'south_flow_zscore': round(float(latest), 3)},
+            )]
+        return []
+
+
+# ---------------------------------------------------------------------------
+# 4. 融券余额变化率因子（做空压力）
 # ---------------------------------------------------------------------------
 
 class ShortInterestFactor(Factor):

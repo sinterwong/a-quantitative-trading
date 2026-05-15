@@ -615,12 +615,13 @@ class AkshareProvider(Provider):
     # ─── NORTH_FLOW history ──────────────────────────────────────────────────
 
     def fetch_north_flow_history(self, days: int = 252) -> pd.DataFrame:
-        """通过 AkShare stock_hsgt_hist_em(symbol='北向资金') 获取北向资金日频历史。
+        """通过 AkShare stock_hsgt_hist_em 获取北向 + 南向资金日频历史。
 
         Returns
         -------
         pd.DataFrame
-            DatetimeIndex,列 north_flow(亿元/天)。
+            DatetimeIndex,列 north_flow / south_flow (亿元/天)。
+            南向接口失败时仍返回北向单列,不影响主链路。
         """
         try:
             import akshare as ak
@@ -629,18 +630,36 @@ class AkshareProvider(Provider):
             return pd.DataFrame()
 
         try:
-            raw = ak.stock_hsgt_hist_em(symbol="北向资金")
+            raw_north = ak.stock_hsgt_hist_em(symbol="北向资金")
         except Exception as exc:
             raise ProviderError(f"akshare.fetch_north_flow_history: {exc}") from exc
 
-        if raw is None or raw.empty:
+        if raw_north is None or raw_north.empty:
             return pd.DataFrame()
 
-        return self._normalize_north_history(raw, days)
+        north_df = self._normalize_north_history(raw_north, days, "north_flow")
+        if north_df.empty:
+            return pd.DataFrame()
+
+        # 南向是 best-effort,失败不阻塞主流程
+        try:
+            raw_south = ak.stock_hsgt_hist_em(symbol="南向资金")
+        except Exception as exc:
+            logger.debug("南向资金获取失败,跳过: %s", exc)
+            raw_south = None
+
+        if raw_south is not None and not raw_south.empty:
+            south_df = self._normalize_north_history(raw_south, days, "south_flow")
+            if not south_df.empty:
+                north_df = north_df.join(south_df, how="outer").sort_index()
+
+        return north_df.tail(days)
 
     @staticmethod
-    def _normalize_north_history(raw: pd.DataFrame, days: int) -> pd.DataFrame:
-        """归一 AkShare stock_hsgt_hist_em 输出 → DataFrame(north_flow 亿元/天)。"""
+    def _normalize_north_history(
+        raw: pd.DataFrame, days: int, col_name: str = "north_flow",
+    ) -> pd.DataFrame:
+        """归一 AkShare stock_hsgt_hist_em 输出 → DataFrame(<col_name> 亿元/天)。"""
         df = raw.copy()
         df.columns = [c.strip() for c in df.columns]
 
@@ -649,7 +668,7 @@ class AkshareProvider(Provider):
             (c for c in ("日期", "date", "trade_date") if c in df.columns),
             df.columns[0],
         )
-        # 北向资金净流入候选(单位:亿元)
+        # 资金净流入候选(单位:亿元)
         flow_col = None
         for c in ("当日资金流入", "net_flow", "成交净买额", "买入成交净额"):
             if c in df.columns:
@@ -660,9 +679,8 @@ class AkshareProvider(Provider):
 
         df["_dt"] = pd.to_datetime(df[date_col], errors="coerce")
         df = df.dropna(subset=["_dt"]).sort_values("_dt").set_index("_dt")
-        # AkShare 当日资金流入单位通常已是亿元
         out = pd.DataFrame({
-            "north_flow": pd.to_numeric(df[flow_col], errors="coerce"),
+            col_name: pd.to_numeric(df[flow_col], errors="coerce"),
         })
         return out.dropna().tail(days)
 

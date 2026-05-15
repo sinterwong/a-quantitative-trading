@@ -228,6 +228,91 @@ class TestNorthboundFlowFactor(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# SouthboundFlowFactor (W2-2)
+# ---------------------------------------------------------------------------
+
+class TestSouthboundFlowFactor(unittest.TestCase):
+
+    def setUp(self):
+        self.price = _make_price_df(80)
+
+    def test_no_data_returns_zero(self):
+        from core.factors.sentiment import SouthboundFlowFactor
+        f = SouthboundFlowFactor(sentiment_data=None, history_days=10)
+        # 无 gateway 数据时降级
+        from unittest.mock import patch, MagicMock
+        gw_mock = MagicMock()
+        gw_mock.north_flow_history.return_value = pd.DataFrame()
+        with patch('core.data_gateway.get_gateway', return_value=gw_mock):
+            result = f.evaluate(self.price)
+        self.assertTrue((result == 0).all())
+
+    def test_inflow_positive_factor(self):
+        """南向持续净流入 → 末段因子值为正。"""
+        from core.factors.sentiment import SouthboundFlowFactor
+        n = 80
+        price = _make_price_df(n)
+        sent = pd.DataFrame({
+            'south_flow': np.concatenate([
+                np.full(50, -20.0),     # 前 50 天净流出
+                np.full(30, 100.0),     # 后 30 天大幅净流入
+            ]),
+        }, index=price.index)
+        f = SouthboundFlowFactor(sentiment_data=sent, window=5)
+        result = f.evaluate(price)
+        self.assertGreater(result.iloc[60:].mean(), result.iloc[5:40].mean())
+
+    def test_auto_fetch_consumes_south_flow_column(self):
+        """gateway 返回的 DataFrame 含 south_flow 列时应被消费。"""
+        from core.factors.sentiment import SouthboundFlowFactor
+        from unittest.mock import MagicMock, patch
+
+        price = _make_price_df(80)
+        history_df = pd.DataFrame({
+            'north_flow': np.linspace(0, 30, 80),
+            'south_flow': np.linspace(-10, 80, 80),
+        }, index=price.index)
+        gw_mock = MagicMock()
+        gw_mock.north_flow_history.return_value = history_df
+
+        with patch('core.data_gateway.get_gateway', return_value=gw_mock):
+            f = SouthboundFlowFactor()
+            result = f.evaluate(price)
+
+        gw_mock.north_flow_history.assert_called_once()
+        self.assertGreater(result.abs().sum(), 0)
+
+    def test_no_south_flow_column_returns_zero(self):
+        """gateway 返回仅含 north_flow 时,SouthboundFlowFactor 应降级。"""
+        from core.factors.sentiment import SouthboundFlowFactor
+        from unittest.mock import MagicMock, patch
+
+        price = _make_price_df(80)
+        history_df = pd.DataFrame({'north_flow': np.linspace(0, 30, 80)},
+                                  index=price.index)
+        gw_mock = MagicMock()
+        gw_mock.north_flow_history.return_value = history_df
+
+        with patch('core.data_gateway.get_gateway', return_value=gw_mock):
+            f = SouthboundFlowFactor()
+            result = f.evaluate(price)
+        self.assertTrue((result == 0).all())
+
+    def test_signals_buy_on_high_inflow(self):
+        from core.factors.sentiment import SouthboundFlowFactor
+        vals = pd.Series([0.0] * 19 + [2.0])
+        f = SouthboundFlowFactor()
+        sigs = f.signals(vals, price=20.0, threshold=1.0)
+        self.assertEqual(len(sigs), 1)
+        self.assertEqual(sigs[0].direction, 'BUY')
+
+    def test_registry_create(self):
+        from core.factor_registry import registry
+        f = registry.create('SouthboundFlow')
+        self.assertEqual(f.name, 'SouthboundFlow')
+
+
+# ---------------------------------------------------------------------------
 # ShortInterestFactor
 # ---------------------------------------------------------------------------
 
