@@ -90,9 +90,9 @@ Provider 注册表
 | **FUNDAMENTALS** | ❌ | ❌ | ❌ | ✅ A股（YoY增速/行业分类） | ✅ GLOBAL | ❌ |
 | **FUNDAMENTALS_HISTORY** | ❌ | ❌ | ❌ | ✅ A股 | ✅ GLOBAL | ❌ |
 | **BALANCE_SHEET** | ❌ | ❌ | ❌ | ✅ A股（资产负债率/流动/速动比率） | ❌ | ❌ |
-| **SECTOR_RANKING** | ❌ | ❌ | ✅ GLOBAL（唯一） | ❌ | ❌ | ❌ |
-| **SECTOR_CONSTITUENTS** | ❌ | ❌ | ✅ GLOBAL（唯一） | ❌ | ❌ | ❌ |
-| **NORTH_FLOW** | ❌ | ❌ | ✅ GLOBAL（唯一） | ❌ | ❌ | ❌ |
+| **SECTOR_RANKING** | ❌ | ✅ A（备用，无资金流） | ✅ A（主，含资金流） | ❌ | ❌ | ❌ |
+| **SECTOR_CONSTITUENTS** | ❌ | ❌ | ✅ A（唯一） | ❌ | ❌ | ❌ |
+| **NORTH_FLOW** | ❌ | ❌ | ✅ A（唯一） | ❌ | ❌ | ❌ |
 | **MACRO** | ❌ | ❌ | ❌ | ❌ | ✅ GLOBAL | ❌ |
 
 ### 已知能力缺口（未实现）
