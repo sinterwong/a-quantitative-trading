@@ -143,11 +143,12 @@ def test_data_fund_flow_get(client):
 
 
 def test_data_macro_get_valid_indicator(client):
-    """已知 PMI 指标读本地缓存即可,不应 5xx 也不应 4xx。"""
+    """已知 PMI 指标:本地有数据 → 200;CI 无网络 → gateway 返回空 → 404。"""
     r = client.get('/data/macro/PMI')
-    # 网络/外部依赖在 CI 不可用时端点会返回 503/200 之一——
-    # 这里仅保证不是 4xx(说明被误判为客户端错误)且不 500。
-    assert r.status_code in (200, 503), r.status_code
+    # 200 = 命中本地缓存;404 = "indicator 存在但当前无数据"(api.py:1380);
+    # 503 = gateway 临时不可用。绝不允许 5xx(=> 500/exception),
+    # 也不允许除 404 外的 4xx(参数已被 endpoint 校验通过,不是客户端错)。
+    assert r.status_code in (200, 404, 503), r.status_code
 
 
 def test_data_macro_get_invalid_indicator(client):
