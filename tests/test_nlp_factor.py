@@ -306,5 +306,28 @@ class TestNewsSentimentRegistryIntegration(unittest.TestCase):
         self.assertTrue(np.isfinite(result.combined_score))
 
 
+class TestNewsFetchGoesThroughGateway(unittest.TestCase):
+    """W0-4: _fetch_news_eastmoney 走 DataGateway.news_headlines(),不再直连 akshare。"""
+
+    def test_fetch_news_calls_gateway(self):
+        from core.factors import nlp as mod
+
+        gw_mock = MagicMock()
+        gw_mock.news_headlines.return_value = ["利好 A", "公告 B"]
+        with patch("core.data_gateway.get_gateway", return_value=gw_mock):
+            out = mod._fetch_news_eastmoney("sh600519", n=5)
+        self.assertEqual(out, ["利好 A", "公告 B"])
+        gw_mock.news_headlines.assert_called_once_with("sh600519", n=5)
+
+    def test_fetch_news_gateway_error_returns_empty(self):
+        from core.factors import nlp as mod
+
+        gw_mock = MagicMock()
+        gw_mock.news_headlines.side_effect = RuntimeError("net fail")
+        with patch("core.data_gateway.get_gateway", return_value=gw_mock):
+            out = mod._fetch_news_eastmoney("sh600519")
+        self.assertEqual(out, [])
+
+
 if __name__ == '__main__':
     unittest.main()
