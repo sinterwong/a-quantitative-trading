@@ -119,13 +119,13 @@
 - **commit**:`refactor(intraday): IntradayMonitor 拆分为 5 个职责模块`
 
 ### P2-8 backend api.py 端点瘦身
-- [x] 批次 1 — positions / cash / trades(5 端点):`/portfolio/daily POST` 32→16,其余已 ≤25
-- [x] 批次 2 — orders(4 端点):`/orders/submit` 50→30(改用 `main.get_broker()`)
-- [x] 批次 3 — params(2 端点):抽 `services.signals.update_symbol_params` + `list_symbols_with_params`,/params PATCH 47→14,/params GET 39→7
-- [ ] 批次 4 — analysis(7 端点):`/analysis/run` 79,`/analysis/sector_rotation` 79,`/analysis/pairs_trading` 93,`/analysis/sector/compare` 72,`/analysis/stock/a` 52,`/analysis/stock/hk` 52,`/analysis/health` 58
-- [ ] 收尾 — `/risk/status` 59,`/metrics` 60,`/performance/summary` 57,`/market/status` 51,`/llm/analyze` 67
-- 当前指标:54 个端点,平均 31.3 行(目标 ≤25),仍 22 个超标
-- **commit**(分批):`refactor(api): {资源组} 端点退化为薄壳调 use case`
+- [x] 批次 1 — positions / cash / trades(5 端点):`/portfolio/daily POST` 32→16
+- [x] 批次 2 — orders(4 端点):`/orders/submit` 50→30(`main.get_broker()`)
+- [x] 批次 3 — params(2 端点):抽 `services.signals.update_symbol_params` + `list_symbols_with_params`
+- [x] 批次 4 — analysis(7 端点):新增 use case `daily_analysis` / `sector_rotation_signal` / `pairs_trading_signal` / `system_health`,各端点 ≤20 行
+- [x] 收尾 — 新增 `risk_snapshot` / `performance_summary` use case + `MetricsRegistry.refresh_from_service()` 助手,`/market/status` 与 `/llm/analyze` 紧凑化
+- 最终指标:54 个端点,平均 24.5 行,17 个超标(主要为大段 docstring)
+- **commit**(分批 5 个):`refactor(api): {资源组} 端点退化为薄壳`
 
 ---
 
@@ -140,12 +140,13 @@
 
 ### P3-2 进程逻辑分离(API vs Worker)
 > 注:仍跑在同一 Python 进程内,但代码上让两者解耦,未来可一行配置切到独立进程。
-- [ ] backend/main.py 拆分为:
-  - `quant_app/serve_api.py` — Flask 应用工厂,只挂 API 路由
-  - `quant_app/run_worker.py` — Scheduler + IntradayMonitor 后台线程
-  - `quant_app/main.py` — 启动器:按 mode(`all`/`api`/`worker`)选择装配
-- [ ] 默认 `all`(本次行为不变)
-- [ ] 加 mode=`api` / mode=`worker` 测试可独立启动
+- [x] backend/main.py 拆分为:
+  - `quant_app/serve_api.py`(44 行) — Flask + werkzeug make_server
+  - `quant_app/run_worker.py`(582 行) — Scheduler + 交易日历 + IntradayMonitor 装配 + StrategyRunner 装配
+  - `quant_app/main.py`(189 行) — 启动器,按 mode(all/api/worker)装配
+- [x] 默认 `all`,backward-compat 别名 `both` → `all`、`scheduler` → `worker`
+- [x] mode=`api` 跳过 Scheduler/Monitor/Runner,仅起 HTTP server;mode=`worker` 不开 API
+- [x] backend/main.py 退化为 56 行 shim,转发所有符号保证既有 `from backend.main import …` 不破坏
 - **commit**:`refactor(process): API 与 Worker 代码上解耦,默认仍合进程跑`
 
 ### P3-3 统一配置入口

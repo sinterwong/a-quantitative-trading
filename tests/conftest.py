@@ -85,8 +85,9 @@ def _reset_module_caches():
     """
     yield
     try:
-        import backend.main as bm
-        bm._trade_calendar = set()
-        bm._trade_calendar_date = ''
+        # P3-2: 交易日历缓存搬到 quant_app/run_worker.py
+        import quant_app.run_worker as wm
+        wm._trade_calendar = set()
+        wm._trade_calendar_date = ''
     except (ImportError, AttributeError):
         pass

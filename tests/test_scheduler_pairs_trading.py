@@ -86,7 +86,7 @@ class TestPairsTradingScheduler(unittest.TestCase):
         # 用临时 outputs 目录
         with tempfile.TemporaryDirectory() as tmp:
             with patch('urllib.request.urlopen', side_effect=fake_urlopen):
-                with patch('backend.main.PROJ_DIR', tmp):
+                with patch('quant_app.run_worker.PROJ_DIR', tmp):
                     with patch('core.alerting.get_alert_manager') as mock_mgr:
                         mock_mgr.return_value = MagicMock()
                         sched._trigger_pairs_trading()
@@ -129,7 +129,7 @@ class TestPairsTradingScheduler(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             with patch('urllib.request.urlopen', side_effect=fake_urlopen):
-                with patch('backend.main.PROJ_DIR', tmp):
+                with patch('quant_app.run_worker.PROJ_DIR', tmp):
                     with patch('core.alerting.get_alert_manager') as mock_mgr:
                         mock_mgr.return_value = MagicMock()
                         sched._trigger_pairs_trading()
@@ -150,7 +150,7 @@ class TestWeekdayDispatch(unittest.TestCase):
         wed = _dt(2026, 5, 6)   # 2026-05-06 是周三
         self.assertEqual(wed.weekday(), 2)
 
-        with patch('backend.main.datetime') as mock_dt:
+        with patch('quant_app.run_worker.datetime') as mock_dt:
             mock_dt.now.return_value = wed
             with patch('urllib.request.urlopen') as mock_url:
                 mock_url.return_value = _FakeResponse(b'{}')
@@ -169,7 +169,7 @@ class TestWeekdayDispatch(unittest.TestCase):
         mon = _dt(2026, 5, 4)   # 2026-05-04 周一
         self.assertEqual(mon.weekday(), 0)
 
-        with patch('backend.main.datetime') as mock_dt:
+        with patch('quant_app.run_worker.datetime') as mock_dt:
             mock_dt.now.return_value = mon
             with patch('urllib.request.urlopen') as mock_url:
                 mock_url.return_value = _FakeResponse(b'{}')
