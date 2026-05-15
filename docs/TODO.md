@@ -109,13 +109,13 @@
 - **commit**:`refactor(use_case): 抽出 compose_portfolio 用例`
 
 ### P2-7 拆分 `intraday_monitor.py`(1831 行)
-- [ ] 按职责拆分为 5 个 ≤400 行子模块:
-  - `intraday/data.py` — 行情拉取
-  - `intraday/signaling.py` — 调 use case 生成信号
-  - `intraday/risk.py` — 风控过滤
-  - `intraday/execution.py` — 模拟下单
-  - `intraday/alerts.py` — 告警/记录
-- [ ] 原 `intraday_monitor.py` 改为 ≤150 行的编排器
+- [x] 按职责拆分为 5 个 ≤400 行子模块:
+  - `intraday/data.py` — 行情拉取(270 行)
+  - `intraday/signaling.py` — 调 use case 生成信号(314 行)
+  - `intraday/risk.py` — 风控过滤(395 行)
+  - `intraday/execution.py` — 模拟下单(345 行)
+  - `intraday/alerts.py` — 告警/记录(300 行)
+- [x] 原 `intraday_monitor.py` 改为 ≤200 行的编排器(190 行,Mixin 组合)
 - **commit**:`refactor(intraday): IntradayMonitor 拆分为 5 个职责模块`
 
 ### P2-8 backend api.py 端点瘦身
