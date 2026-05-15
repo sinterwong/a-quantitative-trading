@@ -1,13 +1,12 @@
 """
 core/data_sources.py — 市场快照数据（Gateway 统一出口）
 
-本模块仅负责将 Gateway 数据聚合成 MarketSnapshot，
-不包含任何直接外部 HTTP 请求。
+本模块仅保留 MarketSnapshot dataclass，
+数据聚合逻辑已删除（如需使用，直接在业务层调用 Gateway）。
 
 保留的类：
   - MarketSnapshot:  市场快照 dataclass（无网络调用，纯数据）
   - NorthBoundDataSource: 北向资金（内部服务 cached_kamt，无外部直连）
-  - CompositeMarketDataSource: 组合所有来源生成 MarketSnapshot（直接调用 Gateway）
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, Optional, Any
 import os
 import sys
 import time
@@ -108,83 +107,4 @@ class NorthBoundDataSource:
 
     def fetch_history(self, days: int = 5) -> pd.DataFrame:
         # KAMT 历史需从数据库读取，当前返回空
-        return pd.DataFrame()
-
-
-# ─── Composite Market DataSource ──────────────────────────────────────────────
-
-class CompositeMarketDataSource:
-    """
-    组合所有外部数据源，生成统一的 MarketSnapshot。
-
-    直接调用 Gateway，无任何中间数据源类：
-      - usSPY / usQQQ / hkHSI → Gateway.market_index()
-      - ES=F / NQ=F / ^HSI / ^VIX → Gateway.market_index()
-      - 北向 → NorthBoundDataSource（内部服务）
-    """
-
-    name = 'CompositeMarket'
-
-    def __init__(self):
-        self._north = NorthBoundDataSource()
-
-    def _market_idx(self, code: str) -> float:
-        """从 Gateway.market_index 获取涨跌幅，失败返回 0"""
-        try:
-            from core.data_gateway import get_gateway
-            snap = get_gateway().market_index(code)
-            if snap and snap.price > 0:
-                return snap.change_pct
-        except Exception:
-            pass
-        return 0.0
-
-    def _quote_pct(self, symbol: str) -> float:
-        """从 Gateway.quote 获取涨跌幅，失败返回 0"""
-        try:
-            from core.data_gateway import get_gateway
-            q = get_gateway().quote(symbol)
-            if q and q.is_valid:
-                return q.pct_change
-        except Exception:
-            pass
-        return 0.0
-
-    def fetch_latest(self) -> MarketSnapshot:
-        snap = MarketSnapshot()
-
-        # 外盘直接走 Gateway（腾讯主源覆盖 usSPY/usQQQ/hkHSI，
-        # yfinance 兜底通过 Gateway.market_index 内部路由覆盖 ES=F/NQ=F/^HSI/^VIX）
-        snap.sp500_change_pct = self._quote_pct('usSPY') or self._market_idx('ES=F')
-        snap.nasdaq_change_pct = self._quote_pct('usQQQ') or self._market_idx('NQ=F')
-        snap.hsih_change_pct = self._quote_pct('hkHSI') or self._market_idx('^HSI')
-        snap.vix = self._market_idx('^VIX')
-
-        # 北向（内部服务，无外部直连）
-        try:
-            d = self._north.fetch_latest()
-            snap.north_net_yi = d.get('net_north_yi', 0)
-        except Exception:
-            pass
-
-        return snap
-
-    def fetch_history(self, days: int = 5) -> pd.DataFrame:
-        frames = []
-        for symbol, label in [
-            ('usSPY', 'sp500'),
-            ('^VIX', 'vix'),
-            ('hkHSI', 'hsi'),
-        ]:
-            try:
-                from core.data_gateway import get_gateway
-                df = get_gateway().kline(symbol, interval='daily', days=days)
-                if not df.empty:
-                    df = df.copy()
-                    df['source'] = label
-                    frames.append(df)
-            except Exception:
-                pass
-        if frames:
-            return pd.concat(frames)
         return pd.DataFrame()

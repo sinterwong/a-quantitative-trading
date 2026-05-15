@@ -35,7 +35,6 @@ from core.risk_engine import RiskEngine, RiskResult, RiskPosition, PositionBook
 from core.data_sources import (
     MarketSnapshot,
     NorthBoundDataSource,
-    CompositeMarketDataSource,
 )
 from core.level2 import (
     Level2DataSource, OrderBook, TickBarAggregator, TickBar,
@@ -68,7 +67,6 @@ __all__ = [
     # DataSources
     'MarketSnapshot',
     'NorthBoundDataSource',
-    'CompositeMarketDataSource',
     # Level2
     'Level2DataSource', 'OrderBook', 'TickBarAggregator', 'TickBar',
     # Backtest
