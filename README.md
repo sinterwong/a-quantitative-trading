@@ -99,6 +99,31 @@ python scripts/generate_openapi.py --check   # CI: 校验文档与路由一致
 
 ---
 
+## 鉴权与生产部署
+
+| 环境变量 | 默认 | 含义 |
+|---|---|---|
+| `TRADING_API_KEY` | 空 | 设置后所有非公共端点必须带 `X-API-Key: <value>`,留空 = 关鉴权 |
+| `TRADING_API_REQUIRE_LOCALHOST` | `0` | 默认本机回环(127.0.0.1 / ::1)豁免鉴权与限流 |
+| `TRADING_API_RATE_LIMIT_PER_MIN` | `0` | 全局每分钟 per-IP 上限,0=关闭 |
+
+公共端点(无需鉴权,可被任意来源调用):`/health`、`/docs`、`/metrics`、`OPTIONS`。
+
+⚠️ **生产部署务必同时设置:**
+
+```bash
+TRADING_API_KEY=$(openssl rand -hex 32)   # 32 字节随机密钥
+TRADING_API_REQUIRE_LOCALHOST=1           # 取消回环豁免
+```
+
+不设 `TRADING_API_REQUIRE_LOCALHOST=1` 的话,只要 Flask 监听 0.0.0.0(systemd 默认),
+同一台机器上的任何进程都能绕过鉴权——这在多用户主机或容器里是隐患。
+
+**默认 0 是有意为之**:本地 Streamlit / 调度脚本零摩擦开发体验。
+切到生产时,部署 checklist 把这两个变量都拉满。
+
+---
+
 ## 项目结构
 
 ```
