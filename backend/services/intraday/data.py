@@ -243,10 +243,10 @@ class DataMixin:
             return {}
 
     def _check_sector_flow(self, now: datetime):
-        """检查板块资金流向是否出现异常突变(评分跃升 > 20)。"""
-        if not hasattr(self, '_prev_sector_flows'):
-            self._prev_sector_flows = {}
+        """检查板块资金流向是否出现异常突变(评分跃升 > 20)。
 
+        ``_prev_sector_flows`` 在 IntradayMonitor.__init__ 中初始化为空 dict。
+        """
         current_flows = self._load_sector_flows()
         if not current_flows:
             return

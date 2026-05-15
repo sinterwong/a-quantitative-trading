@@ -131,6 +131,8 @@ class IntradayMonitor(DataMixin, SignalingMixin, RiskMixin, ExecutionMixin, Aler
         self._scan_count: int = 0
         self._error_count: int = 0
         self._last_error: str = ''
+        # 板块资金流上一轮快照(DataMixin._check_sector_flow 用)
+        self._prev_sector_flows: dict = {}
 
     # ── Public API ────────────────────────────────────────
 

@@ -62,4 +62,5 @@ def monitor():
     m._llm_review_log = []
     m._error_count = 0
     m._last_error = ''
+    m._prev_sector_flows = {}
     return m
