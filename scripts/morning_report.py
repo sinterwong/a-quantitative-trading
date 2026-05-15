@@ -209,7 +209,7 @@ def _fetch_northbound() -> Dict:
 
 def _fetch_selected_stocks(n: int = 5) -> List[Dict]:
     """
-    通过 DynamicStockSelectorV2 获取选股结果。
+    通过 DynamicStockSelector 获取选股结果。
     注意：必须调用 calc_all_scores() 后再 get_stock_with_context()，否则评分为空。
     """
     try:
@@ -430,7 +430,7 @@ def build_report(
         if stocks:
             sections.append(_format_stock_block(stocks))
         else:
-            sections.append('  ⚠️ 选股数据获取失败（DynamicStockSelectorV2 异常或无符合标的）')
+            sections.append('  ⚠️ 选股数据获取失败（DynamicStockSelector 异常或无符合标的）')
         sections.append('')
 
     # ── 五、开盘订单（仅当 morning_runner 传入时显示）─────
