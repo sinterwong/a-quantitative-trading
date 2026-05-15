@@ -70,10 +70,8 @@ class DailyReporter:
     每日报告生成器
 
     工作流程：
-    1. load_from_journal(reader) - 读取Journal数据
-    2. generate_report() - 生成报告内容
-    3. push_to_feishu() - 推送至飞书
-    4. save_report() - 保存到Journal目录
+    1. generate_report() - 生成报告内容
+    2. get_text() / print_report() - 输出报告
     """
 
     def __init__(self, trading_date: str = None):
@@ -81,75 +79,6 @@ class DailyReporter:
             trading_date = date.today().strftime('%Y-%m-%d')
         self.date = trading_date
         self.report = DailyReport(trading_date)
-        self.journal_reader = None
-        self._content = ''
-
-    # -------------------
-    # 数据加载
-    # -------------------
-
-    def load_from_journal(self, reader):
-        """从JournalReader加载数据"""
-        self.journal_reader = reader
-        day_data = reader.get_day(self.date)
-        meta = day_data.get('meta', {}) or {}
-        positions = day_data.get('positions', []) or []
-        trades = day_data.get('trades', []) or []
-        signals = day_data.get('signals', []) or []
-        market = day_data.get('market', {}) or {}
-
-        # 账户概览
-        self.report.account = {
-            'total_value': meta.get('equity', 0),
-            'cash': meta.get('cash', 0),
-            'position_value': meta.get('equity', 0) - meta.get('cash', 0),
-            'n_positions': meta.get('n_positions', len(positions)),
-            'n_trades': meta.get('n_trades', len(trades)),
-            'n_signals': meta.get('n_signals', len(signals)),
-        }
-
-        self.report.positions = positions
-        self.report.trades = trades
-        self.report.signals = signals
-        self.report.market = market
-
-    def load_from_executor(self, executor, market_snapshots: dict):
-        """从PaperExecutor加载数据"""
-        status = executor.get_account_status()
-        trade_log = executor.get_trade_log(self.date)
-
-        self.report.account = {
-            'total_value': status.get('total_value', 0),
-            'cash': status.get('cash', 0),
-            'position_value': status.get('position_value', 0),
-            'n_positions': len(status.get('positions', {})),
-            'n_trades': len(trade_log),
-            'n_signals': 0,
-        }
-
-        # 从持仓还原positions列表
-        self.report.positions = []
-        for sym, pos in status.get('positions', {}).items():
-            snap = market_snapshots.get(sym)
-            current_price = snap.close if snap else pos.get('avg_cost', 0)
-            mv = pos['shares'] * current_price
-            cost = pos['shares'] * pos['avg_cost']
-            pnl = mv - cost
-            pnl_pct = pnl / cost if cost > 0 else 0
-            self.report.positions.append({
-                'symbol': sym,
-                'shares': pos['shares'],
-                'entry_price': pos['avg_cost'],
-                'current_price': current_price,
-                'market_value': mv,
-                'cost': cost,
-                'unrealized_pnl': pnl,
-                'unrealized_pnl_pct': pnl_pct,
-                'hold_days': 0,
-            })
-
-        # 从成交记录
-        self.report.trades = trade_log
 
     # -------------------
     # 报告生成
@@ -452,22 +381,8 @@ if __name__ == '__main__':
     print("DailyReporter Demo")
     print("=" * 60)
 
-    from daily_journal import JournalReader
-
-    reader = JournalReader()
     today = date.today().strftime('%Y-%m-%d')
 
     reporter = DailyReporter(today)
-    reporter.load_from_journal(reader)
-    reporter.generate_report()
-    reporter.print_report()
-
-    # 添加自定义内容
-    reporter.add_alert("平安保险 持仓浮亏-7.6%，注意止损")
-    reporter.add_tomorrow_watch("茅台 若RSI触及70区域，关注是否共振卖出信号")
-
-    print("\n" + "=" * 60)
-    print("With Alerts Added")
-    print("=" * 60)
     reporter.generate_report()
     reporter.print_report()

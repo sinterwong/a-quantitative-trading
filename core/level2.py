@@ -11,7 +11,7 @@ Phase 4 核心组件：
 数据来源：
   - 新浪实时行情（含10档盘口）：hq.sinajs.cn
   - 东方财富 Level2（扩展字段）：push2.eastmoney.com
-  - 腾讯分钟K线（已实现）：TencentMinuteDataSource
+  - 腾讯分钟K线：Gateway.kline(symbol, interval='1m')（Sina provider）
 """
 
 from __future__ import annotations

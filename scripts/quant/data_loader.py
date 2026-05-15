@@ -4,6 +4,10 @@ AkShare 数据获取模块 v2
 1. fund_etf_hist_em - ETF历史K线（稳定）
 2. stock_zh_a_daily (sina) - A股历史K线（稳定）
 3. 腾讯/新浪财经接口作为备用
+
+注意：本模块专为 backtest（历史回测）场景设计，
+直接使用新浪/腾讯接口获取历史日K数据，与 Gateway 无关。
+盘中实时数据请通过 Gateway 路由。
 """
 
 import os

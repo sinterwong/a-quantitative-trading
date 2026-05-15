@@ -170,7 +170,6 @@ jobs:
           python -m py_compile core/data_quality.py
           python -m py_compile core/data_layer.py
           python -m py_compile scripts/dynamic_selector.py
-          python -m py_compile scripts/stock_data_only.py
           python -m py_compile scripts/walkforward_job.py
           python -m py_compile scripts/quant/data_loader.py
           python -m py_compile scripts/quant/signal_generator.py

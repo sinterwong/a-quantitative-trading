@@ -1,5 +1,6 @@
 """
-Phase 2 验证测试：DataSources + OMS + RiskEngine
+Phase 2 验证测试：OMS + RiskEngine
+（DataSources 相关测试已删除，NorthBoundDataSource 无独立测试需求）
 """
 
 import sys, os
@@ -8,51 +9,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import unittest
 from datetime import datetime
 
-from core.data_sources import (
-    SPFuturesDataSource, VIXDataSource, HSIFuturesDataSource,
-    TencentMinuteDataSource, NorthBoundDataSource,
-    CompositeMarketDataSource, MarketSnapshot,
-)
 from core.oms import OMS, EventDrivenPaperBroker, Order
 from core.risk_engine import RiskEngine, RiskResult, PositionBook
 from core.event_bus import EventBus
-
-
-class TestDataSources(unittest.TestCase):
-
-    def test_sp500_fetch(self):
-        ds = SPFuturesDataSource('ES=F')
-        result = ds.fetch_latest()
-        self.assertIn('symbol', result)
-        # yfinance 全球限速是常见情况，代码需优雅降级（有 error key 或有 close key）
-        has_data = 'close' in result
-        has_error = 'error' in result
-        self.assertTrue(has_data or has_error, f'Result must have close or error: {result}')
-        print(f"\nSP500: {result}")
-
-    def test_vix_fetch(self):
-        ds = VIXDataSource()
-        result = ds.fetch_latest()
-        self.assertIn('symbol', result)
-        print(f"\nVIX: {result}")
-
-    def test_northbound(self):
-        ds = NorthBoundDataSource()
-        result = ds.fetch_latest()
-        self.assertIn('net_north_yi', result)
-        print(f"\nNorthBound: {result}")
-
-    def test_composite_market(self):
-        cm = CompositeMarketDataSource()
-        snap = cm.fetch_latest()
-        self.assertIsInstance(snap, MarketSnapshot)
-        self.assertIsNotNone(snap.timestamp)
-        print(f"\nCompositeSnapshot: SP={snap.sp500_change_pct}%, VIX={snap.vix}, North={snap.north_net_yi}Yi")
-
-    def test_tencent_minute(self):
-        ds = TencentMinuteDataSource('600900.SH')
-        result = ds.fetch_latest()
-        print(f"\nTencentMinute 600900.SH: {result}")
 
 
 class TestPaperBroker(unittest.TestCase):
@@ -131,24 +90,6 @@ class TestOMSSignalIntegration(unittest.TestCase):
             print(f"Signal: {sig.direction} {sig.symbol} @ {sig.price}, strength={sig.strength}")
             fill = oms.submit_from_signal(sig, shares=100)
             print(f"Fill result: {fill}")
-
-
-class TestFullPipeline(unittest.TestCase):
-    """MarketEvent → DataSource → CompositeSnapshot → RiskEngine"""
-
-    def test_composite_snapshot_decisions(self):
-        cm = CompositeMarketDataSource()
-        snap = cm.fetch_latest()
-        self.assertIsInstance(snap, MarketSnapshot)
-
-        us_bull = snap.is_us_bullish()
-        vix_high = snap.is_high_volatility()
-        north_in = snap.is_north_inflow()
-
-        print(f"\nSnapshot decisions:")
-        print(f"  US Bullish: {us_bull}")
-        print(f"  VIX High: {vix_high}")
-        print(f"  North Inflow: {north_in}")
 
 
 if __name__ == '__main__':
