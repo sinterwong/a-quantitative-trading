@@ -58,6 +58,8 @@ _DEFAULT_TTL = {
     Capability.NORTH_FLOW: 60.0,
     Capability.MARKET_INDEX: 60.0,
     Capability.MACRO: 86400.0,
+    Capability.MARGIN_FLOW: 14400.0,           # 融资融券日频，4h 缓存(收盘后更新)
+    Capability.NEWS_HEADLINES: 1800.0,         # 新闻标题，30min 缓存
 }
 
 
@@ -501,6 +503,53 @@ class DataGateway:
             self._cache.set(cache_key, merged, _DEFAULT_TTL[Capability.BALANCE_SHEET])
             self._last_provenance[cache_key] = prov
         return merged
+
+    def margin_flow(
+        self, symbol: str, start: str | None = None, end: str | None = None,
+    ) -> pd.DataFrame:
+        """个股融资融券日频时序（顺序 failover，不合并）。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex，列 margin_balance / short_balance。
+            空 DataFrame 表示无数据。
+        """
+        cache_key = f"margin_flow:{symbol}:{start}:{end}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        result, _ = self._sequential_fetch(
+            Capability.MARGIN_FLOW, Market.GLOBAL,
+            "fetch_margin_flow", symbol, start, end,
+        )
+        df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
+        if not df.empty:
+            self._cache.set(cache_key, df, _DEFAULT_TTL[Capability.MARGIN_FLOW])
+        return df
+
+    def news_headlines(self, symbol: str, n: int = 20) -> list:
+        """个股新闻标题列表（顺序 failover）。
+
+        Returns
+        -------
+        List[str]
+            最多 n 条标题（最新在前），空列表表示无数据。
+        """
+        cache_key = f"news_headlines:{symbol}:{n}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        result, _ = self._sequential_fetch(
+            Capability.NEWS_HEADLINES, Market.GLOBAL,
+            "fetch_news_headlines", symbol, n,
+        )
+        headlines = result if isinstance(result, list) else []
+        if headlines:
+            self._cache.set(cache_key, headlines, _DEFAULT_TTL[Capability.NEWS_HEADLINES])
+        return headlines
 
     def fundamentals_history(
         self, symbol: str, start: str | None = None, end: str | None = None,

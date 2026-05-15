@@ -44,6 +44,8 @@ class _FakeProvider(Provider):
         index_value: Optional[MarketIndexSnapshot] = None,
         macro_value: Optional[pd.DataFrame] = None,
         balance_value: Optional[BalanceSheet] = None,
+        margin_flow_value: Optional[pd.DataFrame] = None,
+        news_value: Optional[List[str]] = None,
         raise_on: Optional[str] = None,
         field_authorities: Optional[Dict[Capability, Dict[str, float]]] = None,
     ):
@@ -61,6 +63,8 @@ class _FakeProvider(Provider):
         self._index = index_value
         self._macro = macro_value if macro_value is not None else pd.DataFrame()
         self._balance = balance_value
+        self._margin = margin_flow_value if margin_flow_value is not None else pd.DataFrame()
+        self._news = news_value if news_value is not None else []
         self._raise_on = raise_on
         self._authority = field_authorities or {}
         self.call_log: List[str] = []
@@ -131,6 +135,16 @@ class _FakeProvider(Provider):
         self.call_log.append(f"fetch_balance_sheet:{symbol}")
         self._maybe_raise("fetch_balance_sheet")
         return self._balance
+
+    def fetch_margin_flow(self, symbol, start=None, end=None):
+        self.call_log.append(f"fetch_margin_flow:{symbol}")
+        self._maybe_raise("fetch_margin_flow")
+        return self._margin
+
+    def fetch_news_headlines(self, symbol, n=20):
+        self.call_log.append(f"fetch_news_headlines:{symbol}:{n}")
+        self._maybe_raise("fetch_news_headlines")
+        return self._news
 
 
 @pytest.fixture
@@ -493,6 +507,55 @@ def test_balance_sheet_merge_across_providers(gw):
     bs = gw.balance_sheet("sh600519")
     assert bs.debt_to_equity == 30
     assert bs.current_ratio == 2.5
+
+
+# ── margin_flow / news_headlines ─────────────────────────────────────────────
+
+
+def test_margin_flow_routes_via_gateway(gw):
+    """gw.margin_flow() 顺序 failover,第一个非空 provider 即返回。"""
+    df = pd.DataFrame(
+        {"margin_balance": [1e8, 1.1e8], "short_balance": [1e6, 1.05e6]},
+        index=pd.to_datetime(["2026-05-13", "2026-05-14"]),
+    )
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.MARGIN_FLOW,), markets=(Market.GLOBAL,),
+        margin_flow_value=df,
+    )
+    gw.register_provider(p)
+    out = gw.margin_flow("sh600519")
+    assert not out.empty
+    assert "margin_balance" in out.columns
+    assert "short_balance" in out.columns
+
+
+def test_margin_flow_cache_hit_avoids_provider(gw):
+    df = pd.DataFrame({"margin_balance": [1e8]}, index=pd.to_datetime(["2026-05-14"]))
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.MARGIN_FLOW,), markets=(Market.GLOBAL,),
+        margin_flow_value=df,
+    )
+    gw.register_provider(p)
+    gw.margin_flow("sh600519")
+    gw.margin_flow("sh600519")
+    assert len([c for c in p.call_log if "fetch_margin_flow" in c]) == 1
+
+
+def test_news_headlines_routes_via_gateway(gw):
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.NEWS_HEADLINES,), markets=(Market.GLOBAL,),
+        news_value=["利好消息 A", "公司公告 B", "行业动态 C"],
+    )
+    gw.register_provider(p)
+    out = gw.news_headlines("sh600519", n=10)
+    assert len(out) == 3
+    assert out[0] == "利好消息 A"
+
+
+def test_news_headlines_no_provider_returns_empty(gw):
+    p = _FakeProvider("only_quote", capabilities=(Capability.QUOTE,))
+    gw.register_provider(p)
+    assert gw.news_headlines("sh600519") == []
 
 
 # ── 全局 singleton ──────────────────────────────────────────────────────────

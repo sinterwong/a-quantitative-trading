@@ -45,6 +45,8 @@ class AkshareProvider(Provider):
                 Capability.MACRO,
                 Capability.FUNDAMENTALS,
                 Capability.FUNDAMENTALS_HISTORY,
+                Capability.MARGIN_FLOW,
+                Capability.NEWS_HEADLINES,
             }),
             markets=frozenset({Market.GLOBAL}),
             priority_hint=0.30,  # 实测不稳定,健康度低
@@ -508,6 +510,121 @@ class AkshareProvider(Provider):
         daily = daily.ffill()
 
         return daily
+
+    # ─── MARGIN_FLOW ─────────────────────────────────────────────────────────
+
+    def fetch_margin_flow(
+        self, symbol: str, start: str | None = None, end: str | None = None,
+    ) -> pd.DataFrame:
+        """通过 AkShare stock_margin_detail 获取个股融资融券日序列。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex,列 margin_balance(融资余额,元) / short_balance(融券余额,元)。
+        """
+        try:
+            import akshare as ak
+        except ImportError:
+            logger.debug("akshare 未安装,跳过 margin_flow 请求")
+            return pd.DataFrame()
+
+        # 去掉常见后缀,akshare 接口接受 6 位代码
+        code = symbol.replace(".SH", "").replace(".SZ", "")
+        if code.lower().startswith(("sh", "sz")):
+            code = code[2:]
+
+        try:
+            raw = ak.stock_margin_detail(symbol=code)
+        except Exception as exc:
+            raise ProviderError(f"akshare.fetch_margin_flow({symbol}): {exc}") from exc
+
+        if raw is None or raw.empty:
+            return pd.DataFrame()
+
+        return self._normalize_margin(raw, start, end)
+
+    @staticmethod
+    def _normalize_margin(
+        raw: pd.DataFrame, start: str | None, end: str | None,
+    ) -> pd.DataFrame:
+        """归一 AkShare stock_margin_detail 列名 → margin_balance / short_balance。"""
+        df = raw.copy()
+        df.columns = [c.strip().lower() for c in df.columns]
+
+        col_map = {
+            "rz_ye": "margin_balance",
+            "rzye": "margin_balance",
+            "融资余额": "margin_balance",
+            "rq_ye": "short_balance",
+            "rqye": "short_balance",
+            "融券余额": "short_balance",
+            "信用交易日期": "date",
+            "trade_date": "date",
+        }
+        rename = {src.lower(): dst for src, dst in col_map.items() if src.lower() in df.columns}
+        df = df.rename(columns=rename)
+
+        # 找日期列
+        date_col = next(
+            (c for c in ("date", "信用交易日期", "trade_date") if c in df.columns),
+            df.columns[0],
+        )
+        df["date"] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=["date"]).set_index("date").sort_index()
+
+        out = pd.DataFrame(index=df.index)
+        if "margin_balance" in df.columns:
+            out["margin_balance"] = pd.to_numeric(df["margin_balance"], errors="coerce")
+        if "short_balance" in df.columns:
+            out["short_balance"] = pd.to_numeric(df["short_balance"], errors="coerce")
+
+        out = out.dropna(how="all")
+        if start:
+            out = out[out.index >= pd.Timestamp(start)]
+        if end:
+            out = out[out.index <= pd.Timestamp(end)]
+        return out
+
+    # ─── NEWS_HEADLINES ──────────────────────────────────────────────────────
+
+    def fetch_news_headlines(self, symbol: str, n: int = 20) -> list:
+        """通过 AkShare stock_news_em 获取个股新闻标题列表(最新在前)。
+
+        Returns
+        -------
+        List[str]
+            最多 n 条新闻标题。空列表表示无数据。
+        """
+        try:
+            import akshare as ak
+        except ImportError:
+            logger.debug("akshare 未安装,跳过 news_headlines 请求")
+            return []
+
+        # 去掉后缀,接口接受 6 位代码
+        code = symbol.split(".")[0]
+        if code.lower().startswith(("sh", "sz")):
+            code = code[2:]
+
+        try:
+            df = ak.stock_news_em(symbol=code)
+        except Exception as exc:
+            raise ProviderError(f"akshare.fetch_news_headlines({symbol}): {exc}") from exc
+
+        if df is None or df.empty:
+            return []
+
+        title_col = None
+        for col in ("标题", "title", "新闻标题", "news_title"):
+            if col in df.columns:
+                title_col = col
+                break
+        if title_col is None:
+            return []
+
+        headlines = df[title_col].dropna().tolist()[:n]
+        return [str(h).strip() for h in headlines if h]
 
 
 __all__ = ["AkshareProvider"]

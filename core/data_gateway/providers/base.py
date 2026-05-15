@@ -155,5 +155,18 @@ class Provider(ABC):
         """
         return None
 
+    def fetch_margin_flow(
+        self, symbol: str, start: str | None = None, end: str | None = None,
+    ) -> pd.DataFrame:
+        """个股融资融券日频时序。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex，列 margin_balance（融资余额，元）/ short_balance（融券余额，元）。
+            空 DataFrame 表示本源无数据。
+        """
+        return pd.DataFrame()
+
 
 __all__ = ["Provider", "ProviderError"]
