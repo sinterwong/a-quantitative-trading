@@ -48,14 +48,20 @@ class SectorRotationResponse:
 
 
 def run_sector_rotation(req: SectorRotationRequest,
-                        portfolio_svc: Optional[Any] = None) -> SectorRotationResponse:
+                        portfolio_svc: Optional[Any] = None,
+                        *,
+                        data_layer=None) -> SectorRotationResponse:
     """
     执行行业轮动信号生成。
 
-    portfolio_svc: 若传入,则 buy 信号会被记录到 signals 表(供 IntradayMonitor 复用)。
+    Args:
+        req: 输入参数。
+        portfolio_svc: 若传入,则 buy 信号会被记录到 signals 表
+            (供 IntradayMonitor 复用)。
+        data_layer: 可选——直接注入数据层(测试)。
+            为 None 时回退到 :func:`core.data_layer.get_data_layer`。
     """
     from core.strategies.sector_rotation import SectorRotationStrategy, DEFAULT_SECTOR_ETFS
-    from core.data_layer import get_data_layer
 
     strategy = SectorRotationStrategy(
         top_n=req.top_n,
@@ -64,7 +70,10 @@ def run_sector_rotation(req: SectorRotationRequest,
         momentum_method=req.momentum_method,
     )
 
-    dl = get_data_layer()
+    if data_layer is None:
+        from core.data_layer import get_data_layer
+        data_layer = get_data_layer()
+    dl = data_layer
     price_data: Dict[str, Any] = {}
     for sym in DEFAULT_SECTOR_ETFS:
         df = dl.get_bars(sym, days=max(req.lookback_days + 20, 90))

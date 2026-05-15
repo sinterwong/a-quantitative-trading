@@ -55,6 +55,10 @@ class AnalysisRequest:
     # 可选：调用方直接注入的 LLM provider；为 None 时走 core.llm_provider 服务定位器。
     # 不在 from_body() 中读取——只用于 in-process 调用 / 测试注入。
     llm_provider: Optional[Any] = field(default=None, repr=False, compare=False)
+    # 可选：注入 DataGateway / DataLayer，None 时走 get_gateway / get_data_layer。
+    # 用于测试或多源切换；同样不进 from_body。
+    gateway: Optional[Any] = field(default=None, repr=False, compare=False)
+    data_layer: Optional[Any] = field(default=None, repr=False, compare=False)
 
     @classmethod
     def from_body(cls, body: Dict[str, Any]) -> 'AnalysisRequest':
@@ -153,6 +157,26 @@ def normalize_hk_symbol(symbol: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 依赖解析辅助 — 优先用 req 注入的实例,回退到全局 singleton
+# ---------------------------------------------------------------------------
+
+def _resolve_gateway(req: 'AnalysisRequest'):
+    """req.gateway > get_gateway()。"""
+    if getattr(req, 'gateway', None) is not None:
+        return req.gateway
+    from core.data_gateway import get_gateway
+    return get_gateway()
+
+
+def _resolve_data_layer(req: 'AnalysisRequest'):
+    """req.data_layer > get_data_layer()。"""
+    if getattr(req, 'data_layer', None) is not None:
+        return req.data_layer
+    from core.data_layer import get_data_layer
+    return get_data_layer()
+
+
+# ---------------------------------------------------------------------------
 # 共享子分析 — 风险 / 趋势统计
 # ---------------------------------------------------------------------------
 
@@ -230,8 +254,7 @@ def analyze_a_share(req: AnalysisRequest) -> AnalysisReport:
     # 1) 行情数据
     df = None
     try:
-        from core.data_layer import get_data_layer
-        dl = get_data_layer()
+        dl = _resolve_data_layer(req)
         df = dl.get_bars(sym, days=max(req.lookback_days, 60))
         if df is None or df.empty:
             report.warnings.append('bars_unavailable')
@@ -315,8 +338,7 @@ def analyze_a_share(req: AnalysisRequest) -> AnalysisReport:
 
     # 3) 基本面（统一走 gateway，内部包含腾讯实时 PE/PB 补充）
     try:
-        from core.data_gateway import get_gateway
-        fund = get_gateway().fundamentals(sym)
+        fund = _resolve_gateway(req).fundamentals(sym)
         if fund and (fund.eps_ttm > 0 or fund.roe_ttm > 0 or fund.pe_ttm > 0):
             report.fundamentals = {
                 'pe_ttm': fund.pe_ttm or _safe_float(None),
@@ -418,8 +440,7 @@ def analyze_hk_share(req: AnalysisRequest) -> AnalysisReport:
     # 1) 港股实时快照（QuoteSourceManager 路由：腾讯主 → 新浪备）
     snap = None
     try:
-        from core.data_gateway import get_gateway
-        mgr = get_gateway()
+        mgr = _resolve_gateway(req)
         q = mgr.quote(sym)
         if q is not None and q.price > 0:
             snap = q
@@ -452,8 +473,10 @@ def analyze_hk_share(req: AnalysisRequest) -> AnalysisReport:
     # 2) 历史日K(data_gateway 自动路由 + failover)
     df = None
     try:
-        from core.data_gateway import get_gateway
-        df = get_gateway().kline(sym, interval="daily", days=max(req.lookback_days, 60), adjust='qfq')
+        df = _resolve_gateway(req).kline(
+            sym, interval="daily",
+            days=max(req.lookback_days, 60), adjust='qfq',
+        )
         if df is None or df.empty:
             report.warnings.append('hk_history_unavailable')
     except Exception as exc:
@@ -463,8 +486,7 @@ def analyze_hk_share(req: AnalysisRequest) -> AnalysisReport:
 
     # 3) 基本面（营收/净利/ROE/Akshare 港股财报）
     try:
-        from core.data_gateway import get_gateway
-        fund = get_gateway().fundamentals(sym)
+        fund = _resolve_gateway(req).fundamentals(sym)
 
         # 区分"有 YoY 增长数据"和"只有绝对值"两种情况
         has_yoy_data = (

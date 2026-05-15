@@ -74,16 +74,22 @@ _SUPPORTED_METHODS = {
 
 
 def _build_returns_matrix(
-    universe: List[str], days: int,
+    universe: List[str], days: int, gateway=None,
 ) -> Tuple[pd.DataFrame, List[dict]]:
     """从 DataGateway 拉每只 symbol 的日 K,组装收益率矩阵。
 
     返回 (returns_df, excluded) — excluded 中的每条记录形如
     ``{'symbol': '...', 'reason': '...'}``,让 caller 可以把降级原因
     透传到响应里(之前是 `except Exception: continue` 全静默)。
+
+    Args:
+        gateway: 可选注入的 DataGateway 实例;None 时走 ``get_gateway()``。
     """
-    from core.data_gateway import get_gateway, normalize_kline_index
-    gw = get_gateway()
+    from core.data_gateway import normalize_kline_index
+    if gateway is None:
+        from core.data_gateway import get_gateway
+        gateway = get_gateway()
+    gw = gateway
 
     series_dict: Dict[str, pd.Series] = {}
     excluded: List[dict] = []
@@ -111,8 +117,17 @@ def _build_returns_matrix(
     return pd.DataFrame(series_dict).dropna(), excluded
 
 
-def compose_portfolio(req: ComposePortfolioRequest) -> PortfolioAdvice:
+def compose_portfolio(
+    req: ComposePortfolioRequest,
+    *,
+    gateway=None,
+) -> PortfolioAdvice:
     """生成组合权重建议。
+
+    Args:
+        req: 输入参数。
+        gateway: 可选——注入 DataGateway(测试 / 多源场景)。
+            为 None 时使用全局 :func:`core.data_gateway.get_gateway`。
 
     Raises
     ------
@@ -138,7 +153,9 @@ def compose_portfolio(req: ComposePortfolioRequest) -> PortfolioAdvice:
                 code='DATA_UNAVAILABLE',
             )
     else:
-        returns, excluded = _build_returns_matrix(req.universe, req.history_days)
+        returns, excluded = _build_returns_matrix(
+            req.universe, req.history_days, gateway=gateway,
+        )
 
     from core.portfolio_optimizer import PortfolioOptimizer
 

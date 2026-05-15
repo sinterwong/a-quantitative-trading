@@ -43,16 +43,28 @@ class PairsTradingResponse:
         }
 
 
-def find_pairs_signals(req: PairsTradingRequest) -> PairsTradingResponse:
-    """筛选协整配对并返回当前 z-score 信号。"""
+def find_pairs_signals(
+    req: PairsTradingRequest,
+    *,
+    data_layer=None,
+) -> PairsTradingResponse:
+    """筛选协整配对并返回当前 z-score 信号。
+
+    Args:
+        req: 输入参数。
+        data_layer: 可选——直接注入数据层(测试 / 多源场景)。
+            为 None 时回退到 :func:`core.data_layer.get_data_layer`。
+    """
     if len(req.symbols) < 2:
         raise UseCaseError('至少提供 2 个标的用于配对筛选', 'INVALID_INPUT')
 
     import pandas as pd
     from core.strategies.pairs_trading import find_cointegrated_pairs, PairsTradingStrategy
-    from core.data_layer import get_data_layer
 
-    dl = get_data_layer()
+    if data_layer is None:
+        from core.data_layer import get_data_layer
+        data_layer = get_data_layer()
+    dl = data_layer
     price_dict = {}
     for sym in req.symbols:
         df = dl.get_bars(sym, days=req.screen_days + 30)
