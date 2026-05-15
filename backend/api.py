@@ -572,139 +572,24 @@ def list_all_params():
 
 @app.route('/analysis/run', methods=['POST'])
 def run_analysis():
-    """
-    POST /analysis/run — trigger daily analysis.
-
-    运行 DynamicStockSelector 选股 + 记录信号，并将完整结果持久化到
-    outputs/analysis/analysis_{date}.json，供 /analysis/health 和
-    DailyOpsReporter 读取。
-    """
-    # Import the dynamic selector to run analysis
-    try:
-        sys.path.insert(0, os.path.join(PROJ_DIR, 'scripts'))
-        from dynamic_selector import DynamicStockSelector
-
-        selector = DynamicStockSelector()
-        selector.fetch_market_news(20)
-        selector.calc_all_scores()
-        top_bks = selector.get_top_bk_sectors(5)
-        news = selector.get_news_summary(10)
-        stocks = selector.get_stock_with_context(5)
-        sources = {
-            'news': selector._last_news_source,
-            'sectors': selector._last_source,
-        }
-
-        # Record signals
-        svc = get_svc()
-        for bk, info in top_bks:
-            svc.record_signal(
-                bk, 'BUY', info.get('total', 0) / 100.0,
-                f"板块:{info.get('name','')} 涨幅:{info.get('change_pct',0):.2f}%"
-            )
-
-        result = {
-            'sources': sources,
-            'top_sectors': [
-                {'bk': bk, 'name': info.get('name'), 'total': info.get('total'),
-                 'change_pct': info.get('change_pct')}
-                for bk, info in top_bks
-            ],
-            'news_summary': news,
-            'selected_stocks': stocks,
-        }
-
-        # ── 持久化到 outputs/analysis/ ──────────────────────────────
-        try:
-            out_dir = os.path.join(BACKEND_DIR, 'outputs', 'analysis')
-            os.makedirs(out_dir, exist_ok=True)
-            today_str = datetime.now().strftime('%Y-%m-%d')
-            out_path = os.path.join(out_dir, f'analysis_{today_str}.json')
-            with open(out_path, 'w', encoding='utf-8') as f:
-                json.dump({
-                    'timestamp': datetime.now().isoformat(),
-                    **result,
-                }, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass  # 持久化失败不影响 API 响应
-
-        # ── 记录 daily_meta（供 StrategyHealthMonitor 读取）─────────
-        try:
-            summary = svc.get_portfolio_summary()
-            trades_today = svc.get_trades(limit=200)
-            today_str_iso = datetime.now().strftime('%Y-%m-%d')
-            n_trades = sum(1 for t in trades_today
-                          if str(t.get('timestamp', ''))[:10] == today_str_iso)
-            svc.record_daily_meta(
-                equity=float(summary.get('total_equity', 0) or 0),
-                cash=float(summary.get('cash', 0) or 0),
-                n_signals=len(top_bks),
-                n_trades=n_trades,
-            )
-        except Exception:
-            pass
-
-        return ok(**result)
-    except Exception as e:
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+    """POST /analysis/run — 触发每日分析 (use case: daily_analysis)。"""
+    from core.use_cases.daily_analysis import DailyAnalysisRequest, run_daily_analysis
+    response = run_daily_analysis(
+        DailyAnalysisRequest(output_dir=os.path.join(BACKEND_DIR, 'outputs', 'analysis')),
+        portfolio_svc=get_svc(),
+    )
+    return ok(**response.to_dict())
 
 
 @app.route('/analysis/health', methods=['GET'])
 def analysis_health():
-    """GET /analysis/health — 系统健康状态汇总。
-
-    综合持仓、最近分析、信号等数据，返回 OK / WARN / CRITICAL 健康等级。
-    """
-    try:
-        svc = get_svc()
-        summary = svc.get_portfolio_summary()
-        positions = svc.get_positions()
-        n_positions = len(positions)
-        total_pnl = sum(float(p.get('unrealized_pnl', 0) or 0) for p in positions)
-        cash = float(summary.get('cash', 0) or 0)
-        equity = float(summary.get('total_equity', 0) or 0)
-
-        # 简单健康规则
-        level = 'OK'
-        reasons = []
-
-        # 1. 现金占比过低 → WARN
-        if equity > 0 and cash / equity < 0.05:
-            level = 'WARN'
-            reasons.append(f'现金占比仅 {cash/equity*100:.1f}%，低于 5%')
-
-        # 2. 未实现亏损超过总权益 5% → WARN
-        if equity > 0 and total_pnl < -0.05 * equity:
-            level = 'WARN'
-            reasons.append(f'未实现亏损 {total_pnl:.0f} 超过总权益 5%')
-
-        # 3. 未实现亏损超过总权益 10% → CRITICAL
-        if equity > 0 and total_pnl < -0.10 * equity:
-            level = 'CRITICAL'
-            reasons.append(f'未实现亏损 {total_pnl:.0f} 超过总权益 10%')
-
-        # 4. 最近分析时间检查
-        latest_analysis = None
-        try:
-            analysis_dir = os.path.join(BACKEND_DIR, 'outputs', 'analysis')
-            if os.path.isdir(analysis_dir):
-                files = sorted(os.listdir(analysis_dir), reverse=True)
-                if files:
-                    latest_analysis = files[0]
-        except Exception:
-            pass
-
-        return ok(
-            level=level,
-            reasons=reasons,
-            n_positions=n_positions,
-            total_unrealized_pnl=round(total_pnl, 2),
-            cash=round(cash, 2),
-            equity=round(equity, 2),
-            latest_analysis=latest_analysis,
-        )
-    except Exception as e:
-        return err(str(e), 500)
+    """GET /analysis/health — 系统健康状态 (use case: system_health)。"""
+    from core.use_cases.system_health import compute_system_health
+    report = compute_system_health(
+        get_svc(),
+        analysis_dir=os.path.join(BACKEND_DIR, 'outputs', 'analysis'),
+    )
+    return ok(**report.to_dict())
 
 
 @app.route('/analysis/status', methods=['GET'])
@@ -757,53 +642,23 @@ def sector_rotation_signal():
           "avg_turnover_pct": 0.33
         }
     """
+    from core.use_cases.sector_rotation_signal import (
+        SectorRotationRequest, run_sector_rotation,
+    )
+    from core.use_cases import UseCaseError
+    body = request.get_json(silent=True) or {}
+    req = SectorRotationRequest(
+        top_n=int(body.get('top_n', 3)),
+        lookback_days=int(body.get('lookback_days', 60)),
+        rebalance_days=int(body.get('rebalance_days', 21)),
+        momentum_method=str(body.get('momentum_method', 'return')),
+        current_holdings=list(body.get('current_holdings', [])),
+    )
     try:
-        body = request.get_json(silent=True) or {}
-        top_n            = int(body.get('top_n', 3))
-        lookback_days    = int(body.get('lookback_days', 60))
-        rebalance_days   = int(body.get('rebalance_days', 21))
-        momentum_method  = str(body.get('momentum_method', 'return'))
-        current_holdings = list(body.get('current_holdings', []))
-
-        from core.strategies.sector_rotation import SectorRotationStrategy, DEFAULT_SECTOR_ETFS
-        from core.data_layer import get_data_layer
-
-        strategy = SectorRotationStrategy(
-            top_n=top_n,
-            lookback_days=lookback_days,
-            rebalance_days=rebalance_days,
-            momentum_method=momentum_method,
-        )
-
-        dl = get_data_layer()
-        price_data = {}
-        for sym in DEFAULT_SECTOR_ETFS:
-            df = dl.get_bars(sym, days=max(lookback_days + 20, 90))
-            if df is not None and not df.empty:
-                price_data[sym] = df
-
-        if not price_data:
-            return err('无法获取行业 ETF 行情数据', 503)
-
-        signal = strategy.latest_signal(price_data, current_holdings=current_holdings)
-
-        # 记录到 signals 表（SECTOR_FLOW 类型告警）
-        svc = get_svc()
-        for sym in signal.buy:
-            svc.record_signal(sym, 'BUY', signal.scores.get(sym, 0),
-                              f'行业轮动买入: 动量分 {signal.scores.get(sym, 0):.4f}')
-
-        return ok(
-            rebalance_date=signal.rebalance_date,
-            buy=signal.buy,
-            sell=signal.sell,
-            hold=signal.hold,
-            scores=signal.scores,
-            top_n=signal.top_n,
-            universe_size=len(price_data),
-        )
-    except Exception as e:
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+        response = run_sector_rotation(req, portfolio_svc=get_svc())
+    except UseCaseError as exc:
+        return err(exc.message, 503 if exc.code == 'DATA_UNAVAILABLE' else 422)
+    return ok(**response.to_dict())
 
 
 # ============================================================
@@ -839,64 +694,25 @@ def pairs_trading_signal():
           "n_pairs_found": 1
         }
     """
+    from core.use_cases.pairs_trading_signal import (
+        PairsTradingRequest, find_pairs_signals,
+    )
+    from core.use_cases import UseCaseError
+    body = request.get_json(silent=True) or {}
+    req = PairsTradingRequest(
+        symbols=list(body.get('symbols', [])),
+        entry_z=float(body.get('entry_z', 2.0)),
+        exit_z=float(body.get('exit_z', 0.5)),
+        stop_z=float(body.get('stop_z', 4.0)),
+        lookback_days=int(body.get('lookback_days', 60)),
+        screen_days=int(body.get('screen_days', 252)),
+    )
     try:
-        body = request.get_json(silent=True) or {}
-        symbols      = list(body.get('symbols', []))
-        entry_z      = float(body.get('entry_z', 2.0))
-        exit_z       = float(body.get('exit_z',  0.5))
-        stop_z       = float(body.get('stop_z',  4.0))
-        lookback_days= int(body.get('lookback_days', 60))
-        screen_days  = int(body.get('screen_days', 252))
-
-        if len(symbols) < 2:
-            return err('至少提供 2 个标的用于配对筛选', 400)
-
-        from core.strategies.pairs_trading import find_cointegrated_pairs, PairsTradingStrategy
-        from core.data_layer import get_data_layer
-
-        dl = get_data_layer()
-        # 加载价格矩阵（close 列）
-        price_dict = {}
-        for sym in symbols:
-            df = dl.get_bars(sym, days=screen_days + 30)
-            if df is not None and not df.empty and 'close' in df.columns:
-                price_dict[sym] = df['close']
-
-        if len(price_dict) < 2:
-            return err('有效行情数据不足 2 个标的', 503)
-
-        price_df = pd.DataFrame(price_dict).dropna()
-
-        # 筛选协整配对
-        pairs = find_cointegrated_pairs(price_df, lookback_days=screen_days)
-
-        results = []
-        for sym_a, sym_b in pairs[:5]:   # 最多返回 5 对
-            try:
-                strat = PairsTradingStrategy(
-                    symbol_a=sym_a, symbol_b=sym_b,
-                    entry_z=entry_z, exit_z=exit_z, stop_z=stop_z,
-                    lookback_days=lookback_days,
-                )
-                signal = strat.latest_signal(price_df)
-                if signal:
-                    results.append({
-                        'symbol_a': sym_a,
-                        'symbol_b': sym_b,
-                        'signal': {
-                            'date':          signal.date,
-                            'spread_zscore': round(signal.spread_zscore, 4),
-                            'action_a':      signal.action_a,
-                            'action_b':      signal.action_b,
-                            'spread':        round(signal.spread, 6),
-                        }
-                    })
-            except Exception:
-                continue
-
-        return ok(pairs=results, n_pairs_found=len(pairs))
-    except Exception as e:
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+        response = find_pairs_signals(req)
+    except UseCaseError as exc:
+        code = 503 if exc.code == 'DATA_UNAVAILABLE' else 400
+        return err(exc.message, code)
+    return ok(**response.to_dict())
 
 
 # ============================================================
@@ -931,28 +747,19 @@ def analyze_a_stock_endpoint():
       与 services.single_stock_analysis.AnalysisReport 的 to_dict() 一致，
       详见模块 docstring。失败字段以 warnings + 字段为 None 表达。
     """
+    from services.single_stock_analysis import (
+        AnalysisRequest, analyze_a_share, detect_market,
+    )
     try:
-        from services.single_stock_analysis import (
-            AnalysisRequest, analyze_a_share, detect_market,
+        req = AnalysisRequest.from_body(request.get_json(silent=True) or {})
+    except ValueError as exc:
+        return err(str(exc), 422)
+    if detect_market(req.symbol) != 'A':
+        return err(
+            f'symbol {req.symbol!r} 不是 A 股代码（应为 NNNNNN.SH/SZ）；港股请用 /analysis/stock/hk',
+            422,
         )
-        body = request.get_json(silent=True) or {}
-        try:
-            req = AnalysisRequest.from_body(body)
-        except ValueError as exc:
-            return err(str(exc), 422)
-
-        market = detect_market(req.symbol)
-        if market != 'A':
-            return err(
-                f'symbol {req.symbol!r} 不是 A 股代码（应为 NNNNNN.SH/SZ）；'
-                f'港股请用 /analysis/stock/hk',
-                422,
-            )
-
-        report = analyze_a_share(req)
-        return ok(**report.to_dict())
-    except Exception as e:
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+    return ok(**analyze_a_share(req).to_dict())
 
 
 @app.route('/analysis/stock/hk', methods=['POST'])
@@ -979,28 +786,19 @@ def analyze_hk_stock_endpoint():
     Returns:
       AnalysisReport.to_dict() 结构，market='HK'，缺失能力以 warnings 列出。
     """
+    from services.single_stock_analysis import (
+        AnalysisRequest, analyze_hk_share, detect_market,
+    )
     try:
-        from services.single_stock_analysis import (
-            AnalysisRequest, analyze_hk_share, detect_market,
+        req = AnalysisRequest.from_body(request.get_json(silent=True) or {})
+    except ValueError as exc:
+        return err(str(exc), 422)
+    if detect_market(req.symbol) != 'HK':
+        return err(
+            f'symbol {req.symbol!r} 不是港股代码（应为 HK:NNNNN / NNNNN.HK / hkNNNNN）；A 股请用 /analysis/stock/a',
+            422,
         )
-        body = request.get_json(silent=True) or {}
-        try:
-            req = AnalysisRequest.from_body(body)
-        except ValueError as exc:
-            return err(str(exc), 422)
-
-        market = detect_market(req.symbol)
-        if market != 'HK':
-            return err(
-                f'symbol {req.symbol!r} 不是港股代码（应为 HK:NNNNN / NNNNN.HK / hkNNNNN）；'
-                f'A 股请用 /analysis/stock/a',
-                422,
-            )
-
-        report = analyze_hk_share(req)
-        return ok(**report.to_dict())
-    except Exception as e:
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+    return ok(**analyze_hk_share(req).to_dict())
 
 
 # ============================================================
@@ -1050,29 +848,23 @@ def sector_compare():
         "warnings": []
       }
     """
+    from services.sector_comparison import compare_sector, compare_symbols
+    body = request.get_json(silent=True) or {}
+    sector = body.get('sector')
+    symbols = body.get('symbols')
+    sector_name = body.get('sector_name', sector or '自定义')
+    base_symbol = body.get('base_symbol')
+
     try:
-        from services.sector_comparison import compare_sector, compare_symbols
-        body = request.get_json(silent=True) or {}
-
-        sector = body.get('sector')
-        symbols = body.get('symbols')
-        sector_name = body.get('sector_name', sector or '自定义')
-        base_symbol = body.get('base_symbol')
-
         if symbols:
-            # 自定义模式
             result = compare_symbols(symbols, sector_name, base_symbol)
         elif sector:
-            # 行业模式
             result = compare_sector(sector, base_symbol)
         else:
             return err('body 必须包含 sector 或 symbols 字段', 422)
-
-        return ok(**result.to_dict())
     except ValueError as exc:
         return err(str(exc), 422)
-    except Exception as e:
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+    return ok(**result.to_dict())
 
 
 # ============================================================
