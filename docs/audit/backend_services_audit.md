@@ -32,7 +32,7 @@
 | `base_fetcher.py` | 332 | 0 | — | KEEP_AS_IS | 抽象基类 |
 | `fetcher_manager.py` | 266 | 0 | — | KEEP_AS_IS | 管理 `fetchers/` 实现 |
 | `walkforward_persistence.py` | 192 | 0 | — | KEEP_AS_IS | WF 结果持久化 |
-| `circuit_breaker.py` | 168 | — | — | **DEPRECATE** | 与 `core/circuit_breaker.py` 重复 |
+| `circuit_breaker.py` | 168 | — | — | KEEP_AS_IS(暂) | 被 `fetcher_manager.py` 内部使用,等 fetchers/ 合并到 data_gateway/ 时一并迁移 |
 | `alert_history.py` | 165 | 0 | — | KEEP_AS_IS | 告警历史 |
 | `watchlist.py` | 150 | 0 | — | KEEP_AS_IS | watchlist 持久化 |
 | `strategy_loader.py` | 116 | 0 | — | KEEP_AS_IS | 加载根目录 `strategies/` |
@@ -58,7 +58,7 @@
 | SHRINK | 8 (含 3 个超大文件) | ~40% |
 | SPLIT | 1 (intraday_monitor) | ~5% |
 | MERGE | 2 (data_cache → gateway,fetchers → providers) | ~10% |
-| DEPRECATE | 1 (circuit_breaker 重复) | ~5% |
+| DEPRECATE | 0 (经验证 circuit_breaker 仍被 fetcher_manager 使用) | 0% |
 
 ---
 
@@ -85,7 +85,7 @@
 
 ### 3. 两处重复实现
 
-- `backend/services/circuit_breaker.py`(168 行)vs `core/circuit_breaker.py`
+- `backend/services/circuit_breaker.py`(168 行)vs `core/circuit_breaker.py` — 被 fetcher_manager 内部使用,与 fetchers/ 子目录一起迁移
 - `backend/services/data_cache.py`(358 行)vs `core/data_gateway/cache.py`
 - `backend/services/fetchers/*`(4 文件)vs `core/data_gateway/providers/*`
 
@@ -93,8 +93,12 @@
 
 ## 第一批可立即处理项(本次 P1-4)
 
-无 0 风险删除项。`circuit_breaker.py` 看似可删,但需要先确认 backend 内部
-没有 import 它(待 P1-4 验证)。
+**结论:无 0 风险删除项**。
+
+经 grep 验证:
+- `backend/services/circuit_breaker.py` 被 `fetcher_manager.py` 通过相对导入
+  (`from .circuit_breaker import CircuitBreaker`)使用,**不能立即删**。
+  待 fetchers/ 子目录合并到 `core/data_gateway/providers/` 时一并迁移。
 
 ---
 
