@@ -4,7 +4,7 @@ EastmoneyProvider 单元测试 — 板块排名 / 成分股 / 北向资金。
 """
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -36,16 +36,17 @@ def test_capabilities():
 
 
 def test_fetch_sectors_parses_jsonp():
+    # fetch_sectors 优先走 _request_em（subprocess curl），直接 mock 该方法返回解析后的 dict
     payload = {"data": {"diff": [
         {"f12": "BK0716", "f14": "华为汽车", "f3": 3.45,
          "f62": 1.5e8, "f20": 2.3e10},
         {"f12": "BK0801", "f14": "白酒", "f3": 1.20,
          "f62": -5.0e7, "f20": 1.0e10},
     ]}}
-    http = MagicMock()
-    http.get_text.return_value = _wrap_jsonp(payload)
-    p = EastmoneyProvider(http=http)
-    out = p.fetch_sectors(limit=10)
+    from unittest.mock import patch
+    p = EastmoneyProvider()
+    with patch.object(p, "_request_em", return_value=payload):
+        out = p.fetch_sectors(limit=10)
     assert len(out) == 2
     assert out[0].code == "EM_BK0716"
     assert out[0].name == "华为汽车"
@@ -57,18 +58,19 @@ def test_fetch_sectors_parses_jsonp():
 
 
 def test_fetch_sectors_empty_data():
-    http = MagicMock()
-    http.get_text.return_value = _wrap_jsonp({"data": None})
-    p = EastmoneyProvider(http=http)
-    assert p.fetch_sectors() == []
+    # EastmoneyProvider.fetch_sectors 在数据为空时 raise ProviderError
+    p = EastmoneyProvider()
+    with patch.object(p, "_request_em", return_value=None):
+        with pytest.raises(ProviderError):
+            p.fetch_sectors()
 
 
 def test_fetch_sectors_http_error_wraps():
-    http = MagicMock()
-    http.get_text.side_effect = HttpError("conn reset")
-    p = EastmoneyProvider(http=http)
-    with pytest.raises(ProviderError):
-        p.fetch_sectors()
+    # EastmoneyProvider.fetch_sectors 将 curl 错误透传为 ProviderError
+    p = EastmoneyProvider()
+    with patch.object(p, "_request_em", side_effect=ProviderError("conn reset")):
+        with pytest.raises(ProviderError):
+            p.fetch_sectors()
 
 
 def test_fetch_sectors_limit_applied():
@@ -76,10 +78,9 @@ def test_fetch_sectors_limit_applied():
         {"f12": f"BK{i:04d}", "f14": f"sec{i}", "f3": 1.0, "f62": 1.0, "f20": 1.0}
         for i in range(20)
     ]}}
-    http = MagicMock()
-    http.get_text.return_value = _wrap_jsonp(payload)
-    p = EastmoneyProvider(http=http)
-    out = p.fetch_sectors(limit=5)
+    p = EastmoneyProvider()
+    with patch.object(p, "_request_em", return_value=payload):
+        out = p.fetch_sectors(limit=5)
     assert len(out) == 5
 
 

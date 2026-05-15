@@ -165,6 +165,23 @@ class EastmoneyProvider(Provider):
             return False
         return super().supports(capability, market)
 
+    def _request(self, fs_param: str) -> Optional[dict]:
+        """基于 http client 的请求（供 fetch_sector_constituents 等方法使用）。"""
+        params = {
+            "cb": "jQuery",
+            "pn": 1, "pz": 200, "po": 1, "np": 1,
+            "ut": "b", "fltt": 2, "invt": 2, "fid": "f3",
+            "fs": fs_param,
+            "fields": _FIELDS,
+        }
+        try:
+            text = self._http.get_text(_BASE_URL, params=params, headers=_HEADERS)
+            return json.loads(parse_jsonp(text))
+        except HttpError as exc:
+            raise ProviderError(f"eastmoney.request({fs_param}): {exc}") from exc
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise ProviderError(f"eastmoney.request({fs_param}): JSON 解析失败: {exc}") from exc
+
     def _request_em(self, fs_param: str) -> Optional[dict]:
         import subprocess, shlex
 
@@ -207,74 +224,32 @@ class EastmoneyProvider(Provider):
     # ── SECTOR_RANKING ───────────────────────────────────────────────────────
 
     def fetch_sectors(self, limit: int = 100) -> List[SectorRanking]:
-        # 优先用东方财富（via curl）；失败则用 akshare 兜底
-        try:
-            raw = self._request_em("m:90+t:2+f:!50")
-        except ProviderError:
-            raw = None
+        raw = self._request_em("m:90+t:2+f:!50")
+        if not raw or not isinstance(raw, dict):
+            raise ProviderError("eastmoney.fetch_sectors: 无数据返回")
 
-        if raw and isinstance(raw, dict):
-            records = ((raw.get("data") or {}).get("diff") or [])
-            if isinstance(records, list) and records:
-                sectors: List[SectorRanking] = []
-                for i, rec in enumerate(records, 1):
-                    code = str(rec.get("f12", ""))
-                    name = str(rec.get("f14", ""))
-                    if not code or not name:
-                        continue
-                    sectors.append(SectorRanking(
-                        code=f"EM_{code}",
-                        name=name,
-                        change_pct=_safe_float(rec.get("f3")),
-                        net_flow=_parse_amount(rec.get("f62")),
-                        amount=_parse_amount(rec.get("f20")),
-                        rank_perf=i,
-                        rank_flow=0,
-                    ))
-                for rank, sec in enumerate(sorted(sectors, key=lambda s: s.net_flow, reverse=True), 1):
-                    sec.rank_flow = rank
-                return sectors[:limit]
+        records = ((raw.get("data") or {}).get("diff") or [])
+        if not isinstance(records, list) or not records:
+            raise ProviderError("eastmoney.fetch_sectors: diff 字段为空")
 
-        # 新浪行业板块兜底（东方财富不通时）
-        try:
-            import subprocess
-            r = subprocess.run(
-                ["sh", "-c",
-                 "/usr/bin/curl -s --connect-timeout 10 "
-                 "\"https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php\" "
-                 "-H \"Referer: https://finance.sina.com.cn/\" "
-                 "| iconv -f GBK -t UTF-8"],
-                capture_output=True, text=True, timeout=20,
-            )
-            if r.returncode == 0 and r.stdout:
-                import re, json
-                m = re.search(r"S_Finance_bankuai_sinaindustry\s*=\s*(\{.*\})",
-                              r.stdout, re.DOTALL)
-                if m:
-                    data = json.loads(m.group(1))
-                    result: List[SectorRanking] = []
-                    for i, (code, vals) in enumerate(data.items(), 1):
-                        parts = vals.split(",")
-                        if len(parts) < 6:
-                            continue
-                        name = parts[1].strip()
-                        if not name:
-                            continue
-                        change_pct = float(parts[5]) if parts[5] else 0.0
-                        result.append(SectorRanking(
-                            code=f"SINA_{code}",
-                            name=name,
-                            change_pct=change_pct,
-                            net_flow=0.0,
-                            amount=0.0,
-                            rank_perf=i,
-                            rank_flow=0,
-                        ))
-                    if result:
-                        return result[:limit]
-        except Exception:
-            pass
-        return []
+        sectors: List[SectorRanking] = []
+        for i, rec in enumerate(records, 1):
+            code = str(rec.get("f12", ""))
+            name = str(rec.get("f14", ""))
+            if not code or not name:
+                continue
+            sectors.append(SectorRanking(
+                code=f"EM_{code}",
+                name=name,
+                change_pct=_safe_float(rec.get("f3")),
+                net_flow=_parse_amount(rec.get("f62")),
+                amount=_parse_amount(rec.get("f20")),
+                rank_perf=i,
+                rank_flow=0,
+            ))
+        for rank, sec in enumerate(sorted(sectors, key=lambda s: s.net_flow, reverse=True), 1):
+            sec.rank_flow = rank
+        return sectors[:limit]
 
     # ── SECTOR_CONSTITUENTS ──────────────────────────────────────────────────
 

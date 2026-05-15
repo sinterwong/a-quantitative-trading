@@ -27,13 +27,14 @@ import pandas as pd
 
 from ..capabilities import Capability, Market, ProviderCapability
 from ..http import HttpClient, HttpError, get_http_client
-from ..schemas import MarketIndexSnapshot, Quote
+from ..schemas import MarketIndexSnapshot, Quote, SectorRanking
 from ..symbols import detect_market, normalize_to_sina, safe_float
 from .base import Provider, ProviderError
 
 logger = logging.getLogger("data_gateway.sina")
 
 _QUOTE_URL = "https://hq.sinajs.cn/list="
+_SINA_SECTORS_URL = "https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php"
 _KLINE_URL = (
     "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php"
     "/CN_MarketData.getKLineData"
@@ -153,6 +154,7 @@ class SinaProvider(Provider):
                 Capability.KLINE_DAILY,
                 Capability.KLINE_MINUTE,
                 Capability.MARKET_INDEX,   # 新浪 hq.sinajs.cn/list=s_sh000001 指数接口
+                Capability.SECTOR_RANKING,  # 新浪行业板块（东方财富断连时备用）
             }),
             markets=frozenset({Market.A, Market.INDEX, Market.HK}),
             priority_hint=0.80,
@@ -354,6 +356,58 @@ class SinaProvider(Provider):
         df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
         df = df.dropna(subset=[time_col]).sort_values(time_col).reset_index(drop=True)
         return df
+
+    # ── SECTOR_RANKING ───────────────────────────────────────────────────────
+
+    def fetch_sectors(self, limit: int = 100) -> List[SectorRanking]:
+        """新浪行业板块（newSinaHy.php），无资金流数据。
+
+        东方财富断连时的备用数据源，数据质量低于东方财富：
+        - 有板块名称、涨跌幅
+        - 无 net_flow / amount
+        - rank_flow 不可信（基于 change_pct 而非资金流）
+        """
+        import re
+        try:
+            text = self._http.get_text(
+                _SINA_SECTORS_URL,
+                headers={"Referer": "https://finance.sina.com.cn/"},
+                encoding="gbk",
+            )
+        except HttpError as exc:
+            raise ProviderError(f"sina.fetch_sectors: {exc}") from exc
+
+        m = re.search(
+            r"S_Finance_bankuai_sinaindustry\s*=\s*(\{.*\})",
+            text, re.DOTALL,
+        )
+        if not m:
+            return []
+
+        try:
+            data = json.loads(m.group(1))
+        except json.JSONDecodeError as exc:
+            raise ProviderError(f"sina.fetch_sectors: JSON 解析失败: {exc}") from exc
+
+        result: List[SectorRanking] = []
+        for i, (code, vals) in enumerate(data.items(), 1):
+            parts = vals.split(",")
+            if len(parts) < 6:
+                continue
+            name = parts[1].strip()
+            if not name:
+                continue
+            change_pct = float(parts[5]) if parts[5] else 0.0
+            result.append(SectorRanking(
+                code=f"SINA_{code}",
+                name=name,
+                change_pct=change_pct,
+                net_flow=0.0,
+                amount=0.0,
+                rank_perf=i,
+                rank_flow=0,
+            ))
+        return result[:limit]
 
 
 __all__ = ["SinaProvider"]
