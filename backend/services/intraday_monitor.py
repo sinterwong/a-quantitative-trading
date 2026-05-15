@@ -708,6 +708,9 @@ class IntradayMonitor:
             return
 
         from services.signals import confirm_signal_minute, fetch_realtime
+        from core.use_cases.intraday_signals import (
+            IntradaySignalRequest, generate_intraday_signals,
+        )
         watched = self._get_watched_symbols()
         if not watched:
             return
@@ -728,20 +731,22 @@ class IntradayMonitor:
             )
             return
 
-        for sym in watched:
+        threshold = getattr(self._strategy_runner.config, 'signal_threshold', 0.5)
+
+        # P2-3: 信号筛选下沉到 use case 层(纯逻辑,易测)
+        sig_resp = generate_intraday_signals(IntradaySignalRequest(
+            watched_symbols=list(watched),
+            pipeline_scores=pipeline_scores,
+            threshold=threshold,
+        ))
+
+        for cand in sig_resp.candidates:
+            sym = cand.symbol
+            score = cand.score
             # 冷却：每天每个标的只尝试一次（用 new_ 前缀区分）
             if not self._cooldown.can_fire(f'new_{sym}'):
                 continue
             try:
-                score = pipeline_scores.get(sym)
-                if score is None or score <= 0:
-                    continue
-
-                # ── FactorPipeline 信号 ──────────────────────────
-                threshold = getattr(self._strategy_runner.config, 'signal_threshold', 0.5)
-                if score <= threshold:
-                    continue
-
                 # 获取实时价格
                 try:
                     rt = fetch_realtime(sym)
@@ -751,7 +756,7 @@ class IntradayMonitor:
                 if price <= 0:
                     continue
 
-                signal_reason = f'Pipeline score={score:.3f} > threshold={threshold:.3f}'
+                signal_reason = cand.reason
                 logger.info('Pipeline %s score=%.3f > threshold=%.3f', sym, score, threshold)
 
                 # ── 公共安全层 ────────────────────────────────
