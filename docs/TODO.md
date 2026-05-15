@@ -22,18 +22,18 @@
 ## Phase 1 — 命名清晰化 + 死代码清理(P0,~1 周)
 
 ### P1-1 产品定位 + 模块地图写入仓库
-- [ ] `README.md` 顶部增加"定位 / 范围 / 不做什么"段落
-- [ ] 新建 `docs/ARCHITECTURE_TARGET.md`:目标 8 层架构图 + 3 个垂直切片图(为对照基准)
-- [ ] 旧的 `docs/ARCHITECTURE.md` 重命名为 `ARCHITECTURE_CURRENT.md`(诚实记录当下,不删)
+- [x] `README.md` 顶部增加"定位 / 范围 / 不做什么"段落
+- [x] 新建 `docs/ARCHITECTURE_TARGET.md`:目标 8 层架构图 + 3 个垂直切片图(为对照基准)
+- [x] 旧的 `docs/ARCHITECTURE.md` 重命名为 `ARCHITECTURE_CURRENT.md`(诚实记录当下,不删)
 - **验收**:任何新成员读完两份文档能说出"这是个什么系统"
 - **commit**:`docs: 明确产品定位与目标架构基线`
 
 ### P1-2 审计 `scripts/quant/` 30+ 文件
-- [ ] 新建 `docs/audit/scripts_quant_audit.md`,逐文件标注:
+- [x] 新建 `docs/audit/scripts_quant_audit.md`,逐文件标注:
   - 是否被外部脚本/backend 引用(`git grep`)
   - 是否被 `core/` 等价实现替代
   - 处置建议:KEEP / DELETE / MERGE_INTO_CORE / DEPRECATE
-- [ ] 重点验证以下高度疑似重复的文件:
+- [x] 重点验证以下高度疑似重复的文件:
   - `data_loader.py / data_provider.py`(已标 backtest-only,确认范围)
   - `regime_detector.py`(对照 `core/regime.py`)
   - `selection_pool.py / strategy_ensemble.py`(对照 `core/strategies/`)
@@ -43,8 +43,8 @@
 - **commit**:`docs(audit): scripts/quant 30 个文件去留盘点`
 
 ### P1-3 审计 `backend/services/` 17 个文件
-- [ ] 新建 `docs/audit/backend_services_audit.md`,逐文件标注职责 + 越权点
-- [ ] 重点关注:
+- [x] 新建 `docs/audit/backend_services_audit.md`,逐文件标注职责 + 越权点
+- [x] 重点关注:
   - `intraday_monitor.py` 1831 行 → 拆分预案
   - `signals.py` 999 行 → 与 `core/factor_pipeline.py` 关系
   - `single_stock_analysis.py` 865 行 → 提为 use case 的最佳样板
@@ -54,15 +54,15 @@
 
 ### P1-4 第一批确认死代码删除
 > 仅删除 P1-2/P1-3 中明确标注 `DELETE` 且无引用的文件;每批 ≤5 个文件,分批 commit
-- [ ] 删除批次 A:孤立无引用文件
-- [ ] 删除批次 B:被 `core/` 替代的副本
-- [ ] 每批跑全量 `pytest tests/ -q` 确认不回退
+- [x] 删除批次 A:孤立无引用文件
+- [x] 删除批次 B:被 `core/` 替代的副本
+- [x] 每批跑全量 `pytest tests/ -q` 确认不回退
 - **commit**(分批):`chore: 删除已审计的孤立/重复文件 (批次 N)`
 
 ### P1-5 虚拟券商定位明确化
-- [ ] `core/brokers/`:确认仅 `SimulatedBroker` 为 supported,其它(Futu 等)标 deprecated
-- [ ] `config/trading.yaml.example`:默认 broker=simulated
-- [ ] 文档说明"本系统不接入真实券商,只跑虚拟盘"
+- [x] `core/brokers/`:确认仅 `SimulatedBroker` 为 supported,其它(Futu 等)标 deprecated
+- [x] `config/trading.yaml.example`:默认 broker=simulated
+- [x] 文档说明"本系统不接入真实券商,只跑虚拟盘"
 - **commit**:`feat(broker): 明确虚拟券商定位,标 Futu 等为 deprecated`
 
 ---
@@ -70,42 +70,42 @@
 ## Phase 2 — Use Case 层 + Backend 瘦身(P0,~3 周)
 
 ### P2-1 建立 use case 层骨架
-- [ ] 新建 `core/use_cases/` 包
-- [ ] 定义 `BaseUseCase`(可选)+ 通用约定(输入/输出 dataclass,异常)
-- [ ] 增加 `tests/test_use_cases/__init__.py`
+- [x] 新建 `core/use_cases/` 包
+- [x] 定义 `BaseUseCase`(可选)+ 通用约定(输入/输出 dataclass,异常)
+- [x] 增加 `tests/test_use_cases/__init__.py`
 - **commit**:`feat(use_cases): 建立 use case 层骨架`
 
 ### P2-2 use case 1:`analyze_stock`
-- [ ] 把 `backend/services/single_stock_analysis.py` 的 `analyze_a_share / analyze_hk_share` 搬入 `core/use_cases/analyze_stock.py`
-- [ ] `AnalysisRequest / AnalysisReport` dataclass 也移动
-- [ ] `backend/services/single_stock_analysis.py` 退化为 ≤30 行的 wrapper(import 转发)
-- [ ] `backend/api.py:analyze_a_stock_endpoint` 改为薄壳调用
-- [ ] 现有测试不回退
+- [x] 把 `backend/services/single_stock_analysis.py` 的 `analyze_a_share / analyze_hk_share` 搬入 `core/use_cases/analyze_stock.py`
+- [x] `AnalysisRequest / AnalysisReport` dataclass 也移动
+- [x] `backend/services/single_stock_analysis.py` 退化为 ≤30 行的 wrapper(import 转发)
+- [x] `backend/api.py:analyze_a_stock_endpoint` 改为薄壳调用
+- [x] 现有测试不回退
 - **commit**:`refactor(use_case): 抽出 analyze_stock 用例,backend 退化为壳`
 
 ### P2-3 use case 2:`generate_intraday_signals`
-- [ ] 从 `backend/services/intraday_monitor.py` 抽出"信号生成"逻辑到 `core/use_cases/intraday_signals.py`
-- [ ] 输入:`Watchlist + RegimeInfo + PriceSnapshot`,输出:`List[Signal]`
-- [ ] intraday_monitor.py 改为编排:取数据 → 调 use case → 执行 + 告警
-- [ ] 单元测试覆盖 use case
+- [x] 从 `backend/services/intraday_monitor.py` 抽出"信号生成"逻辑到 `core/use_cases/intraday_signals.py`
+- [x] 输入:`Watchlist + RegimeInfo + PriceSnapshot`,输出:`List[Signal]`
+- [x] intraday_monitor.py 改为编排:取数据 → 调 use case → 执行 + 告警
+- [x] 单元测试覆盖 use case
 - **commit**:`refactor(use_case): 抽出 intraday_signals,IntradayMonitor 瘦身 step1`
 
 ### P2-4 use case 3:`run_morning_workflow`
-- [ ] `scripts/morning_runner.py` 业务逻辑搬入 `core/use_cases/morning_workflow.py`
-- [ ] morning_runner.py 退化为 ≤50 行的 CLI 入口
-- [ ] use case 输出 `MorningReport` dataclass
+- [x] `scripts/morning_runner.py` 业务逻辑搬入 `core/use_cases/morning_workflow.py`
+- [x] morning_runner.py 退化为 ≤50 行的 CLI 入口
+- [x] use case 输出 `MorningReport` dataclass
 - **commit**:`refactor(use_case): 抽出 morning_workflow,morning_runner.py 退化为 CLI 壳`
 
 ### P2-5 use case 4:`backtest`
-- [ ] 整合 `core/backtest_engine.py` + `scripts/quant/backtest.py` 等的入口
-- [ ] `core/use_cases/backtest.py` 提供统一 `run_backtest(BacktestRequest) → BacktestResult`
-- [ ] CLI 入口保留在 `scripts/quant/backtest_cli.py` 但只调 use case
+- [x] 整合 `core/backtest_engine.py` + `scripts/quant/backtest.py` 等的入口
+- [x] `core/use_cases/backtest.py` 提供统一 `run_backtest(BacktestRequest) → BacktestResult`
+- [x] CLI 入口保留在 `scripts/quant/backtest_cli.py` 但只调 use case
 - **commit**:`refactor(use_case): 抽出 backtest 用例`
 
 ### P2-6 use case 5:`compose_portfolio`
-- [ ] 整合 `core/portfolio_optimizer.py + portfolio_allocator.py` 为统一入口
-- [ ] use case 输入持仓现状 + universe + 风险参数,输出建议持仓比例
-- [ ] 不下单,只产出 PortfolioAdvice
+- [x] 整合 `core/portfolio_optimizer.py + portfolio_allocator.py` 为统一入口
+- [x] use case 输入持仓现状 + universe + 风险参数,输出建议持仓比例
+- [x] 不下单,只产出 PortfolioAdvice
 - **commit**:`refactor(use_case): 抽出 compose_portfolio 用例`
 
 ### P2-7 拆分 `intraday_monitor.py`(1831 行)
@@ -129,10 +129,10 @@
 ## Phase 3 — 进程模型 + 配置/状态收口(P1,~1 周)
 
 ### P3-1 OS 级单实例锁
-- [ ] 把现有 `core/strategy_runner.py` 的 PID lock 抽象成 `core/single_instance.py`
-- [ ] `backend/main.py` 启动时加 `acquire_singleton("quant-system")`
-- [ ] 已运行时抛 `SystemExit`,提示用户先停止已有实例
-- [ ] 测试:同时启动两次,第二次必失败
+- [x] 把现有 `core/strategy_runner.py` 的 PID lock 抽象成 `core/single_instance.py`
+- [x] `backend/main.py` 启动时加 `acquire_singleton("quant-system")`
+- [x] 已运行时抛 `SystemExit`,提示用户先停止已有实例
+- [x] 测试:同时启动两次,第二次必失败
 - **commit**:`feat(ops): 全局 OS 单实例锁,防误多开`
 
 ### P3-2 进程逻辑分离(API vs Worker)
