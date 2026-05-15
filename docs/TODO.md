@@ -119,9 +119,12 @@
 - **commit**:`refactor(intraday): IntradayMonitor 拆分为 5 个职责模块`
 
 ### P2-8 backend api.py 端点瘦身
-- [ ] 57 个端点逐组改造为"鉴权 → 调 use case → 序列化"模式
-- [ ] 每端点平均 ≤25 行
-- [ ] 分组分批 commit(positions / signals / orders / analysis / params)
+- [x] 批次 1 — positions / cash / trades(5 端点):`/portfolio/daily POST` 32→16,其余已 ≤25
+- [x] 批次 2 — orders(4 端点):`/orders/submit` 50→30(改用 `main.get_broker()`)
+- [x] 批次 3 — params(2 端点):抽 `services.signals.update_symbol_params` + `list_symbols_with_params`,/params PATCH 47→14,/params GET 39→7
+- [ ] 批次 4 — analysis(7 端点):`/analysis/run` 79,`/analysis/sector_rotation` 79,`/analysis/pairs_trading` 93,`/analysis/sector/compare` 72,`/analysis/stock/a` 52,`/analysis/stock/hk` 52,`/analysis/health` 58
+- [ ] 收尾 — `/risk/status` 59,`/metrics` 60,`/performance/summary` 57,`/market/status` 51,`/llm/analyze` 67
+- 当前指标:54 个端点,平均 31.3 行(目标 ≤25),仍 22 个超标
 - **commit**(分批):`refactor(api): {资源组} 端点退化为薄壳调 use case`
 
 ---
