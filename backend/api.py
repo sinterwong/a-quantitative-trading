@@ -422,53 +422,50 @@ def record_portfolio_daily():
 # Phase 2: will call broker service
 # ============================================================
 
+def _get_or_build_broker():
+    """复用 main.get_broker() 的共享实例；测试/无 monitor 场景回退到新建 PaperBroker。"""
+    try:
+        from main import get_broker
+        b = get_broker()
+        if b is not None:
+            return b
+    except Exception:
+        pass
+    from services.broker import PaperBroker
+    b = PaperBroker(portfolio_service=get_svc())
+    b.connect()
+    return b
+
+
 @app.route('/orders/submit', methods=['POST'])
 @rate_limit(max_per_window=10, window_seconds=60)
 def submit_order():
-    """
-    POST /orders/submit — submit an order → PaperBroker executes it.
-    Phase 1: PaperBroker simulates fill and updates portfolio.
-    """
+    """POST /orders/submit — 通过共享 broker 提交订单(simulation 模式下 PaperBroker 即时撮合)。"""
     if (e := require_json()):
         return e
     body = request.json
-    required = ['symbol', 'direction', 'shares']
-    for field in required:
+    for field in ('symbol', 'direction', 'shares'):
         if field not in body:
             return err(f"missing required field: {field}")
 
     direction = body['direction'].upper()
     if direction not in ('BUY', 'SELL'):
         return err("direction must be BUY or SELL")
-
     shares = int(body['shares'])
     if shares <= 0:
         return err("shares must be positive")
 
-    symbol = body['symbol']
-    price = float(body.get('price', 0))
-    price_type = body.get('price_type', 'market')
-
-    # Execute via PaperBroker
-    from services.broker import PaperBroker
-    svc = get_svc()
-    broker = PaperBroker(portfolio_service=svc)
-    broker.connect()
-    result = broker.submit_order(symbol=symbol, direction=direction,
-                                  shares=shares, price=price,
-                                  price_type=price_type)
-
+    result = _get_or_build_broker().submit_order(
+        symbol=body['symbol'], direction=direction, shares=shares,
+        price=float(body.get('price', 0)),
+        price_type=body.get('price_type', 'market'),
+    )
     return ok(
-        order_id=result.order_id,
-        status=result.status,
-        symbol=symbol,
-        direction=direction,
-        shares=shares,
-        filled_shares=result.filled_shares,
-        avg_price=result.avg_price,
+        order_id=result.order_id, status=result.status,
+        symbol=body['symbol'], direction=direction, shares=shares,
+        filled_shares=result.filled_shares, avg_price=result.avg_price,
         reason=result.reason,
-        submitted_at=result.submitted_at,
-        filled_at=result.filled_at,
+        submitted_at=result.submitted_at, filled_at=result.filled_at,
     )
 
 
