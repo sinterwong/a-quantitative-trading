@@ -19,7 +19,11 @@ from contextlib import contextmanager
 logger = logging.getLogger('watchlist')
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(THIS_DIR, 'portfolio.db')  # 共用 portfolio.db
+try:
+    from core.state_db import state_db_path as _state_db_path
+    DB_PATH = _state_db_path()  # P3-4: 共用统一状态库
+except Exception:
+    DB_PATH = os.path.join(THIS_DIR, 'portfolio.db')
 
 
 @contextmanager

@@ -159,11 +159,13 @@
 - **commit**:`feat(config): trading.yaml.example + 遗留 JSON deprecation warning (P3-3 阶段一)`
 
 ### P3-4 统一状态数据库
-- [ ] 合并 `backend/services/portfolio.db` + `backend/wf_results.db` → `data/state.db`
-- [ ] schema 版本表 + 迁移脚本
-- [ ] 旧路径保留软链接 / fallback 读取一段时间
-- [ ] 测试:迁移后所有读写测试通过
-- **commit**:`feat(state): 统一 SQLite 状态库 + schema 版本管理`
+- [x] 新建 `core/state_db.py:state_db_path()`:env(`QUANT_STATE_DB`) > `data/state.db` > legacy `backend/services/portfolio.db` 三级回退
+- [x] `core.state_db.init_schema_version` / `update_schema_version` 提供后续模块按需登记 schema 版本号
+- [x] portfolio.py / alert_history.py / watchlist.py 改用 state_db_path() 解析 DB_PATH(失败则降级到旧路径)
+- [x] tests/conftest.py 拦截 `portfolio.db` ∪ `state.db` 文件名,迁移路径无须改测试
+- [ ] (延后) 合并 wf_results.db → state.db:涉及 walkforward_persistence schema 差异较大,留作专门迁移
+- [ ] (延后) schema 版本号在各服务 init_db 时主动登记 + 增量迁移脚本
+- **commit**:`feat(state): core/state_db 统一状态库路径 + schema 版本表 (P3-4 阶段一)`
 
 ---
 

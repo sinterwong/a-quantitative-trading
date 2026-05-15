@@ -34,12 +34,11 @@ def _isolate_db_session():
     def _patched_connect(path, *args, **kwargs):
         """
         所有 sqlite3.connect 调用都经过这里。
-        只要 path 包含 'portfolio.db' 就重定向到 temp file，
-        其他文件（其他 .db）正常连接。
+        包含 'portfolio.db'(legacy) 或 'state.db'(P3-4 后)就重定向到 temp file，
+        其他 .db 文件正常连接。
         """
         path_str = str(path) if path is not None else ''
-        if 'portfolio.db' in path_str:
-            # 使用 name='<db>' RAM db 等效于真实文件
+        if 'portfolio.db' in path_str or path_str.endswith('state.db'):
             kwargs.setdefault('check_same_thread', False)
             return _original_connect(tmp_db_file, *args, **kwargs)
         return _original_connect(path, *args, **kwargs)

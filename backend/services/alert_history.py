@@ -26,7 +26,11 @@ from contextlib import contextmanager
 logger = logging.getLogger('alert_history')
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(THIS_DIR, 'portfolio.db')
+try:
+    from core.state_db import state_db_path as _state_db_path
+    DB_PATH = _state_db_path()
+except Exception:
+    DB_PATH = os.path.join(THIS_DIR, 'portfolio.db')
 
 
 @contextmanager
