@@ -7,10 +7,18 @@ core/pipeline_factory.py — 生产用因子流水线工厂
   - backend/main.py（启动时创建 StrategyRunner 后台线程）
   - streamlit_app.py（交互式分析面板）
 
-因子构成（按权重降序）：
-  技术层    RSI(0.20) + MACDTrend(0.20) + Bollinger(0.15) + ATR(0.10)
-  基本面层  PEPercentile(0.10) + ROEMomentum(0.10) + RevenueGrowth(0.05) + CashFlowQuality(0.05)
-  宏观层    PMI(0.05) + M2Growth(0.05)  ← 无行情数据时自动降级为零权重
+因子构成 (W5-2 重平衡后，按权重降序)：
+  技术层 (0.55)     RSI 0.15 / MACDTrend 0.15 / Bollinger 0.15 / ATR 0.10
+  基本面层 (0.30)   PEPercentile 0.05 / ROEMomentum 0.05 / RevenueGrowth 0.04 /
+                    EarningsSurprise 0.04 / CashFlowQuality 0.04 /
+                    FinancialHealth 0.04 / DividendYield 0.02 / AssetGrowth 0.02
+  宏观层 (0.05)     PMI 0.025 / M2Growth 0.025  ← 无行情数据时自动降级为零权重
+  情绪层 (0.05)     NewsSentiment(可选,需 MINIMAX_API_KEY)
+  保留 (0.05)       未来板块因子(SectorFlow/SectorBreadth,需 sector_code 配置)
+
+数据质量感知 (W5-2):
+  - 基本面数据获取失败时基本面层权重自动降权 0.5x
+  - 后续可接入 gw.provenance() 检测字段级源健康度
 
 使用 DynamicWeightPipeline：
   - 滚动 IC 加权（update_freq_days=21 天更新一次）
@@ -85,10 +93,10 @@ def build_pipeline(symbol: str = '', strict: bool = True):
     loaded_count = 0
     sym_param = {'symbol': symbol}
 
-    # ── 技术层（must-have）──────────────────────────────────
+    # ── 技术层（must-have, W5-2 重平衡 0.55 = 0.15×3 + 0.10）──
     for cls, w in [
-        (RSIFactor,       0.20),
-        (MACDTrendFactor, 0.20),
+        (RSIFactor,       0.15),
+        (MACDTrendFactor, 0.15),
         (BollingerFactor, 0.15),
         (ATRFactor,       0.10),
     ]:
@@ -102,6 +110,10 @@ def build_pipeline(symbol: str = '', strict: bool = True):
             ROEMomentumFactor,
             RevenueGrowthFactor,
             CashFlowQualityFactor,
+            EarningsSurpriseFactor,
+            FinancialHealthFactor,
+            DividendYieldFactor,
+            AssetGrowthFactor,
         )
         # 使用 FundamentalDataManager 获取历史季报数据（前向填充至日频）
         # 数据请求委托给 DataGateway，享受熔断 + 健康度 + 缓存保护
@@ -131,16 +143,29 @@ def build_pipeline(symbol: str = '', strict: bool = True):
             except Exception as exc:
                 logger.warning('FundamentalDataManager 获取 %s 失败: %s', symbol, exc)
 
+        # W5-2: 数据质量感知降权 — 基本面数据获取失败时,基本面层整体权重 ×0.5
+        fundamental_quality_mult = 1.0 if financial_data is not None else 0.5
+        if fundamental_quality_mult < 1.0:
+            logger.warning(
+                '基本面数据缺失,基本面因子层权重 ×%.1f (数据质量感知降权)',
+                fundamental_quality_mult,
+            )
+
         for cls, w in [
-            (PEPercentileFactor,        0.10),
-            (ROEMomentumFactor,         0.10),
-            (RevenueGrowthFactor,        0.05),
-            (CashFlowQualityFactor,      0.05),
+            (PEPercentileFactor,        0.05),
+            (ROEMomentumFactor,         0.05),
+            (RevenueGrowthFactor,       0.04),
+            (EarningsSurpriseFactor,    0.04),
+            (CashFlowQualityFactor,     0.04),
+            (FinancialHealthFactor,     0.04),  # W1-5
+            (DividendYieldFactor,       0.02),  # W1-6
+            (AssetGrowthFactor,         0.02),  # W1-7
         ]:
             params = {}
             if financial_data is not None:
                 params = {'financial_data': financial_data}
-            if _safe_add(pipeline, cls, weight=w, params=params):
+            if _safe_add(pipeline, cls,
+                         weight=w * fundamental_quality_mult, params=params):
                 loaded_count += 1
     except ImportError as exc:
         logger.warning('基本面因子模块导入失败（整层跳过）: %s', exc)
@@ -160,10 +185,11 @@ def build_pipeline(symbol: str = '', strict: bool = True):
         except Exception as exc:  # noqa: BLE001
             logger.warning('M2 数据获取失败: %s', exc)
 
-        if _safe_add(pipeline, PMIFactor, weight=0.05,
+        # W5-2: 宏观层权重从 0.10 降至 0.05(让位给扩容的基本面层)
+        if _safe_add(pipeline, PMIFactor, weight=0.025,
                      params={'pmi_data': pmi_data}, label='PMIFactor'):
             loaded_count += 1
-        if _safe_add(pipeline, M2GrowthFactor, weight=0.05,
+        if _safe_add(pipeline, M2GrowthFactor, weight=0.025,
                      params={'m2_data': m2_data}, label='M2GrowthFactor'):
             loaded_count += 1
     except ImportError as exc:
