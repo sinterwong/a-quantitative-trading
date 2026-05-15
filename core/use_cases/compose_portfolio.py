@@ -18,12 +18,15 @@ core/use_cases/compose_portfolio.py — 组合优化建议 use case (P2-6)
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
 from core.use_cases import UseCaseError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -72,21 +75,31 @@ _SUPPORTED_METHODS = {
 
 def _build_returns_matrix(
     universe: List[str], days: int,
-) -> pd.DataFrame:
-    """从 DataGateway 拉每只 symbol 的日 K,组装收益率矩阵。"""
+) -> Tuple[pd.DataFrame, List[dict]]:
+    """从 DataGateway 拉每只 symbol 的日 K,组装收益率矩阵。
+
+    返回 (returns_df, excluded) — excluded 中的每条记录形如
+    ``{'symbol': '...', 'reason': '...'}``,让 caller 可以把降级原因
+    透传到响应里(之前是 `except Exception: continue` 全静默)。
+    """
     from core.data_gateway import get_gateway, normalize_kline_index
     gw = get_gateway()
 
     series_dict: Dict[str, pd.Series] = {}
+    excluded: List[dict] = []
     for sym in universe:
         try:
             df = gw.kline(sym, interval='daily', days=days, limit=days)
-        except Exception:
+        except Exception as exc:
+            logger.warning('compose_portfolio: kline fetch failed for %s: %s', sym, exc)
+            excluded.append({'symbol': sym, 'reason': f'kline_error: {exc}'})
             continue
         if df is None or df.empty:
+            excluded.append({'symbol': sym, 'reason': 'no_data'})
             continue
         df = normalize_kline_index(df)
         if 'close' not in df.columns:
+            excluded.append({'symbol': sym, 'reason': 'missing_close_column'})
             continue
         series_dict[sym] = df['close'].pct_change().dropna()
 
@@ -95,7 +108,7 @@ def _build_returns_matrix(
             f'insufficient data: only {len(series_dict)} symbols have returns',
             code='DATA_UNAVAILABLE',
         )
-    return pd.DataFrame(series_dict).dropna()
+    return pd.DataFrame(series_dict).dropna(), excluded
 
 
 def compose_portfolio(req: ComposePortfolioRequest) -> PortfolioAdvice:
@@ -116,6 +129,7 @@ def compose_portfolio(req: ComposePortfolioRequest) -> PortfolioAdvice:
             'need at least 2 assets in universe', code='TOO_FEW_ASSETS',
         )
 
+    excluded: List[dict] = []
     if req.injected_returns is not None:
         returns = req.injected_returns
         if returns.empty or returns.shape[1] < 2:
@@ -124,7 +138,7 @@ def compose_portfolio(req: ComposePortfolioRequest) -> PortfolioAdvice:
                 code='DATA_UNAVAILABLE',
             )
     else:
-        returns = _build_returns_matrix(req.universe, req.history_days)
+        returns, excluded = _build_returns_matrix(req.universe, req.history_days)
 
     from core.portfolio_optimizer import PortfolioOptimizer
 
@@ -154,6 +168,16 @@ def compose_portfolio(req: ComposePortfolioRequest) -> PortfolioAdvice:
     vol_annual = vol_daily * (252 ** 0.5)
     sharpe = (er_annual - req.rf_annual) / vol_annual if vol_annual > 1e-12 else 0.0
 
+    diagnostics: Dict[str, str] = {
+        'cov_method': req.cov_method,
+        'history_bars': str(len(returns)),
+    }
+    if excluded:
+        # 仅放符号+原因摘要,避免 diagnostics 过大
+        diagnostics['excluded_symbols'] = ','.join(
+            f"{e['symbol']}({e['reason']})" for e in excluded
+        )
+
     return PortfolioAdvice(
         method=req.method,
         weights={str(k): float(v) for k, v in weights_series.items()},
@@ -161,10 +185,7 @@ def compose_portfolio(req: ComposePortfolioRequest) -> PortfolioAdvice:
         expected_return=er_annual,
         expected_vol=vol_annual,
         sharpe=sharpe,
-        diagnostics={
-            'cov_method': req.cov_method,
-            'history_bars': str(len(returns)),
-        },
+        diagnostics=diagnostics,
     )
 
 

@@ -7,10 +7,13 @@ core/use_cases/pairs_trading_signal.py — 配对交易信号 use case (P2-8 批
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import List
 
 from . import UseCaseError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -28,11 +31,15 @@ class PairsTradingRequest:
 class PairsTradingResponse:
     pairs: List[dict] = field(default_factory=list)
     n_pairs_found: int = 0
+    # 每个 entry: {"pair": "A|B", "error": "<message>"}
+    # 单对计算失败不阻塞整体,但调用方能看到失败明细。
+    warnings: List[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             'pairs': self.pairs,
             'n_pairs_found': self.n_pairs_found,
+            'warnings': self.warnings,
         }
 
 
@@ -59,6 +66,7 @@ def find_pairs_signals(req: PairsTradingRequest) -> PairsTradingResponse:
     pairs = find_cointegrated_pairs(price_df, lookback_days=req.screen_days)
 
     results: List[dict] = []
+    warnings: List[dict] = []
     for sym_a, sym_b in pairs[:req.max_pairs]:
         try:
             strat = PairsTradingStrategy(
@@ -79,7 +87,17 @@ def find_pairs_signals(req: PairsTradingRequest) -> PairsTradingResponse:
                         'spread': round(signal.spread, 6),
                     },
                 })
-        except Exception:
-            continue
+        except Exception as exc:
+            # 不阻塞其它配对计算,但把失败原因带回去——
+            # 之前是 `except Exception: continue` 静默吞掉,调用方完全不知道。
+            logger.warning('pair %s|%s signal failed: %s', sym_a, sym_b, exc)
+            warnings.append({
+                'pair': f'{sym_a}|{sym_b}',
+                'error': f'pair_signal_error: {exc}',
+            })
 
-    return PairsTradingResponse(pairs=results, n_pairs_found=len(pairs))
+    return PairsTradingResponse(
+        pairs=results,
+        n_pairs_found=len(pairs),
+        warnings=warnings,
+    )

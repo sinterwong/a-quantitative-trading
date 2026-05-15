@@ -86,17 +86,19 @@ def test_run_daily_analysis_without_portfolio_svc(patch_selector, tmp_path):
 
 
 def test_run_daily_analysis_persist_failure_is_swallowed(patch_selector):
-    """output_dir 指向不可写路径 → 仍返回 response,不抛异常。"""
+    """output_dir 指向不可写路径 → 仍返回 response,不抛异常,但 warnings 必须包含原因。"""
     from core.use_cases.daily_analysis import DailyAnalysisRequest, run_daily_analysis
 
     # /proc 下不能创建文件
     req = DailyAnalysisRequest(output_dir='/proc/cannot_write_here')
     resp = run_daily_analysis(req, portfolio_svc=None)
     assert len(resp.top_sectors) == 2  # 主流程不受影响
+    assert any('persist_error' in w for w in resp.warnings), \
+        '持久化失败必须 surface 到 response.warnings,不允许静默'
 
 
 def test_run_daily_analysis_daily_meta_failure_is_swallowed(patch_selector, tmp_path):
-    """portfolio_svc.record_daily_meta 抛异常 → 主流程不受影响。"""
+    """portfolio_svc.record_daily_meta 抛异常 → 主流程不受影响,warnings 必须包含原因。"""
     from core.use_cases.daily_analysis import DailyAnalysisRequest, run_daily_analysis
 
     svc = MagicMock()
@@ -107,6 +109,8 @@ def test_run_daily_analysis_daily_meta_failure_is_swallowed(patch_selector, tmp_
     req = DailyAnalysisRequest(output_dir=str(tmp_path))
     resp = run_daily_analysis(req, portfolio_svc=svc)
     assert len(resp.top_sectors) == 2
+    assert any('daily_meta_error' in w and 'db locked' in w for w in resp.warnings), \
+        'daily_meta 失败必须 surface 到 response.warnings,不允许静默'
 
 
 def test_daily_analysis_response_to_dict_round_trip(patch_selector, tmp_path):
@@ -115,4 +119,6 @@ def test_daily_analysis_response_to_dict_round_trip(patch_selector, tmp_path):
     req = DailyAnalysisRequest(output_dir=str(tmp_path))
     resp = run_daily_analysis(req, portfolio_svc=None)
     d = resp.to_dict()
-    assert set(d.keys()) == {'sources', 'top_sectors', 'news_summary', 'selected_stocks'}
+    assert set(d.keys()) == {
+        'sources', 'top_sectors', 'news_summary', 'selected_stocks', 'warnings',
+    }

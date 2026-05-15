@@ -141,4 +141,5 @@ def test_pairs_trading_response_to_dict():
     assert resp.to_dict() == {
         'pairs': [{'symbol_a': 'A', 'symbol_b': 'B'}],
         'n_pairs_found': 1,
+        'warnings': [],
     }

@@ -32,6 +32,9 @@ class DailyAnalysisResponse:
     top_sectors: List[Dict[str, Any]] = field(default_factory=list)
     news_summary: List[Any] = field(default_factory=list)
     selected_stocks: List[Any] = field(default_factory=list)
+    # 持久化 / daily_meta 等 best-effort 步骤的失败原因。
+    # 主流程不抛,但调用方能看到何处降级。
+    warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -39,6 +42,7 @@ class DailyAnalysisResponse:
             'top_sectors': self.top_sectors,
             'news_summary': self.news_summary,
             'selected_stocks': self.selected_stocks,
+            'warnings': self.warnings,
         }
 
 
@@ -82,14 +86,18 @@ def run_daily_analysis(req: DailyAnalysisRequest,
         selected_stocks=stocks,
     )
 
-    _persist(response, req.output_dir)
+    persist_err = _persist(response, req.output_dir)
+    if persist_err:
+        response.warnings.append(persist_err)
     if portfolio_svc is not None:
-        _record_daily_meta(portfolio_svc, len(top_bks))
+        meta_err = _record_daily_meta(portfolio_svc, len(top_bks))
+        if meta_err:
+            response.warnings.append(meta_err)
     return response
 
 
-def _persist(response: DailyAnalysisResponse, output_dir: str) -> None:
-    """落 JSON 到 outputs/analysis/。失败仅记日志。"""
+def _persist(response: DailyAnalysisResponse, output_dir: str) -> Optional[str]:
+    """落 JSON 到 outputs/analysis/。失败返回错误说明字符串(供 caller 加入 warnings)。"""
     try:
         if not output_dir:
             backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -102,12 +110,14 @@ def _persist(response: DailyAnalysisResponse, output_dir: str) -> None:
                 'timestamp': datetime.now().isoformat(),
                 **response.to_dict(),
             }, f, ensure_ascii=False, indent=2)
+        return None
     except Exception as e:
         logger.warning('daily_analysis persist failed: %s', e)
+        return f'persist_error: {e}'
 
 
-def _record_daily_meta(portfolio_svc: Any, n_signals: int) -> None:
-    """记录 daily_meta,供 StrategyHealthMonitor 读取。失败仅记日志。"""
+def _record_daily_meta(portfolio_svc: Any, n_signals: int) -> Optional[str]:
+    """记录 daily_meta,供 StrategyHealthMonitor 读取。失败返回错误说明字符串。"""
     try:
         summary = portfolio_svc.get_portfolio_summary()
         trades_today = portfolio_svc.get_trades(limit=200)
@@ -120,5 +130,7 @@ def _record_daily_meta(portfolio_svc: Any, n_signals: int) -> None:
             n_signals=n_signals,
             n_trades=n_trades,
         )
+        return None
     except Exception as e:
         logger.warning('daily_meta record failed: %s', e)
+        return f'daily_meta_error: {e}'
