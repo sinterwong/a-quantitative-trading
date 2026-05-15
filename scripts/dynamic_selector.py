@@ -353,9 +353,11 @@ class DynamicStockSelector:
 
     WEIGHT_NEWS = 0.15       # 新闻热度（降低，消息有噪声）
     WEIGHT_SECTOR = 0.35   # 板块行情（涨跌幅排名，硬数据）
-    WEIGHT_FLOW = 0.25     # 资金流向（北向净流入，硬数据）
+    WEIGHT_FLOW = 0.25     # 资金流向（当日 rank，硬数据）
     WEIGHT_TECH = 0.15     # 技术趋势（成分股涨跌信号）
     WEIGHT_CONSISTENCY = 0.10  # 成分股一致性（板块内部联动强度）
+    # W3-4: 板块资金流动量(今日 vs 历史均值,作为加权 bonus,不入总和)
+    WEIGHT_FLOW_MOMENTUM_BONUS = 0.10  # 最高 +10/-10 分 bonus
 
     def __init__(self, regime: str = 'CALM'):
         self.news_cache: List[Dict] = []
@@ -707,6 +709,37 @@ class DynamicStockSelector:
 
         return sum(scores) / len(scores) if scores else 50
 
+    def calc_flow_momentum_score(
+        self,
+        bk_code: str,
+        today_net_flow: float,
+        window: int = 5,
+    ) -> float:
+        """W3-4: 板块资金流动量评分(今日 net_flow 相对历史 window 日均值)。
+
+        通过 SectorFlowStore 取该板块过去 N 日 net_flow 序列。
+        返回值范围 [-1, 1]:
+          +1: 今日流入显著高于历史均值 → 强 BUY 信号
+          -1: 今日流出显著高于历史均值 → 强 SELL 信号
+           0: 数据不足 / 与历史均值持平
+        """
+        try:
+            from core.factors.sector import SectorFlowStore
+            ser = SectorFlowStore().series_for(bk_code)
+        except Exception:
+            return 0.0
+        if ser is None or len(ser) < 3:
+            return 0.0
+        recent = ser.tail(window)
+        mu = float(recent.mean())
+        std = float(recent.std(ddof=0))
+        if std == 0 or not (std == std):  # NaN check
+            return 0.0
+        z = (today_net_flow - mu) / std
+        # 截断到 [-2, 2] 再 /2 → [-1, 1]
+        z = max(-2.0, min(2.0, z))
+        return z / 2.0
+
     def calc_consistency_score_for_bk(self, bk_code: str) -> float:
         """
         计算板块成分股涨跌一致性
@@ -821,13 +854,21 @@ class DynamicStockSelector:
                         sentiment_bonus += sent_score * 0.10
                         break
 
+            # W3-4: 板块资金流动量加成(基于 SectorFlowStore 历史)
+            # flow_momentum∈[-1, 1],映射到 ±10 分 bonus(与 sentiment_bonus 同量级)
+            flow_momentum = self.calc_flow_momentum_score(
+                bk, today_net_flow=info['net_flow'],
+            )
+            flow_momentum_bonus = flow_momentum * 10.0
+
             total = (
                 news_score * self.WEIGHT_NEWS +
                 perf * self.WEIGHT_SECTOR +
                 flow * self.WEIGHT_FLOW +
                 tech * self.WEIGHT_TECH +
                 consistency * self.WEIGHT_CONSISTENCY +
-                sentiment_bonus
+                sentiment_bonus +
+                flow_momentum_bonus
             )
 
             base_info = {
@@ -839,6 +880,8 @@ class DynamicStockSelector:
                 'tech': tech,
                 'consistency': consistency,
                 'sentiment': round(sentiment_bonus, 2),
+                'flow_momentum': round(flow_momentum, 3),
+                'flow_momentum_bonus': round(flow_momentum_bonus, 2),
                 'change_pct': info['change_pct'],
                 'net_flow': info['net_flow'],
             }
