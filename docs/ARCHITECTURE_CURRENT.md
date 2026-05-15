@@ -1,4 +1,18 @@
-# 系统架构
+# 系统架构(当前实际状态)
+
+> ⚠️ **本文档诚实记录当前真实形态,不代表目标架构**。
+>
+> 目标架构见 [`ARCHITECTURE_TARGET.md`](./ARCHITECTURE_TARGET.md),
+> 本文档会随每个 commit 逐步向目标收敛。
+>
+> 当前已知架构债:
+> - `backend/api.py` 1988 行 / 57 端点,端点内含大量业务逻辑(应退化为壳)
+> - `backend/services/intraday_monitor.py` 1831 行(应拆 5 个职责模块)
+> - `streamlit_app.py` 1850 行单文件(应拆 pages/)
+> - 同一概念多处实现:Regime / 选股 / 新闻打分 / 信号生成
+> - 配置 5 处分散,状态 2 个 SQLite
+> - 进程上 Flask + Scheduler + IntradayMonitor 强耦合
+> - 部分 UI / backend 模块仍直连 `qt.gtimg.cn` 等绕过 Gateway
 
 ---
 

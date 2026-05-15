@@ -4,6 +4,37 @@ A 股 + 港股量化研究与全自动模拟交易平台。
 
 ---
 
+## 产品定位
+
+**单租户准生产实盘 + 研究台,虚拟模拟盘(无真实券商接入)**。
+
+- 👤 **谁用**:个人/小团队 operator 自用,管 50–200 万规模虚拟资金
+- 🎯 **解决什么**:把"研究 → 验证 → 模拟运营"三步打通,提供一个可信的闭环
+- 🚫 **不做什么**:
+  - 不接入真实券商(Futu/IBKR 等实盘接口仅保留代码雏形,不再维护)
+  - 不做多用户/多租户隔离
+  - 不做毫秒级高频
+  - 不做付费另类数据
+
+**单 OS 单进程**约束:同一台机器同一时刻只能跑一个实例(由 OS 级 PID 锁保护)。
+未来若需横向扩展,会切到 Docker microservices 形态;本仓库当前为这一步打基础。
+
+**关键运行模式**:`all`(默认,API + Worker 同进程) / `api` / `worker`(为未来分离做准备)。
+
+---
+
+## 三类使用场景(垂直切片)
+
+| 场景 | 角色 | 入口 |
+|---|---|---|
+| 🤖 自动化日常 | operator | `backend/main.py` 默认 mode=all,Scheduler 驱动 |
+| 👁️ 交互/分析 | trader/PM | Streamlit `streamlit_app.py` → backend API |
+| 🔬 研究/回测 | researcher | `scripts/quant/backtest_cli.py` / `core.use_cases.backtest` |
+
+所有场景共享同一组 **use case 函数**(`core/use_cases/`),业务逻辑只此一份。
+
+---
+
 ## 系统能力
 
 | 功能 | 说明 |
@@ -71,7 +102,8 @@ http://127.0.0.1:5555/docs
 │   ├── api.py                     # HTTP API
 │   └── services/                  # 持久化服务
 ├── docs/
-│   ├── ARCHITECTURE.md            # 系统架构（详细）
+│   ├── ARCHITECTURE_TARGET.md     # 目标架构(本次重构基线)
+│   ├── ARCHITECTURE_CURRENT.md    # 当前架构(诚实记录,逐步收敛到 TARGET)
 │   ├── CHANGELOG.md               # 变更日志
 │   └── EVALUATION.md              # 系统评估
 └── params.json                    # 策略参数
@@ -106,4 +138,5 @@ http://127.0.0.1:5555/docs
 
 ## 免责声明
 
-本系统仅供研究与模拟交易验证，不构成投资建议。
+本系统仅供研究与模拟交易验证,不构成投资建议。**不接入真实券商,所有"下单"
+均为虚拟模拟盘记账行为**。
