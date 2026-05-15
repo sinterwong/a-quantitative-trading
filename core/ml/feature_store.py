@@ -28,19 +28,50 @@ if TYPE_CHECKING:
 
 
 # 跳过这些因子：需要外部数据注入且无降级为零以外意义的因子
-# 在有数据注入时才加入
+# W5-1: external_data 注入对应字段时,这些因子被自动启用
 _SKIP_IN_DEFAULT = frozenset([
-    'SectorMomentum',       # 需要 sector_data
-    'IndexRelativeStrength', # 需要 index_data
-    'PEPercentile',         # 需要 fundamental_data
+    'SectorMomentum',          # 需要 sector_data
+    'IndexRelativeStrength',   # 需要 index_data
+    # ── 基本面因子(需 financial_data)
+    'PEPercentile',
     'ROEMomentum',
     'EarningsSurprise',
     'RevenueGrowth',
     'CashFlowQuality',
-    'MarginTrading',        # 需要 sentiment_data
+    'FinancialHealth',         # W1-5
+    'DividendYield',           # W1-6
+    'AssetGrowth',             # W1-7
+    # ── 情绪因子(需 sentiment_data 或自动 fetch)
+    'MarginTrading',
     'NorthboundFlow',
     'ShortInterest',
+    'SouthboundFlow',          # W2-2
+    'NewsSentiment',           # 依赖 LLM,默认 skip
+    # ── 板块因子(需 sector_code + Store 数据)
+    'SectorFlow',              # W3-1
+    'SectorBreadth',           # W3-2
 ])
+
+# W5-1: 因子 → 所需外部数据字段名 的映射
+# external_data 字典中存在对应 key 时,自动构造该因子并启用
+_FACTOR_DATA_REQUIREMENTS: Dict[str, str] = {
+    'PEPercentile': 'financial_data',
+    'ROEMomentum': 'financial_data',
+    'EarningsSurprise': 'financial_data',
+    'RevenueGrowth': 'financial_data',
+    'CashFlowQuality': 'financial_data',
+    'FinancialHealth': 'financial_data',
+    'DividendYield': 'financial_data',
+    'AssetGrowth': 'financial_data',
+    'MarginTrading': 'sentiment_data',
+    'NorthboundFlow': 'sentiment_data',
+    'ShortInterest': 'sentiment_data',
+    'SouthboundFlow': 'sentiment_data',
+    'SectorFlow': 'sector_flow_data',
+    'SectorBreadth': 'breadth_data',
+    'SectorMomentum': 'sector_data',
+    'IndexRelativeStrength': 'index_data',
+}
 
 
 class FeatureStore:
@@ -62,13 +93,23 @@ class FeatureStore:
         reg: Optional[Any] = None,
         skip_factors: Optional[frozenset] = None,
         add_time_features: bool = True,
+        external_data: Optional[Dict[str, Any]] = None,
     ) -> None:
         if reg is None:
             from core.factor_registry import registry as _global_registry
             self._reg = _global_registry
         else:
             self._reg = reg
-        self._skip = skip_factors if skip_factors is not None else _SKIP_IN_DEFAULT
+        # W5-1: external_data 中存在的字段对应的因子会从 skip 集合中"解锁"
+        # external_data 形如:
+        #   {'financial_data': df, 'sentiment_data': df, 'sector_flow_data': df, ...}
+        self.external_data: Dict[str, Any] = external_data or {}
+        base_skip = skip_factors if skip_factors is not None else _SKIP_IN_DEFAULT
+        unlock = {
+            name for name, req in _FACTOR_DATA_REQUIREMENTS.items()
+            if req in self.external_data and self.external_data[req] is not None
+        }
+        self._skip = frozenset(base_skip - unlock)
         self.add_time_features = add_time_features
 
     # ------------------------------------------------------------------
@@ -158,14 +199,23 @@ class FeatureStore:
         data: pd.DataFrame,
         symbol: str,
     ) -> pd.DataFrame:
-        """对所有注册因子（跳过名单外）调用 evaluate()，返回宽格式 DataFrame。"""
+        """对所有注册因子（跳过名单外）调用 evaluate()，返回宽格式 DataFrame。
+
+        W5-1: 解锁的因子用 external_data 构造,其它走默认参数。
+        """
         series_dict: Dict[str, pd.Series] = {}
 
         for name in self._reg.list_factors():
             if name in self._skip:
                 continue
             try:
-                factor = self._reg.create(name)
+                # 若该因子需要外部数据且已注入,带参构造
+                req = _FACTOR_DATA_REQUIREMENTS.get(name)
+                if req and req in self.external_data:
+                    params = {req: self.external_data[req]}
+                    factor = self._reg.create(name, **params)
+                else:
+                    factor = self._reg.create(name)
                 if hasattr(factor, 'symbol'):
                     factor.symbol = symbol
                 vals = factor.evaluate(data)
