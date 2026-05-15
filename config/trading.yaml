@@ -163,6 +163,11 @@ execution:
   impact_permanent_coeff: 5.0      # Almgren-Chriss 永久冲击系数（bps）
   impact_temporary_coeff: 5.0      # Almgren-Chriss 临时冲击系数（bps）
 
+# ─── Broker (W1-5: 产品定位锁定虚拟模拟盘) ────────────────────
+# 详见 docs/BROKERS.md。
+broker:
+  mode: paper          # paper | simulated;live 已 deprecated 不建议解锁
+
 # ─── 通知 ──────────────────────────────────────────────────
 alerts:
   feishu_webhook: ""     # 飞书 Webhook URL（留空则禁用）

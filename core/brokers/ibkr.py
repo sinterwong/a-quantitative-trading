@@ -1,22 +1,20 @@
 """
-core/brokers/ibkr.py — Interactive Brokers 适配器（STUB）
+core/brokers/ibkr.py — Interactive Brokers 适配器(**DEPRECATED**, STUB)
 
-⚠️  当前为 Stub 实现，所有方法均需在接入真实 ib_insync 后实现。
-
-接入步骤：
-  1. pip install ib_insync
-  2. 安装并运行 IB Gateway 或 TWS（Interactive Brokers 官方客户端）
-  3. config/brokers.json 设置 broker=ibkr, safety_mode=LIVE
-  4. 设置 3-step 解锁（见 facade.py BrokerFactory.require_live）
-  5. 逐一实现下方方法（参考 ib_insync 文档）
-
-IBKR / ib_insync 文档：https://ib-insync.readthedocs.io/
-
-支持市场：美股 / 港股 / 欧股 / 期货 / 期权 / 外汇 / 债券
-注意：IBKR 最小下单单位因市场和品种而异
+⚠️ 产品定位:本系统不接入真实券商。本文件保留 Stub 代码,
+   不再维护,导入时打 DeprecationWarning。
+   生产路径请用 PaperBroker / SimulatedBroker。
 """
 
 from __future__ import annotations
+
+import warnings
+
+warnings.warn(
+    "core.brokers.ibkr is deprecated: 本系统不接入真实券商,请用 PaperBroker。",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 import logging
 from datetime import datetime
