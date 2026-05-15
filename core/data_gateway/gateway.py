@@ -557,23 +557,68 @@ class DataGateway:
         """基本面历史时序（日频，前向填充季报）。
 
         通过 DataGateway 统一路由，享受熔断 + 健康度 + 缓存保护。
+        多 provider 列级合并:不同源贡献不同字段时取并集,重叠列由健康度
+        + priority_hint 更高者胜出(类似 Quote 的字段级合并)。
         """
         cache_key = f"fundamentals_history:{symbol}:{start}:{end}"
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
 
-        result, _ = self._sequential_fetch(
+        candidates = self._candidates_for(
             Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
-            "fetch_fundamentals_history", symbol, start, end,
         )
-        df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
-        if not df.empty:
-            self._cache.set(
-                cache_key, df,
-                _DEFAULT_TTL.get(Capability.FUNDAMENTALS_HISTORY, 86400.0),
-            )
-        return df
+        if not candidates:
+            return pd.DataFrame()
+
+        # 并发问 top-K 家(默认 4),每家返回一个 DataFrame
+        top = candidates[: self._max_parallel]
+        futures = {
+            self._executor.submit(
+                self._invoke, p, Capability.FUNDAMENTALS_HISTORY,
+                "fetch_fundamentals_history", symbol, start, end,
+            ): (p, score)
+            for p, score in top
+        }
+
+        # 按分数降序收集 (provider, score, df)
+        results: List[tuple] = []
+        for fut in as_completed(futures):
+            provider, score = futures[fut]
+            obj = fut.result()
+            if isinstance(obj, pd.DataFrame) and not obj.empty:
+                results.append((provider.name, score, obj))
+
+        if not results:
+            return pd.DataFrame()
+
+        # 列级合并:按 score 降序处理,新出现的列保留,已出现的列保留高分源版本
+        results.sort(key=lambda x: x[1], reverse=True)
+        merged: Optional[pd.DataFrame] = None
+        for _name, _score, df in results:
+            if merged is None:
+                merged = df.copy()
+                continue
+            # 把 df 中尚未在 merged 出现的列加入,行索引取并集后 ffill
+            new_cols = [c for c in df.columns if c not in merged.columns]
+            if not new_cols:
+                continue
+            union_idx = merged.index.union(df.index).sort_values()
+            merged = merged.reindex(union_idx)
+            extra = df[new_cols].reindex(union_idx).ffill()
+            for c in new_cols:
+                merged[c] = extra[c]
+
+        if merged is None or merged.empty:
+            return pd.DataFrame()
+
+        # 整体 ffill,确保 union 后引入的索引也有值
+        merged = merged.sort_index().ffill()
+        self._cache.set(
+            cache_key, merged,
+            _DEFAULT_TTL.get(Capability.FUNDAMENTALS_HISTORY, 86400.0),
+        )
+        return merged
 
     # ── 监控 / 调试 ──────────────────────────────────────────────────────────
 

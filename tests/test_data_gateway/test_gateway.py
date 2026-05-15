@@ -558,6 +558,83 @@ def test_news_headlines_no_provider_returns_empty(gw):
     assert gw.news_headlines("sh600519") == []
 
 
+# ── fundamentals_history 列级合并 (W1-2 联动) ───────────────────────────────
+
+
+def _FakeHistoryProvider(name, columns_dict, priority=0.5):
+    """构造一个返回特定列字典的 FUNDAMENTALS_HISTORY provider。"""
+    from core.data_gateway.providers.base import Provider as _P
+
+    class _HP(_P):
+        def __init__(self):
+            self.name = name
+            self._cols = columns_dict
+            self._priority = priority
+            self.call_log = []
+
+        def declare(self):
+            return ProviderCapability(
+                capabilities=frozenset({Capability.FUNDAMENTALS_HISTORY}),
+                markets=frozenset({Market.GLOBAL}),
+                priority_hint=self._priority,
+            )
+
+        def supports(self, capability, market):
+            decl = self.declare()
+            if capability not in decl.capabilities:
+                return False
+            return Market.GLOBAL in decl.markets or market in decl.markets
+
+        def fetch_fundamentals_history(self, symbol, start=None, end=None):
+            self.call_log.append(f"fetch_fundamentals_history:{symbol}")
+            idx = pd.bdate_range(
+                start=start or "2024-01-01", end=end or "2024-03-31",
+            )
+            cols = {k: [v[0]] * len(idx) for k, v in self._cols.items()}
+            return pd.DataFrame(cols, index=idx)
+
+    return _HP()
+
+
+def test_fundamentals_history_column_merge(gw):
+    """两个 provider 各贡献不同列 → 合并后并集。"""
+    p1 = _FakeHistoryProvider(
+        "akshare", {"roe_ttm": [10.0] * 5, "eps_ttm": [0.5] * 5},
+        priority=0.3,
+    )
+    p2 = _FakeHistoryProvider(
+        "baostock", {"debt_to_equity": [25.0] * 5, "current_ratio": [2.5] * 5},
+        priority=0.75,
+    )
+    gw.register_provider(p1)
+    gw.register_provider(p2)
+    df = gw.fundamentals_history("sh600519", "2024-01-01", "2024-01-08")
+    assert not df.empty
+    # 两家的列都应在
+    for c in ("roe_ttm", "eps_ttm", "debt_to_equity", "current_ratio"):
+        assert c in df.columns, f"{c} missing"
+
+
+def test_fundamentals_history_overlap_higher_priority_wins(gw):
+    """重叠列 → 高优先级源胜出。"""
+    p1 = _FakeHistoryProvider(
+        "low", {"roe_ttm": [5.0] * 5}, priority=0.2,
+    )
+    p2 = _FakeHistoryProvider(
+        "high", {"roe_ttm": [15.0] * 5}, priority=0.9,
+    )
+    gw.register_provider(p1)
+    gw.register_provider(p2)
+    df = gw.fundamentals_history("sh600519", "2024-01-01", "2024-01-08")
+    # roe_ttm 应来自 high(15.0)
+    assert df["roe_ttm"].dropna().iloc[-1] == 15.0
+
+
+def test_fundamentals_history_empty_when_no_provider(gw):
+    df = gw.fundamentals_history("sh600519")
+    assert df.empty
+
+
 # ── 全局 singleton ──────────────────────────────────────────────────────────
 
 
