@@ -638,16 +638,23 @@ def main():
 
     logger = setup_logging()
 
-    # ── PID 锁：禁止多实例 ──────────────────────────────────────────
-    pid_file = os.path.join(os.path.dirname(__file__), '.backend.pid')
-    if not _acquire_pid_lock(pid_file):
-        logger.error('[Backend] 已有实例在运行（PID 锁文件 %s），退出。', pid_file)
+    # ── PID 锁：禁止多实例 (P3-1: 统一 core/single_instance 实现) ────
+    try:
+        # 添加项目根目录到 sys.path 以便导入 core
+        _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        from core.single_instance import acquire_singleton, SingletonError
+        _lock_dir = os.path.dirname(__file__)
+        _singleton_lock = acquire_singleton('quant-backend', lock_dir=_lock_dir)
+        logger.info('[Backend] Singleton lock acquired: %s', _singleton_lock.lock_file)
+    except SingletonError as e:
+        logger.error(
+            '[Backend] 已有实例在运行 (PID=%d, lock=%s),退出。',
+            e.holder_pid, e.lock_file,
+        )
         sys.exit(1)
-    logger.info('[Backend] PID 锁获取成功，pid_file=%s', pid_file)
     logger.info('Backend starting in %s mode', args.mode)
-
-    import atexit
-    atexit.register(lambda: _release_pid_lock(pid_file))
 
     sched = Scheduler(api_port=args.port)
     sched_thread = sched.start()
