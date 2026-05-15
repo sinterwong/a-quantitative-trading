@@ -224,7 +224,16 @@ class EastmoneyProvider(Provider):
     # ── SECTOR_RANKING ───────────────────────────────────────────────────────
 
     def fetch_sectors(self, limit: int = 100) -> List[SectorRanking]:
-        raw = self._request_em("m:90+t:2+f:!50")
+        # 尝试 _request_em（curl via subprocess，对 WSL 网络更稳定）
+        # 失败后尝试 _request（http client，备用路径）
+        raw = None
+        for req_fn in (self._request_em, self._request):
+            try:
+                raw = req_fn("m:90+t:2+f:!50")
+                if raw and isinstance(raw, dict):
+                    break
+            except ProviderError:
+                continue
         if not raw or not isinstance(raw, dict):
             raise ProviderError("eastmoney.fetch_sectors: 无数据返回")
 

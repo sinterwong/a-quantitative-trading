@@ -449,16 +449,15 @@ class DynamicStockSelector:
         return []
 
     def fetch_sectors(self) -> List[Dict]:
-        """获取板块行情+资金流向，通过 QuoteSourceManager 统一数据源"""
+        """获取板块行情+资金流向，通过 Gateway 统一数据源（含多 provider failover）。"""
         if self._sectors_fetched and self.sectors_raw:
             return self.sectors_raw
 
-        # 通过 data_gateway 获取板块排名(默认路由到 eastmoney)
+        # 通过 data_gateway 获取板块排名（SECTOR_RANKING 能力，Gateway 层自动 failover 到 SinaProvider）
         try:
             from core.data_gateway import get_gateway
             sectors = get_gateway().sectors(limit=100)
             if sectors:
-                # 转换为原有 dict 格式（兼容现有 calc_sector_scores_from_bk）
                 self.sectors_raw = []
                 for s in sectors:
                     self.sectors_raw.append({
@@ -467,9 +466,9 @@ class DynamicStockSelector:
                         'f3': s.change_pct,
                         'f62': s.net_flow,
                         'f20': s.amount,
-                        '_source': 'eastmoney',
+                        '_source': 'gateway',
                     })
-                self._last_source = 'eastmoney'
+                self._last_source = 'gateway'
                 _write_file_cache('sectors.json', self.sectors_raw)
                 self._sectors_fetched = True
                 _log('INFO', f'fetch_sectors: gateway ok ({len(self.sectors_raw)} sectors)')
@@ -477,51 +476,14 @@ class DynamicStockSelector:
         except Exception as e:
             _log('WARNING', f'fetch_sectors: gateway failed: {e}')
 
-        # 文件缓存兜底
-        cached = _read_file_cache('sectors.json', max_age_seconds=43200)  # 12h兜底
+        # 文件缓存兜底（12h）
+        cached = _read_file_cache('sectors.json', max_age_seconds=43200)
         if cached:
             self.sectors_raw = cached
             self._sectors_fetched = True
             self._last_source = 'cache'
             _log('INFO', f'fetch_sectors: using file cache ({len(cached)} sectors)')
             return self.sectors_raw
-
-        # curl 兜底（WSL 下东方财富 TLS 连接被阻断，直接用 curl 绕过）
-        try:
-            import subprocess, json as _json, re as _re
-            url = (
-                "https://push2.eastmoney.com/api/qt/clist/get"
-                "?cb=jQuery&pn=1&pz=200&po=1&np=1&ut=b&fltt=2&invt=2&fid=f3"
-                "&fs=m:90+t:2+f:!50"
-                "&fields=f12,f14,f3,f62,f20"
-            )
-            result = subprocess.run(
-                ["curl", "-s", "--connect-timeout", "8", url,
-                 "-H", "Referer: https://quote.eastmoney.com/"],
-                capture_output=True, text=True, timeout=12,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                text = result.stdout.strip()
-                if text.startswith("jQuery"):
-                    m = _re.match(r"jQuery\([^)]+\((.*)\)\);?\s*$", text, _re.DOTALL)
-                    if m:
-                        text = m.group(1)
-                data = _json.loads(text)
-                records = ((data.get("data") or {}).get("diff") or [])
-                self.sectors_raw = [{
-                    'f12': 'EM_' + rec.get('f12', ''),
-                    'f14': rec.get('f14', ''),
-                    'f3': _safe_float(rec.get('f3')),
-                    'f62': _parse_amount(rec.get('f62')),
-                    'f20': _parse_amount(rec.get('f20')),
-                } for rec in records if rec.get('f12') and rec.get('f14')]
-                _write_file_cache('sectors.json', self.sectors_raw)
-                self._sectors_fetched = True
-                self._last_source = 'curl'
-                _log('INFO', f'fetch_sectors: curl ok ({len(self.sectors_raw)} sectors)')
-                return self.sectors_raw
-        except Exception as _e:
-            _log('WARNING', f'fetch_sectors: curl fallback failed: {_e}')
 
         self._sectors_fetched = True
         self._last_source = 'failed'
