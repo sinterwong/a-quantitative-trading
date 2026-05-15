@@ -71,6 +71,29 @@ def _first_doc_line(doc: str) -> str:
     return ''
 
 
+# 全局响应信封 schema:所有 ok(data, ...) 响应包含的字段。
+_ENVELOPE_SUCCESS_SCHEMA = {
+    'type': 'object',
+    'required': ['status', 'timestamp'],
+    'properties': {
+        'status':    {'type': 'string', 'enum': ['ok']},
+        'timestamp': {'type': 'string'},
+    },
+    'additionalProperties': True,
+}
+
+_ENVELOPE_ERROR_SCHEMA = {
+    'type': 'object',
+    'required': ['status', 'error', 'timestamp'],
+    'properties': {
+        'status':    {'type': 'string', 'enum': ['error']},
+        'error':     {'type': 'string'},
+        'timestamp': {'type': 'string'},
+    },
+    'additionalProperties': True,
+}
+
+
 def generate_spec(app) -> Dict[str, Any]:
     """扫描 Flask app.url_map,生成 OpenAPI 3.0 spec dict。"""
     paths: Dict[str, Dict[str, Any]] = {}
@@ -95,8 +118,18 @@ def generate_spec(app) -> Dict[str, Any]:
                 'summary': summary or rule.endpoint,
                 'operationId': f'{method.lower()}_{rule.endpoint}',
                 'responses': {
-                    '200': {'description': 'OK'},
-                    '4XX': {'description': 'Client error'},
+                    '200': {
+                        'description': 'Success (ok envelope)',
+                        'content': {
+                            'application/json': {'schema': _ENVELOPE_SUCCESS_SCHEMA},
+                        },
+                    },
+                    '4XX': {
+                        'description': 'Client error (error envelope)',
+                        'content': {
+                            'application/json': {'schema': _ENVELOPE_ERROR_SCHEMA},
+                        },
+                    },
                     '5XX': {'description': 'Server error'},
                 },
             }
@@ -109,10 +142,16 @@ def generate_spec(app) -> Dict[str, Any]:
         'info': {
             'title': 'A-Share Quant Trading API',
             'version': '2.0.0',
-            'description': 'Auto-generated from Flask app.url_map (P4-3).',
+            'description': 'Auto-generated from Flask app.url_map (P4-3 + P2-2 schema).',
         },
         'servers': [{'url': 'http://127.0.0.1:5555'}],
         'paths': paths,
+        'components': {
+            'schemas': {
+                'EnvelopeSuccess': _ENVELOPE_SUCCESS_SCHEMA,
+                'EnvelopeError':   _ENVELOPE_ERROR_SCHEMA,
+            },
+        },
     }
 
 

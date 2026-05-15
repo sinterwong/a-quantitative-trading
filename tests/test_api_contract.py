@@ -114,5 +114,83 @@ class TestSmokeEndpoints(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
 
 
+# ─── P2-2: 响应 schema 校验 ─────────────────────────────────
+
+class TestResponseEnvelopeSchema(unittest.TestCase):
+    """
+    用 jsonschema 验证 read-only GET 端点的响应符合 EnvelopeSuccess schema:
+      {status: 'ok', timestamp: <str>, ...其他业务字段}
+
+    错误响应同理符合 EnvelopeError schema:
+      {status: 'error', error: <str>, timestamp: <str>}
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'api', str(PROJ_DIR / 'backend' / 'api.py'),
+        )
+        api = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(api)
+        cls.client = api.app.test_client()
+
+        with open(OPENAPI_PATH, encoding='utf-8') as f:
+            spec_doc = json.load(f)
+        cls.success_schema = spec_doc['components']['schemas']['EnvelopeSuccess']
+        cls.error_schema   = spec_doc['components']['schemas']['EnvelopeError']
+
+    def _assert_success(self, path: str):
+        from jsonschema import validate
+        r = self.client.get(path)
+        self.assertEqual(r.status_code, 200, msg=f'{path} returned {r.status_code}')
+        validate(instance=r.get_json(), schema=self.success_schema)
+
+    def _assert_error(self, path: str, method: str = 'GET', **kwargs):
+        from jsonschema import validate
+        fn = getattr(self.client, method.lower())
+        r = fn(path, **kwargs)
+        self.assertTrue(400 <= r.status_code < 500,
+                        msg=f'{path} returned {r.status_code}')
+        validate(instance=r.get_json(), schema=self.error_schema)
+
+    def test_health_response_matches_success_envelope(self):
+        self._assert_success('/health')
+
+    def test_positions_response_matches_success_envelope(self):
+        self._assert_success('/positions')
+
+    def test_cash_response_matches_success_envelope(self):
+        self._assert_success('/cash')
+
+    def test_portfolio_summary_response_matches_success_envelope(self):
+        self._assert_success('/portfolio/summary?refresh=0')
+
+    def test_signals_get_response_matches_success_envelope(self):
+        self._assert_success('/signals')
+
+    def test_trades_get_response_matches_success_envelope(self):
+        self._assert_success('/trades')
+
+    def test_watchlist_response_matches_success_envelope(self):
+        self._assert_success('/watchlist')
+
+    def test_market_status_response_matches_success_envelope(self):
+        self._assert_success('/market/status')
+
+    def test_risk_status_response_matches_success_envelope(self):
+        self._assert_success('/risk/status')
+
+    def test_invalid_macro_indicator_matches_error_envelope(self):
+        self._assert_error('/data/macro/UNKNOWN_INDICATOR_XYZ')
+
+    def test_missing_field_post_signals_matches_error_envelope(self):
+        self._assert_error('/signals', method='POST', json={'symbol': 'X'})
+
+    def test_invalid_orders_submit_matches_error_envelope(self):
+        self._assert_error('/orders/submit', method='POST',
+                           json={'symbol': 'X', 'direction': 'HOLD', 'shares': 100})
+
+
 if __name__ == '__main__':
     unittest.main()
