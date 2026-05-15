@@ -323,7 +323,7 @@ def test_quotes_empty_input():
 
 def test_sectors_routes_to_global_market(gw):
     p = _FakeProvider("em", capabilities=(Capability.SECTOR_RANKING,),
-                      markets=(Market.GLOBAL,),
+                      markets=(Market.A,),
                       sectors_value=[SectorRanking(code="X", name="x", change_pct=1)])
     gw.register_provider(p)
     out = gw.sectors(limit=10)

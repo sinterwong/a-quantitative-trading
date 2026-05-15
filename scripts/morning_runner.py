@@ -7,7 +7,7 @@ morning_runner.py — 早盘自动化（仅选股 + watchlist 同步 + 早报推
   通过 FactorPipeline + 风控链处理，避免双信号源并存。
 
 执行步骤：
-  Step 0: DynamicStockSelectorV2 选 N 只候选标的
+  Step 0: DynamicStockSelector 选 N 只候选标的
   Step 1: 同步候选到 backend watchlist（供 IntradayMonitor 09:31 评分使用）
   Step 2: 读取市场环境（regime）用于早报上下文
   Step 3: 记录开盘 daily_meta（candidates + 现金 + 权益）
@@ -92,13 +92,13 @@ def api_delete(path: str) -> dict:
 
 def fetch_selected_stocks(n: int = 5) -> list:
     """
-    调用 DynamicStockSelectorV2 获取当日热门标的。
+    调用 DynamicStockSelector 获取当日热门标的。
     Returns: [{symbol, name, reason, score}, ...]
     """
     try:
         import dynamic_selector
-        DynamicStockSelectorV2 = dynamic_selector.DynamicStockSelectorV2
-        sel = DynamicStockSelectorV2()
+        DynamicStockSelector = dynamic_selector.DynamicStockSelector
+        sel = DynamicStockSelector()
 
         _log.info('Fetching market news...')
         sel.fetch_market_news(30)

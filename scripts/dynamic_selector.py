@@ -449,16 +449,15 @@ class DynamicStockSelector:
         return []
 
     def fetch_sectors(self) -> List[Dict]:
-        """获取板块行情+资金流向，通过 QuoteSourceManager 统一数据源"""
+        """获取板块行情+资金流向，通过 Gateway 统一数据源（含多 provider failover）。"""
         if self._sectors_fetched and self.sectors_raw:
             return self.sectors_raw
 
-        # 通过 data_gateway 获取板块排名(默认路由到 eastmoney)
+        # 通过 data_gateway 获取板块排名（SECTOR_RANKING 能力，Gateway 层自动 failover 到 SinaProvider）
         try:
             from core.data_gateway import get_gateway
             sectors = get_gateway().sectors(limit=100)
             if sectors:
-                # 转换为原有 dict 格式（兼容现有 calc_sector_scores_from_bk）
                 self.sectors_raw = []
                 for s in sectors:
                     self.sectors_raw.append({
@@ -467,9 +466,9 @@ class DynamicStockSelector:
                         'f3': s.change_pct,
                         'f62': s.net_flow,
                         'f20': s.amount,
-                        '_source': 'eastmoney',
+                        '_source': 'gateway',
                     })
-                self._last_source = 'eastmoney'
+                self._last_source = 'gateway'
                 _write_file_cache('sectors.json', self.sectors_raw)
                 self._sectors_fetched = True
                 _log('INFO', f'fetch_sectors: gateway ok ({len(self.sectors_raw)} sectors)')
@@ -477,8 +476,8 @@ class DynamicStockSelector:
         except Exception as e:
             _log('WARNING', f'fetch_sectors: gateway failed: {e}')
 
-        # 文件缓存兜底
-        cached = _read_file_cache('sectors.json', max_age_seconds=3600)
+        # 文件缓存兜底（12h）
+        cached = _read_file_cache('sectors.json', max_age_seconds=43200)
         if cached:
             self.sectors_raw = cached
             self._sectors_fetched = True
@@ -1037,7 +1036,7 @@ if __name__ == '__main__':
     print('=' * 60)
     print()
 
-    sel = DynamicStockSelectorV2()
+    sel = DynamicStockSelector()
 
     print('[1/4] Fetching market news...')
     news = sel.fetch_market_news(30)

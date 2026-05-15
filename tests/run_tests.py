@@ -32,7 +32,7 @@ def check(cond, msg):
 
 sys.path.insert(0, os.path.join(PROJ_DIR, 'scripts'))
 from dynamic_selector import (
-    DynamicStockSelectorV2,
+    DynamicStockSelector,
     safe_float,
     safe_int,
     SECTOR_NEWS_KEYWORDS,
@@ -61,8 +61,8 @@ for sector, keywords in SECTOR_NEWS_KEYWORDS.items():
     check(len(keywords) > 0, sector + ' has keywords')
     check(all(isinstance(kw, str) for kw in keywords), sector + ' keywords are strings')
 
-section('DynamicStockSelectorV2')
-s = DynamicStockSelectorV2()
+section('DynamicStockSelector')
+s = DynamicStockSelector()
 total = (s.WEIGHT_NEWS + s.WEIGHT_SECTOR + s.WEIGHT_FLOW
          + s.WEIGHT_TECH + s.WEIGHT_CONSISTENCY)
 check(abs(total - 1.0) < 0.001, 'weights sum to 1.0 (got ' + str(total) + ')')

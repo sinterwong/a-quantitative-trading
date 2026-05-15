@@ -166,6 +166,7 @@ class EastmoneyProvider(Provider):
         return super().supports(capability, market)
 
     def _request(self, fs_param: str) -> Optional[dict]:
+        """基于 http client 的请求（供 fetch_sector_constituents 等方法使用）。"""
         params = {
             "cb": "jQuery",
             "pn": 1, "pz": 200, "po": 1, "np": 1,
@@ -174,11 +175,46 @@ class EastmoneyProvider(Provider):
             "fields": _FIELDS,
         }
         try:
-            text = self._http.get_text(
-                _BASE_URL, params=params, headers=_HEADERS, encoding="utf-8",
-            )
+            text = self._http.get_text(_BASE_URL, params=params, headers=_HEADERS)
+            return json.loads(parse_jsonp(text))
         except HttpError as exc:
             raise ProviderError(f"eastmoney.request({fs_param}): {exc}") from exc
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise ProviderError(f"eastmoney.request({fs_param}): JSON 解析失败: {exc}") from exc
+
+    def _request_em(self, fs_param: str) -> Optional[dict]:
+        import subprocess, shlex
+
+        params = {
+            "cb": "jQuery",
+            "pn": 1, "pz": 200, "po": 1, "np": 1,
+            "ut": "b", "fltt": 2, "invt": 2, "fid": "f3",
+            "fs": fs_param,
+            "fields": _FIELDS,
+        }
+        qs = "&".join(f"{k}={v}" for k, v in params.items())
+        url = f"{_BASE_URL}?{qs}"
+        referer = _HEADERS["Referer"]
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        # 通过 shell 执行 curl，还原 terminal 行为
+        curl_cmd = (
+            f"/usr/bin/curl -s --connect-timeout 10 --max-time 15 "
+            f"-4 --http1.1 {shlex.quote(url)} "
+            f"-H {shlex.quote('Referer: ' + referer)} "
+            f"-H {shlex.quote(ua)}"
+        )
+        try:
+            result = subprocess.run(
+                ["sh", "-c", curl_cmd],
+                capture_output=True, text=True, timeout=20,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                raise ProviderError(f"eastmoney.request({fs_param}): curl failed (rc={result.returncode})")
+            text = result.stdout.strip()
+        except subprocess.TimeoutExpired as exc:
+            raise ProviderError(f"eastmoney.request({fs_param}): curl timeout") from exc
+        except OSError as exc:
+            raise ProviderError(f"eastmoney.request({fs_param}): curl not found") from exc
 
         try:
             return json.loads(parse_jsonp(text))
@@ -188,12 +224,22 @@ class EastmoneyProvider(Provider):
     # ── SECTOR_RANKING ───────────────────────────────────────────────────────
 
     def fetch_sectors(self, limit: int = 100) -> List[SectorRanking]:
-        raw = self._request("m:90+t:2+f:!50")
-        if raw is None:
-            return []
+        # 尝试 _request_em（curl via subprocess，对 WSL 网络更稳定）
+        # 失败后尝试 _request（http client，备用路径）
+        raw = None
+        for req_fn in (self._request_em, self._request):
+            try:
+                raw = req_fn("m:90+t:2+f:!50")
+                if raw and isinstance(raw, dict):
+                    break
+            except ProviderError:
+                continue
+        if not raw or not isinstance(raw, dict):
+            raise ProviderError("eastmoney.fetch_sectors: 无数据返回")
+
         records = ((raw.get("data") or {}).get("diff") or [])
-        if not isinstance(records, list):
-            return []
+        if not isinstance(records, list) or not records:
+            raise ProviderError("eastmoney.fetch_sectors: diff 字段为空")
 
         sectors: List[SectorRanking] = []
         for i, rec in enumerate(records, 1):
@@ -210,7 +256,6 @@ class EastmoneyProvider(Provider):
                 rank_perf=i,
                 rank_flow=0,
             ))
-        # 按资金流补 rank_flow
         for rank, sec in enumerate(sorted(sectors, key=lambda s: s.net_flow, reverse=True), 1):
             sec.rank_flow = rank
         return sectors[:limit]
