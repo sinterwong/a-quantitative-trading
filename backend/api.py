@@ -404,27 +404,17 @@ def portfolio_daily():
 def record_portfolio_daily():
     """
     POST /portfolio/daily - record daily meta.
-    Body: {date, equity, cash, market_value, nav, notes}
+    Body: {equity, cash, n_signals, n_trades, notes}
     """
-    try:
-        svc = get_svc()
-        body = request.get_json() or {}
-        equity     = float(body.get('equity', 0))
-        cash       = float(body.get('cash', 0))
-        market_val = float(body.get('market_value', 0))
-        nav        = float(body.get('nav', 1.0))
-        notes      = str(body.get('notes', ''))
-        n_signals  = int(body.get('n_signals', 0))
-        n_trades   = int(body.get('n_trades', 0))
-        svc.record_daily_meta(
-            equity=equity, cash=cash,
-            n_signals=n_signals, n_trades=n_trades,
-            note=notes
-        )
-        return ok(message='daily meta recorded')
-    except Exception as e:
-        import traceback
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+    body = request.get_json() or {}
+    get_svc().record_daily_meta(
+        equity=float(body.get('equity', 0)),
+        cash=float(body.get('cash', 0)),
+        n_signals=int(body.get('n_signals', 0)),
+        n_trades=int(body.get('n_trades', 0)),
+        note=str(body.get('notes', '')),
+    )
+    return ok(message='daily meta recorded')
 
 
 # ============================================================
