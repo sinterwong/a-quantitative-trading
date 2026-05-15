@@ -37,20 +37,15 @@ def client():
     return api.app.test_client()
 
 
-# 允许的状态码(任何端点都不能 5xx)
-_OK = lambda r: r.status_code < 500
-
-
 # ────────────────────────────────────────────────────────
 # Analysis 系列
 # ────────────────────────────────────────────────────────
 
 def test_analysis_health_get(client):
     r = client.get('/analysis/health')
-    assert _OK(r)
-    if r.status_code == 200:
-        data = r.get_json()
-        assert 'level' in data and data['level'] in {'OK', 'WARN', 'CRITICAL'}
+    assert r.status_code == 200
+    data = r.get_json()
+    assert 'level' in data and data['level'] in {'OK', 'WARN', 'CRITICAL'}
 
 
 def test_analysis_run_post_uses_use_case(client):
@@ -66,18 +61,19 @@ def test_analysis_run_post_uses_use_case(client):
     fake_module.DynamicStockSelector = MagicMock(return_value=selector)
     with patch.dict(sys.modules, {'dynamic_selector': fake_module}):
         r = client.post('/analysis/run')
-    assert _OK(r), r.status_code
+    assert r.status_code == 200, r.status_code
 
 
 def test_analysis_sector_rotation_post_empty_body_handled(client):
-    """缺数据时端点应返回结构化错误 (422/503),不应 500。"""
+    """所有 ETF 行情为空时, use case 抛 DATA_UNAVAILABLE → 端点 503。"""
     import core.data_layer as _dl
     fake_dl = MagicMock()
     fake_dl.get_bars.return_value = None
     with patch.object(_dl, 'get_data_layer', return_value=fake_dl):
         r = client.post('/analysis/sector_rotation', json={})
-    # 503 是 use case 报 DATA_UNAVAILABLE 的预期映射,允许
-    assert r.status_code in (200, 422, 503), f'unexpected: {r.status_code}'
+    assert r.status_code == 503, f'expected 503 (DATA_UNAVAILABLE), got {r.status_code}'
+    body = r.get_json()
+    assert body['status'] == 'error'
 
 
 def test_analysis_pairs_trading_rejects_single_symbol(client):
@@ -96,26 +92,26 @@ def test_analysis_sector_compare_requires_sector_or_symbols(client):
 
 
 def test_analysis_monthly_get_default(client):
-    """缺 services.performance 时可能 500,但用 patch 替换避免。"""
+    """services.performance 被 patch 后必须 200,不允许 4xx 退化。"""
     with patch('services.performance.generate_monthly_report',
                return_value={'returns': {}, 'summary': {}, 'equity_series': [],
                              'benchmark_curve': [], 'chart_base64': None}):
         r = client.get('/analysis/monthly?year=2026&month=4&include_chart=0')
-    assert _OK(r)
+    assert r.status_code == 200, r.status_code
 
 
 def test_analysis_monthly_snapshot_post(client):
     with patch('services.performance.record_monthly_snapshot',
                return_value={'year': 2026, 'month': 4}):
         r = client.post('/analysis/monthly/snapshot', json={'year': 2026, 'month': 4})
-    assert _OK(r)
+    assert r.status_code == 200, r.status_code
 
 
 def test_analysis_monthly_history_get(client):
     """端点使用 get_monthly_snapshots(非 list_monthly_snapshots)。"""
     with patch('services.performance.get_monthly_snapshots', return_value=[]):
         r = client.get('/analysis/monthly/history')
-    assert _OK(r)
+    assert r.status_code == 200, r.status_code
 
 
 # ────────────────────────────────────────────────────────
@@ -143,13 +139,15 @@ def test_data_fund_flow_get(client):
     fake_module = MagicMock(FundFlowService=MagicMock(return_value=fake_svc))
     with patch.dict(sys.modules, {'services.fund_flow': fake_module}):
         r = client.get('/data/fund_flow')
-    assert _OK(r)
+    assert r.status_code == 200, r.status_code
 
 
 def test_data_macro_get_valid_indicator(client):
-    """已知指标。失败时端点应返回 404/500-side gracefully。"""
+    """已知 PMI 指标读本地缓存即可,不应 5xx 也不应 4xx。"""
     r = client.get('/data/macro/PMI')
-    assert _OK(r)
+    # 网络/外部依赖在 CI 不可用时端点会返回 503/200 之一——
+    # 这里仅保证不是 4xx(说明被误判为客户端错误)且不 500。
+    assert r.status_code in (200, 503), r.status_code
 
 
 def test_data_macro_get_invalid_indicator(client):
@@ -168,7 +166,8 @@ def test_data_news_get(client):
 
 def test_data_realtime_get(client):
     r = client.get('/data/realtime/600519.SH')
-    assert _OK(r)
+    # 实时行情依赖外网(腾讯/新浪),CI 无网络可能 503。不允许 4xx/500。
+    assert r.status_code in (200, 503), r.status_code
 
 
 # ────────────────────────────────────────────────────────
@@ -232,15 +231,17 @@ def test_market_status_get(client):
 
 def test_metrics_get_returns_text(client):
     r = client.get('/metrics')
-    assert _OK(r)
-    # Prometheus 格式或错误注释
+    assert r.status_code == 200
+    # Prometheus 格式必须包含注释或 trading_ 前缀指标
     assert b'#' in r.data or b'trading_' in r.data
 
 
 def test_monitor_status_no_monitor_returns_503(client):
     r = client.get('/monitor/status')
-    # 单元测试场景没启动 monitor
-    assert r.status_code in (200, 503)
+    # 单元测试场景 backend.api 模块导入时没启动 monitor → 必然 503。
+    assert r.status_code == 503, r.status_code
+    body = r.get_json()
+    assert body['status'] == 'error'
 
 
 def test_northbound_flow_get(client):
@@ -351,7 +352,7 @@ def test_trades_post_missing_field(client):
 
 def test_trading_mode_put_simulation(client):
     r = client.put('/trading/mode', json={'mode': 'simulation'})
-    assert _OK(r)
+    assert r.status_code == 200, r.status_code
 
 
 def test_watchlist_patch(client):
@@ -366,7 +367,7 @@ def test_watchlist_patch(client):
 def test_watchlist_delete(client):
     client.post('/watchlist/add', json={'symbol': 'TEST_DELETE.SH'})
     r = client.delete('/watchlist/TEST_DELETE.SH')
-    assert _OK(r)
+    assert r.status_code == 200, r.status_code
 
 
 # ────────────────────────────────────────────────────────
@@ -382,10 +383,10 @@ def test_wfa_history_get(client):
         pytest.skip('services.wfa_history 不可用')
     with patch('services.wfa_history.get_wfa_history', return_value=[]):
         r = client.get('/wfa/history')
-    assert _OK(r)
+    assert r.status_code == 200, r.status_code
 
 
 def test_wfa_summary_get_missing_symbol(client):
     r = client.get('/wfa/summary')
-    # 端点对 symbol 必填的处理:可能 400 或 404
-    assert r.status_code in (400, 404, 422)
+    # symbol 缺失走输入校验分支 → 422
+    assert r.status_code == 422, r.status_code
