@@ -9,8 +9,7 @@ import unittest
 from datetime import datetime
 
 from core.data_sources import (
-    SPFuturesDataSource, VIXDataSource, HSIFuturesDataSource,
-    TencentMinuteDataSource, NorthBoundDataSource,
+    NorthBoundDataSource,
     CompositeMarketDataSource, MarketSnapshot,
 )
 from core.oms import OMS, EventDrivenPaperBroker, Order
@@ -19,22 +18,6 @@ from core.event_bus import EventBus
 
 
 class TestDataSources(unittest.TestCase):
-
-    def test_sp500_fetch(self):
-        ds = SPFuturesDataSource('ES=F')
-        result = ds.fetch_latest()
-        self.assertIn('symbol', result)
-        # yfinance 全球限速是常见情况，代码需优雅降级（有 error key 或有 close key）
-        has_data = 'close' in result
-        has_error = 'error' in result
-        self.assertTrue(has_data or has_error, f'Result must have close or error: {result}')
-        print(f"\nSP500: {result}")
-
-    def test_vix_fetch(self):
-        ds = VIXDataSource()
-        result = ds.fetch_latest()
-        self.assertIn('symbol', result)
-        print(f"\nVIX: {result}")
 
     def test_northbound(self):
         ds = NorthBoundDataSource()
@@ -48,11 +31,6 @@ class TestDataSources(unittest.TestCase):
         self.assertIsInstance(snap, MarketSnapshot)
         self.assertIsNotNone(snap.timestamp)
         print(f"\nCompositeSnapshot: SP={snap.sp500_change_pct}%, VIX={snap.vix}, North={snap.north_net_yi}Yi")
-
-    def test_tencent_minute(self):
-        ds = TencentMinuteDataSource('600900.SH')
-        result = ds.fetch_latest()
-        print(f"\nTencentMinute 600900.SH: {result}")
 
 
 class TestPaperBroker(unittest.TestCase):

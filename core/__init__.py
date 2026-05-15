@@ -33,10 +33,9 @@ from core.strategies.signal_engine import SignalEngine, CompositeSignalEngine
 from core.oms import OMS, EventDrivenPaperBroker, Order, Fill, Position, BrokerAdapter
 from core.risk_engine import RiskEngine, RiskResult, RiskPosition, PositionBook
 from core.data_sources import (
-    DataSource,
-    SPFuturesDataSource, VIXDataSource, HSIFuturesDataSource,
-    TencentMinuteDataSource, NorthBoundDataSource,
-    CompositeMarketDataSource, MarketSnapshot,
+    MarketSnapshot,
+    NorthBoundDataSource,
+    CompositeMarketDataSource,
 )
 from core.level2 import (
     Level2DataSource, OrderBook, TickBarAggregator, TickBar,
@@ -67,10 +66,9 @@ __all__ = [
     # Risk
     'RiskEngine', 'RiskResult', 'RiskPosition', 'PositionBook',
     # DataSources
-    'DataSource',
-    'SPFuturesDataSource', 'VIXDataSource', 'HSIFuturesDataSource',
-    'TencentMinuteDataSource', 'NorthBoundDataSource',
-    'CompositeMarketDataSource', 'MarketSnapshot',
+    'MarketSnapshot',
+    'NorthBoundDataSource',
+    'CompositeMarketDataSource',
     # Level2
     'Level2DataSource', 'OrderBook', 'TickBarAggregator', 'TickBar',
     # Backtest
