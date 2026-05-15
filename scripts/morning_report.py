@@ -16,7 +16,6 @@ morning_report.py — A股早报生成模块
 import os
 import sys
 import json
-import ssl
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -144,7 +143,7 @@ def _fetch_llm_market_narrative(sentiment: Dict) -> str:
 # ─────────────────────────────────────────────────────────
 
 def _fetch_index_prices() -> List[Dict]:
-    """获取上证/深证/创业板/科创50/沪深300指数实时价格"""
+    """获取上证/深证/创业板/科创50/沪深300指数实时价格，走 Gateway"""
     indices = [
         ('sh000001', '上证指数'),
         ('sz399001', '深证成指'),
@@ -154,36 +153,20 @@ def _fetch_index_prices() -> List[Dict]:
     ]
     result = []
     try:
-        import urllib.request
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        codes = ','.join(k for k, _ in indices)
-        url = f'https://qt.gtimg.cn/q={codes}'
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
-            raw = resp.read().decode('gbk', errors='replace')
-        lines = raw.strip().split('\n')
-        for line in lines:
-            parts = line.split('~')
-            if len(parts) < 35:
-                continue
-            for ticker, name in indices:
-                if ticker in parts[0]:
-                    try:
-                        price = float(parts[3])   # 当前价
-                        prev  = float(parts[4])   # 昨收
-                        pct   = (price - prev) / prev * 100 if prev else 0.0
-                        result.append({
-                            'name':  name,
-                            'price': price,
-                            'pct':   pct,           # 统一为 float，避免格式化混用
-                        })
-                    except (ValueError, IndexError):
-                        pass
-                    break
+        from core.data_gateway import get_gateway
+        symbols = [ticker for ticker, _ in indices]
+        quotes = get_gateway().quotes(symbols)
+        for ticker, name in indices:
+            q = quotes.get(ticker)
+            if q and q.price and q.prev_close:
+                pct = (q.price - q.prev_close) / q.prev_close * 100
+                result.append({
+                    'name': name,
+                    'price': q.price,
+                    'pct': pct,
+                })
     except Exception as e:
-        _logger.warning('Index fetch failed: %s', e)
+        _logger.warning('Index fetch via gateway failed: %s', e)
     return result
 
 

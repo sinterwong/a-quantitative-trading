@@ -181,36 +181,19 @@ class LiveDataProvider(DataProvider):
         return self._hist_provider.get_institutional(symbol, quarter)
 
     def get_vwap(self, symbol, date_str: str) -> float:
+        """Get today's real-time VWAP via Gateway kline.
+
+        Falls back to HistoricalDataProvider.get_vwap() if Gateway fails.
         """
-        Get today's real-time VWAP from Eastmoney push2 API.
-        Fields: f47=volume, f48=turnover. VWAP = f48/f47
-        Falls back to HistoricalDataProvider.get_vwap() if API fails.
-        """
-        import urllib.request, ssl, json
-        sym_map = {'SH': '1.', 'SZ': '0.'}
-        prefix = sym_map.get(symbol[-2:], '1.')
-        code = symbol[:6]
-        em_url = (
-            f'https://push2.eastmoney.com/api/qt/stock/get'
-            f'?ut=fa5fd1943c7b386f172d6893dbfba10b'
-            f'&fields=f43,f44,f45,f46,f47,f48'
-            f'&secid={prefix}{code}'
-        )
         try:
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            req = urllib.request.Request(
-                em_url,
-                headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://quote.eastmoney.com/'}
-            )
-            with urllib.request.urlopen(req, timeout=5, context=ctx) as resp:
-                data = json.loads(resp.read())
-                fields = data.get('data', {})
-                volume = float(fields.get('f47', 0) or 0)
-                turnover = float(fields.get('f48', 0) or 0)
-                if volume > 0:
-                    return turnover / volume
+            from core.data_gateway import get_gateway
+            df = get_gateway().kline(symbol, interval="daily", days=1, limit=1)
+            if df is not None and not df.empty and len(df) == 1:
+                row = df.iloc[0]
+                vol = float(row.get('volume', 0) or 0)
+                amt = float(row.get('amount', 0) or 0)
+                if vol > 0:
+                    return amt / vol
         except Exception:
             pass
         return self._hist_provider.get_vwap(symbol, date_str)
@@ -218,11 +201,32 @@ class LiveDataProvider(DataProvider):
 
     def _fetch_today_realtime(self, symbol) -> dict:
         """
-        获取今日实时行情
+        获取今日实时行情。
 
-        使用腾讯财经实时API
-        返回当日截至当前的OHLCV快照
+        走 Gateway.quotes() 获取快照（OHLCV），绕过腾讯直接调用。
+        如 Gateway 不可用则降级到腾讯/新浪双 URL 兜底（盘中实时性要求高，
+        而 Gateway 层暂无 INTRADAY_OHLCV 能力，保留直接调用作保底）。
         """
+        try:
+            from core.data_gateway import get_gateway
+            quotes = get_gateway().quotes([symbol])
+            q = quotes.get(symbol)
+            if q and q.price > 0:
+                from datetime import date
+                today_str = date.today().strftime('%Y-%m-%d')
+                return {
+                    'date': today_str,
+                    'open': q.open or q.price,
+                    'close': q.price,
+                    'high': q.high or q.price,
+                    'low': q.low or q.price,
+                    'volume': q.volume,
+                    'amount': q.amount,
+                }
+        except Exception:
+            pass
+
+        # 兜底：腾讯/新浪直接调用（盘中实时性高，Gateway 无 INTRADAY_OHLCV 能力时保命用）
         import urllib.request
         import json
 
