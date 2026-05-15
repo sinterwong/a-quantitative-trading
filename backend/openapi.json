@@ -1,189 +1,1010 @@
 {
   "openapi": "3.0.0",
   "info": {
-    "title": "A-Share Portfolio Backend API",
-    "version": "1.0.0",
-    "description": "Portfolio management API for A-share quantitative trading system."
+    "title": "A-Share Quant Trading API",
+    "version": "2.0.0",
+    "description": "Auto-generated from Flask app.url_map (P4-3)."
   },
-  "servers": [{"url": "http://127.0.0.1:5555"}],
+  "servers": [
+    {
+      "url": "http://127.0.0.1:5555"
+    }
+  ],
   "paths": {
-
-    "/health": {
-      "get": {
-        "summary": "Health check",
-        "responses": {"200": {"description": "Service is healthy"}}
-      }
-    },
-
-    "/cash": {
-      "get": {
-        "summary": "Available cash",
-        "responses": {"200": {"description": "Cash balance", "content": {"application/json": {"example": {"status": "ok", "cash": 25000.0}}}}}
-      }
-    },
-
-    "/positions": {
-      "get": {
-        "summary": "Current positions with unrealized P&L",
-        "parameters": [
-          {"name": "refresh", "in": "query", "schema": {"type": "string"}, "description": "Set refresh=1 to fetch latest prices"}
-        ],
-        "responses": {"200": {"description": "Positions array"}}
-      }
-    },
-
-    "/trades": {
-      "get": {
-        "summary": "Recent trades",
-        "parameters": [
-          {"name": "symbol", "in": "query", "schema": {"type": "string"}},
-          {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50}}
-        ],
-        "responses": {"200": {"description": "Trades list"}}
-      },
+    "/alerts/clear": {
       "post": {
-        "summary": "Record a completed trade",
-        "requestBody": {
-          "required": true,
-          "content": {"application/json": {"example": {"symbol": "600900.SH", "direction": "BUY", "shares": 200, "price": 23.50, "pnl": null}}}
-        },
-        "responses": {"200": {"description": "Trade recorded"}}
-      }
-    },
-
-    "/signals": {
-      "get": {
-        "summary": "Recent signals",
-        "parameters": [
-          {"name": "symbol", "in": "query", "schema": {"type": "string"}},
-          {"name": "since", "in": "query", "schema": {"type": "string"}},
-          {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50}}
-        ],
-        "responses": {"200": {"description": "Signals array"}}
-      },
-      "post": {
-        "summary": "Record a signal",
-        "requestBody": {
-          "required": true,
-          "content": {"application/json": {"example": {"symbol": "600900.SH", "signal": "BUY", "strength": 0.85, "reason": "RSI oversold"}}}
-        },
-        "responses": {"200": {"description": "Signal recorded"}}
-      }
-    },
-
-    "/portfolio/summary": {
-      "get": {
-        "summary": "Full portfolio snapshot with P&L",
-        "parameters": [
-          {"name": "refresh", "in": "query", "schema": {"type": "string"}, "description": "Set refresh=1 to fetch latest prices"}
-        ],
-        "responses": {"200": {"description": "Portfolio summary"}}
-      }
-    },
-
-    "/portfolio/positions": {
-      "post": {
-        "summary": "Upsert a position",
-        "requestBody": {
-          "required": true,
-          "content": {"application/json": {"example": {"symbol": "600900.SH", "shares": 200, "entry_price": 23.50}}}
-        },
-        "responses": {"200": {"description": "Position updated"}}
-      }
-    },
-
-    "/portfolio/cash": {
-      "post": {
-        "summary": "Set cash balance",
-        "requestBody": {
-          "required": true,
-          "content": {"application/json": {"example": {"amount": 25000.0}}}
-        },
-        "responses": {"200": {"description": "Cash updated"}}
-      }
-    },
-
-    "/portfolio/daily": {
-      "get": {
-        "summary": "Recent daily summaries",
-        "parameters": [
-          {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 30}}
-        ],
-        "responses": {"200": {"description": "Daily summaries"}}
-      }
-    },
-
-    "/orders/submit": {
-      "post": {
-        "summary": "Submit a BUY or SELL order (PaperBroker fills immediately)",
-        "requestBody": {
-          "required": true,
-          "content": {"application/json": {"example": {"symbol": "600900.SH", "direction": "BUY", "shares": 200, "price": 23.50, "price_type": "limit"}}}
-        },
+        "summary": "POST /alerts/clear",
+        "operationId": "post_clear_alerts",
         "responses": {
-          "200": {"description": "Order result", "content": {"application/json": {"example": {"status": "filled", "filled_shares": 200, "avg_fill_price": 23.50}}}},
-          "400": {"description": "Validation error or insufficient funds"}
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
         }
       }
     },
-
-    "/orders": {
+    "/alerts/history": {
       "get": {
-        "summary": "List orders",
-        "parameters": [
-          {"name": "symbol", "in": "query", "schema": {"type": "string"}},
-          {"name": "status", "in": "query", "schema": {"type": "string", "enum": ["submitted", "filled", "cancelled", "rejected"]}},
-          {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50}}
-        ],
-        "responses": {"200": {"description": "Orders list"}}
-      }
-    },
-
-    "/orders/{order_id}": {
-      "get": {
-        "summary": "Get single order by ID",
-        "parameters": [
-          {"name": "order_id", "in": "path", "required": true, "schema": {"type": "string"}}
-        ],
+        "summary": "GET /alerts/history",
+        "operationId": "get_alerts_history",
         "responses": {
-          "200": {"description": "Order detail"},
-          "404": {"description": "Order not found"}
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
         }
       }
     },
-
-    "/orders/{order_id}/cancel": {
+    "/analysis/health": {
+      "get": {
+        "summary": "GET /analysis/health — 系统健康状态 (use case: system_health)。",
+        "operationId": "get_analysis_health",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/analysis/monthly": {
+      "get": {
+        "summary": "GET /analysis/monthly?year=2026&month=4&include_chart=1",
+        "operationId": "get_monthly_performance",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/analysis/monthly/history": {
+      "get": {
+        "summary": "GET /analysis/monthly/history?limit=12",
+        "operationId": "get_monthly_history",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/analysis/monthly/snapshot": {
       "post": {
-        "summary": "Cancel a pending order",
-        "parameters": [
-          {"name": "order_id", "in": "path", "required": true, "schema": {"type": "string"}}
-        ],
+        "summary": "POST /analysis/monthly/snapshot",
+        "operationId": "post_record_monthly_snapshot",
         "responses": {
-          "200": {"description": "Cancelled"},
-          "404": {"description": "Order not found"},
-          "409": {"description": "Cannot cancel (not in submitted state)"}
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
         }
       }
     },
-
+    "/analysis/pairs_trading": {
+      "post": {
+        "summary": "POST /analysis/pairs_trading",
+        "operationId": "post_pairs_trading_signal",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
     "/analysis/run": {
       "post": {
-        "summary": "Trigger daily analysis (refreshes signals and sector data)",
-        "responses": {"200": {"description": "Analysis result"}}
+        "summary": "POST /analysis/run — 触发每日分析 (use case: daily_analysis)。",
+        "operationId": "post_run_analysis",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
       }
     },
-
+    "/analysis/sector/compare": {
+      "post": {
+        "summary": "POST /analysis/sector/compare",
+        "operationId": "post_sector_compare",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/analysis/sector_rotation": {
+      "post": {
+        "summary": "POST /analysis/sector_rotation",
+        "operationId": "post_sector_rotation_signal",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
     "/analysis/status": {
       "get": {
-        "summary": "Last analysis run status",
-        "responses": {"200": {"description": "Last analysis"}}
+        "summary": "GET /analysis/status — last known analysis metadata.",
+        "operationId": "get_analysis_status",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
       }
     },
-
+    "/analysis/stock/a": {
+      "post": {
+        "summary": "POST /analysis/stock/a",
+        "operationId": "post_analyze_a_stock_endpoint",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/analysis/stock/hk": {
+      "post": {
+        "summary": "POST /analysis/stock/hk",
+        "operationId": "post_analyze_hk_stock_endpoint",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/cash": {
+      "get": {
+        "summary": "GET /cash — available cash.",
+        "operationId": "get_get_cash",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/data/daily/{code}": {
+      "get": {
+        "summary": "GET /data/daily/<code>",
+        "operationId": "get_data_daily",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/data/fund_flow": {
+      "get": {
+        "summary": "GET /data/fund_flow",
+        "operationId": "get_data_fund_flow",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/data/macro/{indicator}": {
+      "get": {
+        "summary": "GET /data/macro/PMI",
+        "operationId": "get_get_macro_data",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "indicator",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/data/realtime/{symbol}": {
+      "get": {
+        "summary": "GET /data/realtime/<symbol> — 轻量实时行情接口。",
+        "operationId": "get_data_realtime",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/data/status": {
+      "get": {
+        "summary": "GET /data/status",
+        "operationId": "get_data_status",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
     "/docs": {
       "get": {
-        "summary": "OpenAPI specification",
-        "responses": {"200": {"description": "OpenAPI JSON spec"}}
+        "summary": "OpenAPI spec at /docs.",
+        "operationId": "get_docs",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/fundamentals/{symbol}": {
+      "get": {
+        "summary": "GET /fundamentals/600036.SH",
+        "operationId": "get_get_fundamentals",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Liveness probe.",
+        "operationId": "get_health",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/llm/analyze": {
+      "post": {
+        "summary": "POST /llm/analyze — LLM 独立信号审核 (services.llm.service.signal_review 入口)。",
+        "operationId": "post_llm_analyze",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/market/status": {
+      "get": {
+        "summary": "GET /market/status — 当前 A 股是否开盘、当前时段、下次切换时间。",
+        "operationId": "get_market_status",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "summary": "GET /metrics — Prometheus 格式监控指标（in-process 刷新，无自调 HTTP）。",
+        "operationId": "get_metrics_endpoint",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/monitor/status": {
+      "get": {
+        "summary": "GET /monitor/status",
+        "operationId": "get_monitor_status",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/northbound/flow": {
+      "get": {
+        "summary": "GET /northbound/flow?refresh=1",
+        "operationId": "get_northbound_flow",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/orders/{order_id}/cancel": {
+      "post": {
+        "summary": "POST /orders/<order_id>/cancel — 撤销挂单。",
+        "operationId": "post_cancel_order",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/orders/pending": {
+      "get": {
+        "summary": "GET /orders/pending — 所有挂起/部分成交的订单。",
+        "operationId": "get_pending_orders",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/orders/recent": {
+      "get": {
+        "summary": "GET /orders/recent?symbol=600036.SH&status=filled&limit=50",
+        "operationId": "get_recent_orders",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/orders/submit": {
+      "post": {
+        "summary": "POST /orders/submit — 通过共享 broker 提交订单(simulation 模式下 PaperBroker 即时撮合)。",
+        "operationId": "post_submit_order",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/params": {
+      "get": {
+        "summary": "GET /params — 全量参数列表（params.json + live_params.json 合并视图）。",
+        "operationId": "get_list_all_params",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/params/{symbol}": {
+      "get": {
+        "summary": "GET /params/<symbol> — 查询单股参数（WFA + 手工配置合并后）。",
+        "operationId": "get_get_symbol_params",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "patch": {
+        "summary": "PATCH /params/<symbol> — 更新单股参数（写入 params.json）。",
+        "operationId": "patch_update_symbol_params",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/performance/summary": {
+      "get": {
+        "summary": "GET /performance/summary?year=2026&month=4&include_chart=1 — 月度绩效聚合。",
+        "operationId": "get_performance_summary",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/portfolio/cash": {
+      "post": {
+        "summary": "POST /portfolio/cash — set cash amount.",
+        "operationId": "post_set_cash",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/portfolio/daily": {
+      "get": {
+        "summary": "GET /portfolio/daily — recent daily summaries.",
+        "operationId": "get_portfolio_daily",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      },
+      "post": {
+        "summary": "POST /portfolio/daily - record daily meta.",
+        "operationId": "post_record_portfolio_daily",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/portfolio/positions": {
+      "post": {
+        "summary": "POST /portfolio/positions — upsert a position.",
+        "operationId": "post_upsert_position",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/portfolio/summary": {
+      "get": {
+        "summary": "GET /portfolio/summary?refresh=1",
+        "operationId": "get_portfolio_summary",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/positions": {
+      "get": {
+        "summary": "GET /positions?refresh=1",
+        "operationId": "get_get_positions",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/risk/status": {
+      "get": {
+        "summary": "GET /risk/status — 风控快照（组合敞口、板块集中度、回撤、Kelly）。",
+        "operationId": "get_risk_status",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/signals": {
+      "get": {
+        "summary": "GET /signals — recent signals.",
+        "operationId": "get_get_signals",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      },
+      "post": {
+        "summary": "POST /signals — record a signal.",
+        "operationId": "post_record_signal",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/trades": {
+      "get": {
+        "summary": "GET /trades — recent trades.",
+        "operationId": "get_get_trades",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      },
+      "post": {
+        "summary": "POST /trades — record a completed trade.",
+        "operationId": "post_record_trade",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/trading/mode": {
+      "get": {
+        "summary": "Return current trading mode (simulation or live).",
+        "operationId": "get_get_trading_mode",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      },
+      "put": {
+        "summary": "Set trading mode. Body: {\"mode\": \"simulation\"|\"live\"}",
+        "operationId": "put_set_trading_mode",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/watchlist": {
+      "get": {
+        "summary": "GET /watchlist — 返回当前自选股列表",
+        "operationId": "get_get_watchlist",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/watchlist/{symbol}": {
+      "delete": {
+        "summary": "DELETE /watchlist/<symbol> — 移除自选股（软删除）",
+        "operationId": "delete_remove_watchlist",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "patch": {
+        "summary": "PATCH /watchlist/<symbol>",
+        "operationId": "patch_patch_watchlist",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/watchlist/add": {
+      "post": {
+        "summary": "POST /watchlist/add",
+        "operationId": "post_add_watchlist",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/wfa/history": {
+      "get": {
+        "summary": "GET /wfa/history?symbol=600036.SH&strategy=RSI&limit=30",
+        "operationId": "get_wfa_history",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/wfa/summary": {
+      "get": {
+        "summary": "GET /wfa/summary?symbol=600036.SH",
+        "operationId": "get_wfa_summary",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "4XX": {
+            "description": "Client error"
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
       }
     }
   }
