@@ -133,7 +133,16 @@ def test_data_daily_get_unknown_symbol(client):
 
 
 def test_data_fund_flow_get(client):
-    r = client.get('/data/fund_flow')
+    """端点依赖 services.fund_flow + AkShare,CI 无网络/无 akshare 时全 mock。"""
+    fake_svc = MagicMock()
+    fake_svc.get_market_fund_flow.return_value = {
+        'sh_close': 3000, 'sh_change': 0.5,
+        'sz_close': 10000, 'sz_change': 0.7,
+        'main_net': 1.0, 'main_pct': 0.5,
+    }
+    fake_module = MagicMock(FundFlowService=MagicMock(return_value=fake_svc))
+    with patch.dict(sys.modules, {'services.fund_flow': fake_module}):
+        r = client.get('/data/fund_flow')
     assert _OK(r)
 
 
@@ -189,15 +198,20 @@ def test_llm_analyze_missing_field(client):
 
 
 def test_llm_analyze_complete_body(client):
-    """提供全部必填字段 + 关掉 provider 路径 → 走 fallback。"""
-    with patch('services.llm.service.signal_review') as mock_review:
-        result = MagicMock()
-        result.approved = True
-        result.decision = 'approve'
-        result.reason = 'OK'
-        result.confidence = 0.7
-        result.size_rec = 'full'
-        mock_review.return_value = result
+    """提供全部必填字段 + mock signal_review 服务,避免触发真实 LLM provider。
+
+    端点函数体内 `from services.llm.service import signal_review`,
+    所以需要 sys.modules patch(避免 services.llm 子包未 import 时找不到)。
+    """
+    result = MagicMock()
+    result.approved = True
+    result.decision = 'approve'
+    result.reason = 'OK'
+    result.confidence = 0.7
+    result.size_rec = 'full'
+
+    fake_service = MagicMock(signal_review=MagicMock(return_value=result))
+    with patch.dict(sys.modules, {'services.llm.service': fake_service}):
         r = client.post('/llm/analyze', json={
             'symbol': 'X', 'direction': 'BUY', 'signal': 'RSI_BUY',
             'price': 10.0, 'alert_reason': 'test',

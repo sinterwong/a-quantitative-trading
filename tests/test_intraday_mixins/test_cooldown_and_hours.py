@@ -1,12 +1,16 @@
 """
 CooldownTracker + market_hours 纯函数测试。
+
+注:akshare 在 CI 可能未安装,涉及它的测试用 sys.modules 注入 fake module
+让 patch 路径可解析,避免 ModuleNotFoundError。
 """
 
 from __future__ import annotations
 
+import sys
 import time
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -15,6 +19,13 @@ from backend.services.intraday import market_hours
 from backend.services.intraday.market_hours import (
     is_market_open, next_market_seconds, _is_trading_day,
 )
+
+
+def _ensure_akshare_stub():
+    """若 akshare 未安装,注入一个 MagicMock 到 sys.modules,
+    供后续 patch('akshare.tool_trade_date_hist_sina', ...) 解析。"""
+    if 'akshare' not in sys.modules:
+        sys.modules['akshare'] = MagicMock(tool_trade_date_hist_sina=MagicMock())
 
 
 # ── CooldownTracker ──────────────────────────────────────
@@ -66,7 +77,7 @@ def test_is_market_open_weekend_returns_false():
 
 def test_is_market_open_morning_session():
     """周一 10:30,日历降级到 weekday 也应认定为开盘。"""
-    # reset calendar to force AKShare branch失败
+    _ensure_akshare_stub()
     market_hours._trade_calendar = set()
     market_hours._trade_calendar_date = ''
     with patch('akshare.tool_trade_date_hist_sina', side_effect=RuntimeError('offline')):
@@ -77,6 +88,7 @@ def test_is_market_open_morning_session():
 
 def test_is_market_open_lunch_break():
     """周一 12:00 应该 closed (午休)。"""
+    _ensure_akshare_stub()
     market_hours._trade_calendar = set()
     market_hours._trade_calendar_date = ''
     with patch('akshare.tool_trade_date_hist_sina', side_effect=RuntimeError('offline')):
@@ -104,6 +116,7 @@ def test_next_market_seconds_before_afternoon():
 
 def test_is_trading_day_uses_calendar_when_available():
     """通过 mock akshare.tool_trade_date_hist_sina 注入交易日历。"""
+    _ensure_akshare_stub()
     import pandas as pd
     market_hours._trade_calendar = set()
     market_hours._trade_calendar_date = ''

@@ -27,3 +27,7 @@ werkzeug>=3.0.0
 # Web UI
 streamlit>=1.30.0
 plotly>=5.20.0
+
+# Testing (also required by tests/test_api_contract.py)
+pytest
+jsonschema>=4.0.0

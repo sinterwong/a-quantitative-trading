@@ -116,6 +116,20 @@ class TestSmokeEndpoints(unittest.TestCase):
 
 # ─── P2-2: 响应 schema 校验 ─────────────────────────────────
 
+# jsonschema 是 CI 可能缺失的可选依赖。整类用 unittest.skipUnless 兜底,
+# 不影响同文件的 TestOpenAPIContract / TestSmokeEndpoints。
+try:
+    import jsonschema as _jsonschema
+    _HAS_JSONSCHEMA = True
+except ImportError:
+    _jsonschema = None
+    _HAS_JSONSCHEMA = False
+
+
+@unittest.skipUnless(
+    _HAS_JSONSCHEMA,
+    'jsonschema 未安装,跳过 response schema 校验 (pip install jsonschema)',
+)
 class TestResponseEnvelopeSchema(unittest.TestCase):
     """
     用 jsonschema 验证 read-only GET 端点的响应符合 EnvelopeSuccess schema:
@@ -141,18 +155,16 @@ class TestResponseEnvelopeSchema(unittest.TestCase):
         cls.error_schema   = spec_doc['components']['schemas']['EnvelopeError']
 
     def _assert_success(self, path: str):
-        from jsonschema import validate
         r = self.client.get(path)
         self.assertEqual(r.status_code, 200, msg=f'{path} returned {r.status_code}')
-        validate(instance=r.get_json(), schema=self.success_schema)
+        _jsonschema.validate(instance=r.get_json(), schema=self.success_schema)
 
     def _assert_error(self, path: str, method: str = 'GET', **kwargs):
-        from jsonschema import validate
         fn = getattr(self.client, method.lower())
         r = fn(path, **kwargs)
         self.assertTrue(400 <= r.status_code < 500,
                         msg=f'{path} returned {r.status_code}')
-        validate(instance=r.get_json(), schema=self.error_schema)
+        _jsonschema.validate(instance=r.get_json(), schema=self.error_schema)
 
     def test_health_response_matches_success_envelope(self):
         self._assert_success('/health')
