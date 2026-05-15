@@ -122,6 +122,17 @@ class Provider(ABC):
     def fetch_north_flow(self) -> Optional[NorthFlow]:
         return None
 
+    def fetch_north_flow_history(self, days: int = 252) -> pd.DataFrame:
+        """北向资金日频历史时序。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex,列 north_flow(亿元/天) 与可选 south_flow。
+            空 DataFrame 表示本源无数据。
+        """
+        return pd.DataFrame()
+
     def fetch_market_index(self, code: str) -> Optional[MarketIndexSnapshot]:
         return None
 

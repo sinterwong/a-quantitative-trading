@@ -47,6 +47,7 @@ class AkshareProvider(Provider):
                 Capability.FUNDAMENTALS_HISTORY,
                 Capability.MARGIN_FLOW,
                 Capability.NEWS_HEADLINES,
+                Capability.NORTH_FLOW,
             }),
             markets=frozenset({Market.GLOBAL}),
             priority_hint=0.30,  # 实测不稳定,健康度低
@@ -610,6 +611,60 @@ class AkshareProvider(Provider):
         if end:
             out = out[out.index <= pd.Timestamp(end)]
         return out
+
+    # ─── NORTH_FLOW history ──────────────────────────────────────────────────
+
+    def fetch_north_flow_history(self, days: int = 252) -> pd.DataFrame:
+        """通过 AkShare stock_hsgt_hist_em(symbol='北向资金') 获取北向资金日频历史。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex,列 north_flow(亿元/天)。
+        """
+        try:
+            import akshare as ak
+        except ImportError:
+            logger.debug("akshare 未安装,跳过 north_flow_history 请求")
+            return pd.DataFrame()
+
+        try:
+            raw = ak.stock_hsgt_hist_em(symbol="北向资金")
+        except Exception as exc:
+            raise ProviderError(f"akshare.fetch_north_flow_history: {exc}") from exc
+
+        if raw is None or raw.empty:
+            return pd.DataFrame()
+
+        return self._normalize_north_history(raw, days)
+
+    @staticmethod
+    def _normalize_north_history(raw: pd.DataFrame, days: int) -> pd.DataFrame:
+        """归一 AkShare stock_hsgt_hist_em 输出 → DataFrame(north_flow 亿元/天)。"""
+        df = raw.copy()
+        df.columns = [c.strip() for c in df.columns]
+
+        # 日期列候选
+        date_col = next(
+            (c for c in ("日期", "date", "trade_date") if c in df.columns),
+            df.columns[0],
+        )
+        # 北向资金净流入候选(单位:亿元)
+        flow_col = None
+        for c in ("当日资金流入", "net_flow", "成交净买额", "买入成交净额"):
+            if c in df.columns:
+                flow_col = c
+                break
+        if flow_col is None:
+            return pd.DataFrame()
+
+        df["_dt"] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=["_dt"]).sort_values("_dt").set_index("_dt")
+        # AkShare 当日资金流入单位通常已是亿元
+        out = pd.DataFrame({
+            "north_flow": pd.to_numeric(df[flow_col], errors="coerce"),
+        })
+        return out.dropna().tail(days)
 
     # ─── NEWS_HEADLINES ──────────────────────────────────────────────────────
 

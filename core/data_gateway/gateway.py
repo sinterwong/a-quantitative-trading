@@ -449,6 +449,30 @@ class DataGateway:
             self._cache.set(cache_key, result, _DEFAULT_TTL[Capability.NORTH_FLOW])
         return result
 
+    def north_flow_history(self, days: int = 252) -> pd.DataFrame:
+        """北向资金日频历史(顺序 failover)。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex,列 north_flow(亿元/天)。
+            空 DataFrame 表示无可用源。
+        """
+        cache_key = f"north_flow_history:{days}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        result, _ = self._sequential_fetch(
+            Capability.NORTH_FLOW, Market.GLOBAL,
+            "fetch_north_flow_history", days,
+        )
+        df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
+        if not df.empty:
+            # 历史数据 4h 缓存(每日收盘后更新)
+            self._cache.set(cache_key, df, 14400.0)
+        return df
+
     def market_index(self, code: str) -> Optional[MarketIndexSnapshot]:
         cache_key = f"market_index:{code}"
         cached = self._cache.get(cache_key)

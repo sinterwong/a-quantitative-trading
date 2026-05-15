@@ -283,13 +283,17 @@ class NorthboundFlowFactor(Factor):
       - z > threshold：北向持续大额净买入 → 外资看多 → BUY
       - z < -threshold：北向持续大额净卖出 → 外资撤离 → SELL
 
+    W2-1 起支持自动 fetch:
+      - sentiment_data 显式注入时优先使用
+      - 否则通过 gw.north_flow_history(days) 自动拉取日频时序
+
     Parameters
     ----------
-    sentiment_data : pd.DataFrame
+    sentiment_data : pd.DataFrame, optional
         需包含列 'north_flow'（北向净流入，亿元/天）。
-        可来自 AKShare stock_connect_north_net_flow_in() 或
-        DataLayer.get_north_flow()。
+        为 None 时自动通过 DataGateway 拉取历史时序。
     window : 平滑窗口（默认 5 天）
+    history_days : 自动拉取的历史天数(默认 252)
     """
 
     name = 'NorthboundFlow'
@@ -301,14 +305,30 @@ class NorthboundFlowFactor(Factor):
         window: int = 5,
         threshold: float = 1.0,
         symbol: str = '',
+        history_days: int = 252,
     ):
         self.sentiment_data = sentiment_data
         self.window = window
         self.threshold = threshold
         self.symbol = symbol
+        self.history_days = history_days
+
+    def _get_sentiment(self, price_index: pd.Index) -> Optional[pd.DataFrame]:
+        """sentiment_data 优先;否则走 gw.north_flow_history()。"""
+        if self.sentiment_data is not None:
+            return self.sentiment_data
+        try:
+            from core.data_gateway import get_gateway
+            df = get_gateway().north_flow_history(days=self.history_days)
+            if df is not None and not df.empty:
+                return df
+        except Exception as e:
+            logger.warning('NorthboundFlowFactor auto-fetch failed: %s', e)
+        return None
 
     def evaluate(self, data: pd.DataFrame) -> pd.Series:
-        flow = _align_sentiment(self.sentiment_data, data.index, 'north_flow')
+        sentiment = self._get_sentiment(data.index)
+        flow = _align_sentiment(sentiment, data.index, 'north_flow')
 
         if flow.isna().all():
             return pd.Series(0.0, index=data.index)

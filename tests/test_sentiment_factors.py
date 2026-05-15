@@ -175,6 +175,57 @@ class TestNorthboundFlowFactor(unittest.TestCase):
         f = registry.create('NorthboundFlow')
         self.assertEqual(f.name, 'NorthboundFlow')
 
+    # ── W2-1: 自动 fetch ──────────────────────────────────────────────────
+
+    def test_auto_fetch_when_no_sentiment_data(self):
+        """sentiment_data=None 时应通过 gateway.north_flow_history 拉取。"""
+        from core.factors.sentiment import NorthboundFlowFactor
+        from unittest.mock import MagicMock, patch
+
+        n = 80
+        # 与 _make_price_df 一致的起始日期(2023-01-01),保证 reindex 有重叠
+        price = _make_price_df(n)
+        history_df = pd.DataFrame({
+            'north_flow': np.linspace(-20.0, 50.0, n),
+        }, index=price.index)
+
+        gw_mock = MagicMock()
+        gw_mock.north_flow_history.return_value = history_df
+
+        with patch('core.data_gateway.get_gateway', return_value=gw_mock):
+            f = NorthboundFlowFactor()  # sentiment_data=None
+            result = f.evaluate(price)
+
+        gw_mock.north_flow_history.assert_called_once()
+        # 因子值应有变化(非全零)
+        self.assertGreater(result.abs().sum(), 0)
+
+    def test_auto_fetch_priority_when_data_injected(self):
+        """显式注入 sentiment_data 时不调用 gateway。"""
+        from core.factors.sentiment import NorthboundFlowFactor
+        from unittest.mock import MagicMock, patch
+
+        gw_mock = MagicMock()
+        with patch('core.data_gateway.get_gateway', return_value=gw_mock):
+            sent = _make_sentiment_df(80)
+            f = NorthboundFlowFactor(sentiment_data=sent)
+            f.evaluate(_make_price_df(80))
+
+        gw_mock.north_flow_history.assert_not_called()
+
+    def test_auto_fetch_failure_returns_zero(self):
+        """gateway 失败时降级为全零。"""
+        from core.factors.sentiment import NorthboundFlowFactor
+        from unittest.mock import MagicMock, patch
+
+        gw_mock = MagicMock()
+        gw_mock.north_flow_history.side_effect = RuntimeError("net fail")
+        with patch('core.data_gateway.get_gateway', return_value=gw_mock):
+            f = NorthboundFlowFactor()
+            result = f.evaluate(_make_price_df(80))
+
+        self.assertTrue((result == 0).all())
+
 
 # ---------------------------------------------------------------------------
 # ShortInterestFactor

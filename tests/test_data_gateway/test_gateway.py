@@ -45,6 +45,7 @@ class _FakeProvider(Provider):
         macro_value: Optional[pd.DataFrame] = None,
         balance_value: Optional[BalanceSheet] = None,
         margin_flow_value: Optional[pd.DataFrame] = None,
+        north_history_value: Optional[pd.DataFrame] = None,
         news_value: Optional[List[str]] = None,
         raise_on: Optional[str] = None,
         field_authorities: Optional[Dict[Capability, Dict[str, float]]] = None,
@@ -64,6 +65,7 @@ class _FakeProvider(Provider):
         self._macro = macro_value if macro_value is not None else pd.DataFrame()
         self._balance = balance_value
         self._margin = margin_flow_value if margin_flow_value is not None else pd.DataFrame()
+        self._north_history = north_history_value if north_history_value is not None else pd.DataFrame()
         self._news = news_value if news_value is not None else []
         self._raise_on = raise_on
         self._authority = field_authorities or {}
@@ -140,6 +142,11 @@ class _FakeProvider(Provider):
         self.call_log.append(f"fetch_margin_flow:{symbol}")
         self._maybe_raise("fetch_margin_flow")
         return self._margin
+
+    def fetch_north_flow_history(self, days=252):
+        self.call_log.append(f"fetch_north_flow_history:{days}")
+        self._maybe_raise("fetch_north_flow_history")
+        return self._north_history
 
     def fetch_news_headlines(self, symbol, n=20):
         self.call_log.append(f"fetch_news_headlines:{symbol}:{n}")
@@ -633,6 +640,38 @@ def test_fundamentals_history_overlap_higher_priority_wins(gw):
 def test_fundamentals_history_empty_when_no_provider(gw):
     df = gw.fundamentals_history("sh600519")
     assert df.empty
+
+
+# ── north_flow_history (W2-1) ────────────────────────────────────────────────
+
+
+def test_north_flow_history_routes_to_provider(gw):
+    df_mock = pd.DataFrame(
+        {"north_flow": [10.0, -5.0, 20.0]},
+        index=pd.to_datetime(["2026-05-12", "2026-05-13", "2026-05-14"]),
+    )
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.NORTH_FLOW,), markets=(Market.GLOBAL,),
+        north_history_value=df_mock,
+    )
+    gw.register_provider(p)
+    out = gw.north_flow_history(days=10)
+    assert not out.empty
+    assert "north_flow" in out.columns
+
+
+def test_north_flow_history_cache_hit_avoids_provider(gw):
+    df_mock = pd.DataFrame(
+        {"north_flow": [10.0]}, index=pd.to_datetime(["2026-05-14"]),
+    )
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.NORTH_FLOW,), markets=(Market.GLOBAL,),
+        north_history_value=df_mock,
+    )
+    gw.register_provider(p)
+    gw.north_flow_history(days=20)
+    gw.north_flow_history(days=20)
+    assert len([c for c in p.call_log if "fetch_north_flow_history" in c]) == 1
 
 
 # ── 全局 singleton ──────────────────────────────────────────────────────────
