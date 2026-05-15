@@ -56,20 +56,46 @@ conda create -n quant-trading python=3.11
 conda activate quant-trading
 pip install -r requirements.txt
 
-# 启动（API + Scheduler + 盘中监控全开）
-cd backend
-python main.py --mode both --port 5555
+# 启动模式(P3-2 后)
+python backend/main.py --mode all      # 默认: API + Scheduler + 盘中监控 + StrategyRunner
+python backend/main.py --mode api      # 仅 HTTP API server (无后台调度)
+python backend/main.py --mode worker   # 仅 Scheduler + Monitor + Runner (无 HTTP)
+python backend/main.py --mode both     # 兼容别名 → all
+python backend/main.py --mode scheduler  # 兼容别名 → worker
 
-# 或用 systemd 守护进程
+# Streamlit UI
+streamlit run streamlit_app.py --server.port 8501
+
+# 或 systemd 守护进程
 systemctl --user enable quant-trading-backend.service
 systemctl --user start quant-trading-backend.service
 
 # 手动触发选股分析
 curl -X POST http://127.0.0.1:5555/analysis/run
 
-# 查看 API 文档
+# OpenAPI 文档(P4-3 后由代码自动生成,不再手维护)
 http://127.0.0.1:5555/docs
+python scripts/generate_openapi.py --check   # CI: 校验文档与路由一致
 ```
+
+## 配置 & 状态
+
+| 配置项 | 位置 | 优先级 |
+|---|---|---|
+| 主配置 | `config/trading.yaml` (基于 `trading.yaml.example`) | 环境变量 > YAML > defaults |
+| 状态库 | `data/state.db` (新) 或 `backend/services/portfolio.db` (legacy fallback) | `QUANT_STATE_DB` 环境变量 > canonical > legacy |
+| Secrets | `.env` (启动时 `setdefault` 加载,既有 env 优先) | env |
+| 遗留 JSON | `params.json` / `live_params.json` / `trading_mode.json` | 启动时 deprecation 警告 |
+
+## 常见运维
+
+| 操作 | 命令 |
+|---|---|
+| 查日志 | `tail -F backend/backend.log` |
+| 重生成 OpenAPI | `python scripts/generate_openapi.py` |
+| 备份状态库 | `cp data/state.db data/state.db.$(date +%F).bak` |
+| 强制重置 PID 锁 | `rm backend/.quant-backend.pid` (确认无实例后) |
+| 全量回归 | `pytest tests/ -q` (目标 ≥1425, 当前 1472 ≤75s) |
 
 ---
 

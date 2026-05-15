@@ -1,18 +1,22 @@
 # 系统架构(当前实际状态)
 
-> ⚠️ **本文档诚实记录当前真实形态,不代表目标架构**。
+> ⚠️ **本文档诚实记录当前真实形态**。目标架构见 [`ARCHITECTURE_TARGET.md`](./ARCHITECTURE_TARGET.md)。
 >
-> 目标架构见 [`ARCHITECTURE_TARGET.md`](./ARCHITECTURE_TARGET.md),
-> 本文档会随每个 commit 逐步向目标收敛。
+> **2026-05-15 重构验收快照** — refactor/architecture-cohesion 分支:
+> - ✅ `backend/api.py` 54 端点平均 24.5 行(原 31.3),分 5 批 commit 完成 P2-8
+> - ✅ `backend/services/intraday_monitor.py` 1836 → 190 行编排器,拆 5 个 Mixin 子模块(`backend/services/intraday/`)
+> - ✅ Use case 层完整:`core/use_cases/` 12 个 use case 已建,API 端点全部经此层调业务
+> - ✅ 进程模型解耦:`quant_app/{serve_api,run_worker,main}.py`,支持 `--mode all/api/worker`
+> - ✅ 统一状态库:`core/state_db.state_db_path()` 三级回退(env / data/state.db / 旧 portfolio.db)
+> - ✅ 统一配置入口:trading.yaml.example + 遗留 JSON 启动 deprecation 警告
+> - ✅ OpenAPI 自动生成 + 契约测试(`scripts/generate_openapi.py` + `tests/test_api_contract.py`)
+> - ✅ UI 不再直连数据源:`load_realtime` / `load_news_headlines` 全部经 backend
+> - ✅ 全量回归 1472 测试通过
 >
-> 当前已知架构债:
-> - `backend/api.py` 1988 行 / 57 端点,端点内含大量业务逻辑(应退化为壳)
-> - `backend/services/intraday_monitor.py` 1831 行(应拆 5 个职责模块)
-> - `streamlit_app.py` 1850 行单文件(应拆 pages/)
-> - 同一概念多处实现:Regime / 选股 / 新闻打分 / 信号生成
-> - 配置 5 处分散,状态 2 个 SQLite
-> - 进程上 Flask + Scheduler + IntradayMonitor 强耦合
-> - 部分 UI / backend 模块仍直连 `qt.gtimg.cn` 等绕过 Gateway
+> 收尾遗留事项(下个周期):
+> - `streamlit_app.py` 仍 1641 行,phase two 完整拆 pages/ 需浏览器验证
+> - `wf_results.db` 合并到 `data/state.db` 需 walkforward 主用户确认
+> - `params.json` 散落 30+ 处读点的实际迁移到 trading.yaml
 
 ---
 

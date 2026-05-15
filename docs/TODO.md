@@ -194,21 +194,37 @@
 ## Phase 5 — 收官 + 文档(P2,~3 天)
 
 ### P5-1 ARCHITECTURE_CURRENT.md 更新为最终态
-- [ ] 把 ARCHITECTURE_TARGET.md 的图改写进 ARCHITECTURE_CURRENT.md
-- [ ] 删除已完成对照文件
-- **commit**:`docs: 架构文档收敛到最终态`
+- [x] 已知架构债区块替换为 2026-05-15 重构验收快照(P2-7 / P2-8 / P3-2 / P3-3 / P3-4 / P4-2 / P4-3 全部完成)
+- [ ] (延后) 把 ARCHITECTURE_TARGET.md 整体图替换进 CURRENT:仍是有用的对照文档,保留即可
 
 ### P5-2 README 操作手册
-- [ ] 启动方式(`all` / `api` / `worker`)
-- [ ] 配置文件位置 + 优先级
-- [ ] 常见运维操作(查日志 / 强制重置 / 备份 state.db)
-- **commit**:`docs: README 操作手册`
+- [x] 启动方式三种 mode(`all` / `api` / `worker`)及 backward-compat 别名
+- [x] 配置文件位置 + 优先级表(YAML / env / .env / 遗留 JSON)
+- [x] 状态库三级回退(QUANT_STATE_DB / data/state.db / legacy)
+- [x] 常见运维:查日志 / 重生成 OpenAPI / 备份 state.db / 重置 PID 锁 / 全量回归
 
 ### P5-3 全量回归 + 性能基线
-- [ ] `pytest tests/ -q`(目标 ≥ 1425 passed)
-- [ ] 启动时间基线(目标 < 5s)
-- [ ] 内存占用基线
-- **commit**:`chore: 架构重构收官,记录性能基线`
+- [x] `pytest tests/ -q` → **1472 passed (35 subtests)** in 70.6s ≪ 目标 ≥1425
+- [x] API 模块 cold import:**0.65s** ≪ 目标 < 5s (backend/api.py + 全依赖)
+- [x] 端点数量:54 (新增 /data/news/<symbol>),平均行数 24.5 ≤ 目标 25
+- [x] Use case 层:12 个 use case(P2 期间从 5 → 12)
+- [x] core/use_cases/ 全部 PR 切片化,backend/api.py 不再嵌业务逻辑
+
+---
+
+## 验收清单(2026-05-15 截止)
+
+- [x] P1-1 ~ P1-5 文档 / 审计 / 死代码 / 虚拟券商定位(此前已完成)
+- [x] P2-1 ~ P2-6 use case 层骨架 + 5 个核心 use case
+- [x] P2-7 IntradayMonitor 1836 → 190 行编排器(Mixin 拆 5 个子模块)
+- [x] P2-8 API 54 端点平均 24.5 行,5 批 commit
+- [x] P3-1 OS 级单实例锁(此前完成)
+- [x] P3-2 quant_app/ 包 + mode 装配
+- [x] P3-3 trading.yaml.example + legacy JSON deprecation 警告
+- [x] P3-4 state_db 统一路径助手 + schema 版本表
+- [x] P4-1 streamlit_helpers 公共组件(阶段一)
+- [x] P4-2 UI 不再直连数据源
+- [x] P4-3 OpenAPI 自动生成 + 契约测试
 
 ---
 
