@@ -74,7 +74,7 @@ def _build_returns_matrix(
     universe: List[str], days: int,
 ) -> pd.DataFrame:
     """从 DataGateway 拉每只 symbol 的日 K,组装收益率矩阵。"""
-    from core.data_gateway import get_gateway
+    from core.data_gateway import get_gateway, normalize_kline_index
     gw = get_gateway()
 
     series_dict: Dict[str, pd.Series] = {}
@@ -85,12 +85,7 @@ def _build_returns_matrix(
             continue
         if df is None or df.empty:
             continue
-        # 列名归一
-        if 'date' in df.columns:
-            df = df.rename(columns={'date': 'timestamp'})
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-            df = df.dropna(subset=['timestamp']).set_index('timestamp')
+        df = normalize_kline_index(df)
         if 'close' not in df.columns:
             continue
         series_dict[sym] = df['close'].pct_change().dropna()

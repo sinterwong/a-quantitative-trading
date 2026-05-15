@@ -102,11 +102,8 @@ def _fetch_data(req: BacktestRequest) -> pd.DataFrame:
         )
 
     # 列名归一(provider 间差异:date / timestamp)
-    if 'date' in df.columns:
-        df = df.rename(columns={'date': 'timestamp'})
-    if 'timestamp' in df.columns:
-        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-        df = df.dropna(subset=['timestamp']).set_index('timestamp')
+    from core.data_gateway import normalize_kline_index
+    df = normalize_kline_index(df)
 
     # 时间窗口过滤
     if req.start:
