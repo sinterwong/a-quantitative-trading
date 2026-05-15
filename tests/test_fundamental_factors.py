@@ -473,20 +473,81 @@ class TestFundamentalDataManager(unittest.TestCase):
 # 注册表集成测试
 # ---------------------------------------------------------------------------
 
+class TestFinancialHealthFactor(unittest.TestCase):
+    """W1-5: FinancialHealthFactor 合成 debt_to_equity + current_ratio + ocf_to_profit。"""
+
+    def setUp(self):
+        self.price = _make_price_df(300)
+        self.fin = _make_financial_df(300)
+
+    def test_no_data_returns_zero(self):
+        from core.factors.fundamental import FinancialHealthFactor
+        f = FinancialHealthFactor(financial_data=None)
+        result = f.evaluate(self.price)
+        self.assertTrue((result == 0).all())
+
+    def test_partial_data_does_not_crash(self):
+        """三项中只有一项可用时也能产出结果。"""
+        from core.factors.fundamental import FinancialHealthFactor
+        # 只给 current_ratio,且有变化
+        fin = pd.DataFrame({
+            'current_ratio': np.linspace(2.0, 3.0, 300),
+        }, index=self.fin.index)
+        f = FinancialHealthFactor(financial_data=fin)
+        result = f.evaluate(self.price)
+        self.assertEqual(len(result), len(self.price))
+
+    def test_improving_health_positive_trend(self):
+        """财务健康度持续改善 → 末段因子值显著高于前段。"""
+        from core.factors.fundamental import FinancialHealthFactor
+        n = 300
+        # debt 下降(好) + current_ratio 上升(好) + ocf 上升(好)
+        fin = pd.DataFrame({
+            'debt_to_equity': np.linspace(60.0, 30.0, n),
+            'current_ratio': np.linspace(1.5, 3.5, n),
+            'ocf_to_profit': np.linspace(0.5, 1.5, n),
+        }, index=pd.date_range('2022-01-01', periods=n, freq='B'))
+        price = _make_price_df(n)
+
+        f = FinancialHealthFactor(financial_data=fin, rolling_window=20)
+        result = f.evaluate(price)
+        self.assertGreater(result.iloc[-30:].mean(), result.iloc[:30].mean())
+
+    def test_deteriorating_health_negative_trend(self):
+        """财务健康度持续恶化 → 末段因子值显著低于前段。"""
+        from core.factors.fundamental import FinancialHealthFactor
+        n = 300
+        fin = pd.DataFrame({
+            'debt_to_equity': np.linspace(30.0, 80.0, n),
+            'current_ratio': np.linspace(3.0, 1.0, n),
+            'ocf_to_profit': np.linspace(1.5, 0.3, n),
+        }, index=pd.date_range('2022-01-01', periods=n, freq='B'))
+        price = _make_price_df(n)
+
+        f = FinancialHealthFactor(financial_data=fin, rolling_window=20)
+        result = f.evaluate(price)
+        self.assertLess(result.iloc[-30:].mean(), result.iloc[:30].mean())
+
+    def test_registry_create(self):
+        from core.factor_registry import registry
+        f = registry.create('FinancialHealth')
+        self.assertEqual(f.name, 'FinancialHealth')
+
+
 class TestFundamentalRegistryIntegration(unittest.TestCase):
 
     def test_all_fundamental_factors_registered(self):
         from core.factor_registry import registry
         names = ['PEPercentile', 'ROEMomentum', 'EarningsSurprise',
-                 'RevenueGrowth', 'CashFlowQuality']
+                 'RevenueGrowth', 'CashFlowQuality', 'FinancialHealth']
         for name in names:
             with self.subTest(name=name):
                 self.assertIn(name, registry)
 
-    def test_total_factor_count_at_least_17(self):
-        """原5 + 技术7 + 基本面5 = 17 个因子"""
+    def test_total_factor_count_at_least_18(self):
+        """原5 + 技术7 + 基本面6(含 FinancialHealth) = 18 个因子"""
         from core.factor_registry import registry
-        self.assertGreaterEqual(len(registry), 17)
+        self.assertGreaterEqual(len(registry), 18)
 
     def test_fundamental_factor_in_pipeline_no_financial_data(self):
         """基本面因子（无数据时）加入流水线正常运行，不破坏其他因子"""

@@ -386,3 +386,81 @@ class ShareholderConcentrationFactor(Factor):
         smoothed = raw.rolling(self.rolling_window, min_periods=1).mean()
 
         return self.normalize(smoothed.fillna(0.0))
+
+
+# ---------------------------------------------------------------------------
+# 7. 财务健康因子（W1-5）
+# ---------------------------------------------------------------------------
+
+class FinancialHealthFactor(Factor):
+    """
+    财务健康度因子(Altman-Z 简化版)。
+
+    合成三个公司财务健康维度:
+      - 偿债压力(取负):debt_to_equity 越高 → 越不健康 → 因子分量为负
+      - 短期流动性  :current_ratio 越高 → 越健康
+      - 盈利质量    :ocf_to_profit 越高 → 越健康
+
+    因子值 = z(-debt_to_equity) + z(current_ratio) + z(ocf_to_profit),
+            再做总体 z-score。
+
+    解读:
+      - z > threshold:财务质量显著高于均值 → 配置加权
+      - z < -threshold:财务质量明显恶化 → SELL
+
+    数据来源:
+      DataGateway.fundamentals_history()
+      - Baostock 提供 debt_to_equity / current_ratio (W1-2)
+      - Akshare 或 Baostock 提供 ocf_to_profit
+
+    任意一项缺失时使用其它两项,均缺失时返回全零(降级)。
+
+    Parameters
+    ----------
+    financial_data : pd.DataFrame, optional
+        需含 debt_to_equity / current_ratio / ocf_to_profit 列。
+    rolling_window : int
+        平滑窗口(默认 60 天)。
+    """
+
+    name = 'FinancialHealth'
+    category = FactorCategory.FUNDAMENTAL
+
+    def __init__(
+        self,
+        financial_data: Optional[pd.DataFrame] = None,
+        rolling_window: int = 60,
+        threshold: float = 1.0,
+        symbol: str = '',
+    ):
+        self.financial_data = financial_data
+        self.rolling_window = rolling_window
+        self.threshold = threshold
+        self.symbol = symbol
+
+    def evaluate(self, data: pd.DataFrame) -> pd.Series:
+        debt = _align_financial(self.financial_data, data.index, 'debt_to_equity')
+        cr = _align_financial(self.financial_data, data.index, 'current_ratio')
+        ocf = _align_financial(self.financial_data, data.index, 'ocf_to_profit')
+
+        # 三项均缺失则降级
+        if debt.isna().all() and cr.isna().all() and ocf.isna().all():
+            return pd.Series(0.0, index=data.index)
+
+        # 各分量先平滑去噪 + 缺失补 0
+        def _smooth(s: pd.Series) -> pd.Series:
+            return s.rolling(self.rolling_window, min_periods=1).mean().fillna(0.0)
+
+        debt_s = _smooth(debt) if not debt.isna().all() else pd.Series(0.0, index=data.index)
+        cr_s = _smooth(cr) if not cr.isna().all() else pd.Series(0.0, index=data.index)
+        ocf_s = _smooth(ocf) if not ocf.isna().all() else pd.Series(0.0, index=data.index)
+
+        # 简单 z 拼接:对各分量分别 z-score,避免量纲差异(% vs 倍数)
+        def _z(s: pd.Series) -> pd.Series:
+            mu = s.mean()
+            std = s.std(ddof=0) or 1.0
+            return (s - mu) / std
+
+        # debt_to_equity 是越低越好,所以取负
+        composite = -_z(debt_s) + _z(cr_s) + _z(ocf_s)
+        return self.normalize(composite.fillna(0.0))
