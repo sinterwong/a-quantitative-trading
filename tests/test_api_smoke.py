@@ -340,16 +340,13 @@ def test_trading_mode_put_simulation(client):
     assert _OK(r)
 
 
-@pytest.mark.xfail(
-    reason='Bug: /watchlist/<symbol> PATCH 引用未定义函数 set_watchlist_enabled,'
-           'P1-2 修复',
-    strict=False,
-)
 def test_watchlist_patch(client):
-    """先 add,再 patch。"""
+    """先 add,再 patch — alert_pct + enabled 同时修改。"""
     client.post('/watchlist/add', json={'symbol': 'TEST_PATCH.SH', 'alert_pct': 5.0})
-    r = client.patch('/watchlist/TEST_PATCH.SH', json={'alert_pct': 7.0})
-    assert _OK(r)
+    r = client.patch('/watchlist/TEST_PATCH.SH',
+                     json={'alert_pct': 7.0, 'enabled': 1})
+    assert r.status_code == 200
+    assert r.get_json().get('status') == 'ok'
 
 
 def test_watchlist_delete(client):

@@ -140,6 +140,22 @@ def set_alert_threshold(symbol: str, alert_pct: float) -> bool:
         return False
 
 
+def set_watchlist_enabled(symbol: str, enabled: int) -> bool:
+    """切换自选股启用状态。enabled=1 → 启用,enabled=0 → 禁用(等价软删)。"""
+    symbol = symbol.upper().strip()
+    try:
+        with _conn() as conn:
+            conn.execute(
+                "UPDATE watchlist SET enabled=? WHERE symbol=?",
+                (1 if enabled else 0, symbol),
+            )
+        logger.info('Watchlist: %s enabled=%d', symbol, 1 if enabled else 0)
+        return True
+    except Exception as e:
+        logger.error('Watchlist enabled update failed: %s', e)
+        return False
+
+
 def get_stock_alert_pct(symbol: str) -> float:
     """获取单只股票的预警阈值（默认 5%）"""
     with _conn() as conn:
