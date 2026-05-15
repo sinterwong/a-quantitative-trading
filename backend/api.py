@@ -547,80 +547,22 @@ def update_symbol_params(symbol):
     """
     PATCH /params/<symbol> — 更新单股参数（写入 params.json）。
     Body: {"rsi_buy": 30, "stop_loss": 0.06, ...}
-    支持字段: rsi_period, rsi_buy, rsi_sell, stop_loss, take_profit,
-              min_hold_days, atr_threshold, atr_period, atr_multiplier
+    支持字段见 services.signals.PARAM_FIELDS_ALLOWED。
     """
     if (e := require_json()):
         return e
-    import json as _json
-    body = request.json
-    allowed = {'rsi_period', 'rsi_buy', 'rsi_sell', 'stop_loss', 'take_profit',
-               'min_hold_days', 'atr_threshold', 'atr_period', 'atr_multiplier'}
-    updates = {k: v for k, v in body.items() if k in allowed}
-    if not updates:
-        return err(f'No valid fields. Allowed: {sorted(allowed)}', 422)
-
-    proj = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    params_file = os.path.join(proj, 'params.json')
-    params_all = {}
-    if os.path.exists(params_file):
-        with open(params_file, 'r', encoding='utf-8') as f:
-            params_all = _json.load(f)
-
-    # 查找或创建对应 symbol 的策略条目
-    strategies = params_all.setdefault('strategies', {})
-    target_key = None
-    for name, conf in strategies.items():
-        if conf.get('symbol', '').upper() == symbol.upper():
-            target_key = name
-            break
-    if target_key is None:
-        target_key = f'Custom_{symbol}'
-        strategies[target_key] = {'symbol': symbol.upper(), 'params': {}}
-
-    p = strategies[target_key].setdefault('params', {})
-    for k, v in updates.items():
-        p[k] = v
-    params_all['updated'] = datetime.now().strftime('%Y-%m-%d')
-
-    with open(params_file, 'w', encoding='utf-8') as f:
-        _json.dump(params_all, f, ensure_ascii=False, indent=4)
-
-    return ok(symbol=symbol, updated=updates, params=p)
+    from services.signals import update_symbol_params as _update, PARAM_FIELDS_ALLOWED
+    updated = _update(symbol, request.json or {})
+    if not updated:
+        return err(f'No valid fields. Allowed: {sorted(PARAM_FIELDS_ALLOWED)}', 422)
+    return ok(symbol=symbol, params=updated)
 
 
 @app.route('/params', methods=['GET'])
 def list_all_params():
-    """
-    GET /params — 全量参数列表（params.json + live_params.json 合并视图）。
-    """
-    import json as _json
-    from services.signals import load_symbol_params
-
-    proj = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    params_file = os.path.join(proj, 'params.json')
-    all_symbols = set()
-    if os.path.exists(params_file):
-        with open(params_file, 'r', encoding='utf-8') as f:
-            params_all = _json.load(f)
-        for conf in params_all.get('strategies', {}).values():
-            sym = conf.get('symbol')
-            if sym:
-                all_symbols.add(sym.upper())
-
-    # 也包含 live_params.json 中的 key
-    live_file = os.path.join(proj, 'backend', 'services', 'live_params.json')
-    if os.path.exists(live_file):
-        with open(live_file, 'r', encoding='utf-8') as f:
-            live = _json.load(f)
-        for k in live:
-            if '_' in k:
-                all_symbols.add(k.rsplit('_', 1)[0])
-
-    result = {}
-    for sym in sorted(all_symbols):
-        result[sym] = load_symbol_params(sym)
-
+    """GET /params — 全量参数列表（params.json + live_params.json 合并视图）。"""
+    from services.signals import list_symbols_with_params, load_symbol_params
+    result = {sym: load_symbol_params(sym) for sym in list_symbols_with_params()}
     return ok(params=result, count=len(result))
 
 
