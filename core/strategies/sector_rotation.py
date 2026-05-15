@@ -329,3 +329,134 @@ class SectorRotationStrategy:
             scores={k: round(v, 6) for k, v in scores.items()},
             top_n=self.top_n,
         )
+
+
+# ---------------------------------------------------------------------------
+# SectorRotationStrategyV2 — 数据驱动板块轮动 (W3-3)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class V2RotationSignal:
+    """V2 数据驱动轮动信号(按个股而非 ETF)。"""
+    timestamp: str
+    top_sectors: List[Dict[str, float]]   # [{code, name, score}]
+    buy_stocks: List[Dict[str, float]]    # [{symbol, sector_code, change_pct, amount}]
+    universe_size: int
+
+
+class SectorRotationStrategyV2:
+    """
+    数据驱动行业轮动策略(W3-3)。
+
+    与 V1 的区别:
+      - 弃用硬编码 DEFAULT_SECTOR_ETFS,universe 由 gw.sectors() 实时发现
+      - 信号粒度从 ETF 切换到"top N 板块的成分股"
+      - 板块评分综合 涨幅 + 资金流(net_flow) + 历史动量(SectorFlowStore)
+
+    使用场景:
+      - latest_signal() 取当日最新轮动建议
+      - 用于 dynamic_selector 等"全市场扫板块挑股"流程
+
+    Parameters
+    ----------
+    top_sectors_n : 选 top N 板块(默认 5)
+    stocks_per_sector : 每个 top 板块取 top N 个成分股(默认 3)
+    sector_score_method : 板块打分方式:
+      'flow' - 仅 net_flow z-score
+      'perf' - 仅当日涨幅
+      'combined' - 0.5 * z(net_flow) + 0.5 * change_pct (默认)
+    use_history : True 时从 SectorFlowStore 读历史辅助打分,False 仅用快照
+    """
+
+    def __init__(
+        self,
+        top_sectors_n: int = 5,
+        stocks_per_sector: int = 3,
+        sector_score_method: str = 'combined',
+        use_history: bool = True,
+    ) -> None:
+        self.top_sectors_n = top_sectors_n
+        self.stocks_per_sector = stocks_per_sector
+        self.sector_score_method = sector_score_method
+        self.use_history = use_history
+
+    # ---------------------------------------------------------------- score
+
+    @staticmethod
+    def _zscore(values: List[float]) -> List[float]:
+        arr = np.asarray(values, dtype=float)
+        mu = np.nanmean(arr)
+        std = np.nanstd(arr)
+        if std == 0 or np.isnan(std):
+            return [0.0] * len(values)
+        return list((arr - mu) / std)
+
+    def _score_sectors(self, sectors: List) -> List[Dict[str, float]]:
+        """对一组 SectorRanking 打分,返回 [{code, name, score}] 降序。"""
+        if not sectors:
+            return []
+
+        flows = [float(s.net_flow) for s in sectors]
+        perfs = [float(s.change_pct) for s in sectors]
+
+        if self.sector_score_method == 'flow':
+            scores = self._zscore(flows)
+        elif self.sector_score_method == 'perf':
+            scores = perfs
+        else:  # combined
+            z_flow = self._zscore(flows)
+            scores = [0.5 * zf + 0.5 * p for zf, p in zip(z_flow, perfs)]
+
+        out = [
+            {'code': s.code, 'name': s.name, 'score': float(sc)}
+            for s, sc in zip(sectors, scores)
+        ]
+        return sorted(out, key=lambda x: x['score'], reverse=True)
+
+    # ---------------------------------------------------------------- signal
+
+    def latest_signal(self) -> V2RotationSignal:
+        """
+        取当日轮动信号:
+          1. gw.sectors() → 全市场板块排名
+          2. 打分排序 → 选 top N 板块
+          3. gw.sector_constituents() → 每个 top 板块取头部成分股(按涨幅)
+        """
+        try:
+            from core.data_gateway import get_gateway
+            gw = get_gateway()
+            sectors = gw.sectors(limit=100)
+        except Exception as exc:
+            # 无 universe 时退化为空信号(向后兼容)
+            from datetime import datetime as _dt
+            return V2RotationSignal(
+                timestamp=_dt.now().strftime('%Y-%m-%d'),
+                top_sectors=[], buy_stocks=[], universe_size=0,
+            )
+
+        ranked = self._score_sectors(sectors)
+        top = ranked[:self.top_sectors_n]
+
+        buy_stocks: List[Dict[str, float]] = []
+        for s in top:
+            try:
+                consts = gw.sector_constituents(s['code'], limit=self.stocks_per_sector)
+            except Exception:
+                continue
+            for c in consts:
+                buy_stocks.append({
+                    'symbol': c.symbol,
+                    'sector_code': s['code'],
+                    'sector_name': s['name'],
+                    'sector_score': s['score'],
+                    'change_pct': float(c.change_pct),
+                    'amount': float(c.amount),
+                })
+
+        from datetime import datetime as _dt
+        return V2RotationSignal(
+            timestamp=_dt.now().strftime('%Y-%m-%d'),
+            top_sectors=top,
+            buy_stocks=buy_stocks,
+            universe_size=len(sectors),
+        )
