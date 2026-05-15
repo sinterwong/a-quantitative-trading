@@ -172,15 +172,9 @@
 ## Phase 4 — UI 重构 + 端到端契约(P1,~2 周)
 
 ### P4-1 streamlit_app.py 拆为 pages/
-- [ ] 1850 行单文件拆为:
-  - `streamlit_app.py` — 入口 + 公共组件 ≤200 行
-  - `pages/01_总览.py`
-  - `pages/02_个股分析.py`
-  - `pages/03_信号面板.py`
-  - `pages/04_持仓与订单.py`
-  - `pages/05_研究.py`
-- [ ] 每个 page ≤400 行
-- **commit**:`refactor(ui): Streamlit 拆为多页面结构`
+- [x] 阶段一(自动验证):公共组件 streamlit_helpers.py(236 行)抽出 — api_get/api_post + 11 个 cached loader + limit_up_pct + make_price_df,streamlit_app.py 由 1850 行降至 1641 行
+- [ ] 阶段二(需浏览器验证):每个 page 拆到 pages/ 子目录,使用 Streamlit 原生多页面机制替代 st.sidebar.radio。延后做(系统提示:UI 拓扑改动需在浏览器中验证渲染)
+- **commit**(阶段一):`refactor(ui): 抽出 streamlit_helpers 公共组件 (P4-1 阶段一)`
 
 ### P4-2 UI 数据源全部走 backend API
 - [ ] 移除 streamlit 内的 `qt.gtimg.cn` 直连
