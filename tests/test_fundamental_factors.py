@@ -534,20 +534,61 @@ class TestFinancialHealthFactor(unittest.TestCase):
         self.assertEqual(f.name, 'FinancialHealth')
 
 
+class TestDividendYieldFactor(unittest.TestCase):
+    """W1-6: DividendYieldFactor 股息率历史百分位。"""
+
+    def test_no_data_returns_zero(self):
+        from core.factors.fundamental import DividendYieldFactor
+        price = _make_price_df(300)
+        f = DividendYieldFactor(financial_data=None)
+        result = f.evaluate(price)
+        self.assertTrue((result == 0).all())
+
+    def test_no_dividend_yield_column_returns_zero(self):
+        from core.factors.fundamental import DividendYieldFactor
+        price = _make_price_df(300)
+        # financial_data 不含 dividend_yield 列
+        fin = _make_financial_df(300)
+        f = DividendYieldFactor(financial_data=fin)
+        result = f.evaluate(price)
+        self.assertTrue((result == 0).all())
+
+    def test_rising_dividend_yield_positive_trend(self):
+        """股息率上升 → 末段百分位高 → 因子值为正。"""
+        from core.factors.fundamental import DividendYieldFactor
+        n = 800   # 充分长以让滚动百分位窗口 (3y) 有效
+        idx = pd.date_range('2022-01-01', periods=n, freq='B')
+        fin = pd.DataFrame({
+            'dividend_yield': np.linspace(1.0, 5.0, n),
+        }, index=idx)
+        price = _make_price_df(n)
+
+        f = DividendYieldFactor(financial_data=fin, lookback_years=1)
+        result = f.evaluate(price)
+        # 末段股息率高 → 高百分位 → 高 z-score
+        self.assertGreater(result.iloc[-30:].mean(), 0)
+
+    def test_registry_create(self):
+        from core.factor_registry import registry
+        f = registry.create('DividendYield')
+        self.assertEqual(f.name, 'DividendYield')
+
+
 class TestFundamentalRegistryIntegration(unittest.TestCase):
 
     def test_all_fundamental_factors_registered(self):
         from core.factor_registry import registry
         names = ['PEPercentile', 'ROEMomentum', 'EarningsSurprise',
-                 'RevenueGrowth', 'CashFlowQuality', 'FinancialHealth']
+                 'RevenueGrowth', 'CashFlowQuality',
+                 'FinancialHealth', 'DividendYield']
         for name in names:
             with self.subTest(name=name):
                 self.assertIn(name, registry)
 
-    def test_total_factor_count_at_least_18(self):
-        """原5 + 技术7 + 基本面6(含 FinancialHealth) = 18 个因子"""
+    def test_total_factor_count_at_least_19(self):
+        """原5 + 技术7 + 基本面7(含 FinancialHealth/DividendYield) = 19 个因子"""
         from core.factor_registry import registry
-        self.assertGreaterEqual(len(registry), 18)
+        self.assertGreaterEqual(len(registry), 19)
 
     def test_fundamental_factor_in_pipeline_no_financial_data(self):
         """基本面因子（无数据时）加入流水线正常运行，不破坏其他因子"""

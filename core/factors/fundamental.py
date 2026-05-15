@@ -464,3 +464,67 @@ class FinancialHealthFactor(Factor):
         # debt_to_equity 是越低越好,所以取负
         composite = -_z(debt_s) + _z(cr_s) + _z(ocf_s)
         return self.normalize(composite.fillna(0.0))
+
+
+# ---------------------------------------------------------------------------
+# 8. 股息率因子（W1-6）
+# ---------------------------------------------------------------------------
+
+class DividendYieldFactor(Factor):
+    """
+    股息率因子(价值/防御偏置)。
+
+    因子值 = percentile_rank(dividend_yield, lookback)
+    高股息率分位 → 股价相对估值低,资金有"现金回报"安全垫 → BUY
+
+    与 PEPercentileFactor 的关键差异:
+      - PE 百分位反映"市场估值低",可能伴随基本面恶化
+      - 股息率高百分位反映"分红能力强",更稳健的价值信号
+
+    数据来源:
+      Fundamentals.dividend_yield 字段 + Akshare DIVIDENDYIELD 列(W1-1)。
+
+    若数据源不提供 dividend_yield(常见),因子降级为零。
+
+    Parameters
+    ----------
+    financial_data : 含 dividend_yield 列的 DataFrame(可能由 quote 字段补充)
+    lookback_years : 百分位计算窗口(年,默认 3 年)
+    """
+
+    name = 'DividendYield'
+    category = FactorCategory.FUNDAMENTAL
+
+    def __init__(
+        self,
+        financial_data: Optional[pd.DataFrame] = None,
+        lookback_years: int = 3,
+        threshold: float = 1.0,
+        symbol: str = '',
+    ):
+        self.financial_data = financial_data
+        self.lookback_years = lookback_years
+        self.lookback_days = lookback_years * 252
+        self.threshold = threshold
+        self.symbol = symbol
+
+    def evaluate(self, data: pd.DataFrame) -> pd.Series:
+        dy = _align_financial(self.financial_data, data.index, 'dividend_yield')
+        if dy.isna().all():
+            return pd.Series(0.0, index=data.index)
+
+        # 滚动历史百分位:当前股息率在过去 N 天中的相对位置
+        def _pct_rank(arr: np.ndarray) -> float:
+            if len(arr) < 2 or np.isnan(arr[-1]):
+                return np.nan
+            valid = arr[~np.isnan(arr)]
+            if len(valid) < 2:
+                return np.nan
+            return float(np.sum(valid <= arr[-1]) / len(valid))
+
+        pct_rank = dy.rolling(
+            self.lookback_days, min_periods=max(10, self.lookback_days // 10),
+        ).apply(_pct_rank, raw=True)
+
+        # 高分位 → 高因子值(正向)
+        return self.normalize(pct_rank.fillna(0.0))
