@@ -895,8 +895,8 @@ def monthly_performance():
                                          include_chart=include_chart)
         return ok(**report)
     except Exception as e:
-        import traceback
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+        app.logger.exception('monthly_report failed')
+        return err(f'月度报告生成失败: {e}', 500)
 
 
 
@@ -919,8 +919,8 @@ def record_monthly_snapshot():
         record_monthly_snapshot(year, month)
         return ok(message=f'{year}年{month}月快照已记录')
     except Exception as e:
-        import traceback
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+        app.logger.exception('record_monthly_snapshot failed')
+        return err(f'月度快照记录失败: {e}', 500)
 
 
 @app.route('/analysis/monthly/history', methods=['GET'])
@@ -935,8 +935,8 @@ def monthly_history():
         snapshots = get_monthly_snapshots(limit=limit)
         return ok(snapshots=snapshots, count=len(snapshots))
     except Exception as e:
-        import traceback
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+        app.logger.exception('monthly_history failed')
+        return err(f'月度历史查询失败: {e}', 500)
 
 
 # ============================================================
@@ -1185,8 +1185,8 @@ def data_fund_flow():
     except ImportError:
         return err('FundFlowService not available (AkShare missing)', 500)
     except Exception as e:
-        import traceback
-        return err(f'资金流获取失败: {e}\n{traceback.format_exc()}', 500)
+        app.logger.exception('fund_flow failed')
+        return err(f'资金流获取失败: {e}', 500)
 
 
 @app.route('/data/realtime/<symbol>', methods=['GET'])
