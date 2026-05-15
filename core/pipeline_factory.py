@@ -26,6 +26,7 @@ core/pipeline_factory.py — 生产用因子流水线工厂
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, Optional, Type
 
 logger = logging.getLogger('core.pipeline_factory')
@@ -167,6 +168,20 @@ def build_pipeline(symbol: str = '', strict: bool = True):
             loaded_count += 1
     except ImportError as exc:
         logger.warning('宏观因子模块导入失败（整层跳过）: %s', exc)
+
+    # ── 情绪层(W2-3): NewsSentimentFactor,需 MINIMAX_API_KEY 才启用 ─────
+    # 关键风险:LLM 调用 cost + 延迟 + 单点失败,小权重(0.05)+ 衰减保护
+    try:
+        if symbol and os.environ.get('MINIMAX_API_KEY'):
+            from core.factors.nlp import NewsSentimentFactor
+            if _safe_add(
+                pipeline, NewsSentimentFactor, weight=0.05,
+                params={'symbol': symbol, 'use_api': True, 'window': 5},
+                label='NewsSentimentFactor',
+            ):
+                loaded_count += 1
+    except ImportError as exc:
+        logger.warning('NewsSentimentFactor 模块导入失败: %s', exc)
 
     # ── 健康守卫：成功因子数不达标时抛错 ──────────────────────
     if loaded_count < MIN_FACTORS_REQUIRED:

@@ -121,6 +121,32 @@ class TestPipelineDegradation(unittest.TestCase):
         self.assertEqual(len(ok), 2)
 
 
+class TestNewsSentimentInPipeline(unittest.TestCase):
+    """W2-3: NewsSentimentFactor 仅在 MINIMAX_API_KEY 存在时入 pipeline。"""
+
+    def test_no_api_key_does_not_load_news_factor(self):
+        from core.pipeline_factory import build_pipeline
+        # 显式清掉 env var
+        with patch.dict('os.environ', {}, clear=False):
+            os_env = __import__('os').environ
+            os_env.pop('MINIMAX_API_KEY', None)
+            pipeline = build_pipeline(symbol='000001.SZ', strict=False)
+        self.assertNotIn('NewsSentiment', pipeline.factor_names)
+
+    def test_with_api_key_loads_news_factor(self):
+        from core.pipeline_factory import build_pipeline
+        with patch.dict('os.environ', {'MINIMAX_API_KEY': 'dummy-key'}):
+            pipeline = build_pipeline(symbol='sh600519', strict=False)
+        self.assertIn('NewsSentiment', pipeline.factor_names)
+
+    def test_without_symbol_does_not_load_news_factor(self):
+        """symbol='' 时即使有 API key 也不应加载(无标的可拉新闻)。"""
+        from core.pipeline_factory import build_pipeline
+        with patch.dict('os.environ', {'MINIMAX_API_KEY': 'dummy-key'}):
+            pipeline = build_pipeline(symbol='', strict=False)
+        self.assertNotIn('NewsSentiment', pipeline.factor_names)
+
+
 class TestFundamentalWhitelistExpansion(unittest.TestCase):
     """W1-3: pipeline_factory 基本面白名单扩展到 12 列。"""
 
