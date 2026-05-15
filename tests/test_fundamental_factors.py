@@ -574,21 +574,78 @@ class TestDividendYieldFactor(unittest.TestCase):
         self.assertEqual(f.name, 'DividendYield')
 
 
+class TestAssetGrowthFactor(unittest.TestCase):
+    """W1-7: AssetGrowthFactor 反向因子(高扩张→SELL)。"""
+
+    def test_no_data_returns_zero(self):
+        from core.factors.fundamental import AssetGrowthFactor
+        price = _make_price_df(300)
+        f = AssetGrowthFactor(financial_data=None)
+        result = f.evaluate(price)
+        self.assertTrue((result == 0).all())
+
+    def test_high_asset_growth_negative_factor(self):
+        """资产扩张持续加速 → 末段因子值显著低于前段(反向)。"""
+        from core.factors.fundamental import AssetGrowthFactor
+        n = 300
+        fin = pd.DataFrame({
+            'asset_yoy': np.linspace(5.0, 50.0, n),  # 从 5% 升至 50%
+        }, index=pd.date_range('2022-01-01', periods=n, freq='B'))
+        price = _make_price_df(n)
+
+        f = AssetGrowthFactor(financial_data=fin, rolling_window=20)
+        result = f.evaluate(price)
+        # 反向:高扩张末段应为负
+        self.assertLess(result.iloc[-30:].mean(), result.iloc[:30].mean())
+        self.assertLess(result.iloc[-30:].mean(), 0)
+
+    def test_low_asset_growth_positive_factor(self):
+        """资产扩张减速 → 末段因子值为正。"""
+        from core.factors.fundamental import AssetGrowthFactor
+        n = 300
+        fin = pd.DataFrame({
+            'asset_yoy': np.linspace(40.0, 2.0, n),
+        }, index=pd.date_range('2022-01-01', periods=n, freq='B'))
+        price = _make_price_df(n)
+
+        f = AssetGrowthFactor(financial_data=fin, rolling_window=20)
+        result = f.evaluate(price)
+        self.assertGreater(result.iloc[-30:].mean(), 0)
+
+    def test_extreme_values_clipped(self):
+        """极端值(>500% 资产同比)被截断,不引发数值问题。"""
+        from core.factors.fundamental import AssetGrowthFactor
+        n = 300
+        fin = pd.DataFrame({
+            'asset_yoy': np.full(n, 800.0),  # 远超 500%
+        }, index=pd.date_range('2022-01-01', periods=n, freq='B'))
+        price = _make_price_df(n)
+
+        f = AssetGrowthFactor(financial_data=fin)
+        result = f.evaluate(price)
+        self.assertTrue(np.all(np.isfinite(result.values)))
+
+    def test_registry_create(self):
+        from core.factor_registry import registry
+        f = registry.create('AssetGrowth')
+        self.assertEqual(f.name, 'AssetGrowth')
+
+
 class TestFundamentalRegistryIntegration(unittest.TestCase):
 
     def test_all_fundamental_factors_registered(self):
         from core.factor_registry import registry
         names = ['PEPercentile', 'ROEMomentum', 'EarningsSurprise',
                  'RevenueGrowth', 'CashFlowQuality',
-                 'FinancialHealth', 'DividendYield']
+                 'FinancialHealth', 'DividendYield', 'AssetGrowth']
         for name in names:
             with self.subTest(name=name):
                 self.assertIn(name, registry)
 
-    def test_total_factor_count_at_least_19(self):
-        """原5 + 技术7 + 基本面7(含 FinancialHealth/DividendYield) = 19 个因子"""
+    def test_total_factor_count_at_least_20(self):
+        """原5 + 技术7 + 基本面8(W1-5/6/7 新增 3 个) = 20 个因子"""
         from core.factor_registry import registry
-        self.assertGreaterEqual(len(registry), 19)
+        self.assertGreaterEqual(len(registry), 20)
 
     def test_fundamental_factor_in_pipeline_no_financial_data(self):
         """基本面因子（无数据时）加入流水线正常运行，不破坏其他因子"""

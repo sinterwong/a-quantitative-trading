@@ -128,7 +128,7 @@ def _auto_register() -> None:
     from core.factors.fundamental import (
         PEPercentileFactor, ROEMomentumFactor, EarningsSurpriseFactor,
         RevenueGrowthFactor, CashFlowQualityFactor,
-        FinancialHealthFactor, DividendYieldFactor,
+        FinancialHealthFactor, DividendYieldFactor, AssetGrowthFactor,
     )
 
     # 原有价格动量因子
@@ -155,6 +155,7 @@ def _auto_register() -> None:
     registry.register(CashFlowQualityFactor, default_params={'rolling_window': 60})
     registry.register(FinancialHealthFactor, default_params={'rolling_window': 60})
     registry.register(DividendYieldFactor, default_params={'lookback_years': 3})
+    registry.register(AssetGrowthFactor, default_params={'rolling_window': 60})
 
     # 情绪因子（A-4）
     from core.factors.sentiment import (

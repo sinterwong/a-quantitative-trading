@@ -528,3 +528,59 @@ class DividendYieldFactor(Factor):
 
         # 高分位 → 高因子值(正向)
         return self.normalize(pct_rank.fillna(0.0))
+
+
+# ---------------------------------------------------------------------------
+# 9. 资产增长率因子(W1-7,反向)
+# ---------------------------------------------------------------------------
+
+class AssetGrowthFactor(Factor):
+    """
+    资产扩张速度因子(反向)。
+
+    学术基础:Cooper / Gulen / Schill (2008) — Asset Growth Anomaly。
+    高总资产同比扩张往往伴随:
+      - 过度投资 / 大量并购消化不良
+      - 盈利稀释 / ROE 下滑
+      - 未来 1-3 年股价 underperform
+
+    因子值 = -z(asset_yoy)
+      asset_yoy 高 → 因子值为负(SELL 倾向)
+      asset_yoy 低 / 负 → 因子值为正(BUY,可能是收缩 / 聚焦主业)
+
+    数据来源:
+      Akshare TOTALASSETSGRRATE 或自算 TOTALASSETS YoY(W1-1)。
+
+    Parameters
+    ----------
+    financial_data : 含 asset_yoy 列的 DataFrame
+    rolling_window : 平滑窗口(默认 60 天)
+    """
+
+    name = 'AssetGrowth'
+    category = FactorCategory.FUNDAMENTAL
+
+    def __init__(
+        self,
+        financial_data: Optional[pd.DataFrame] = None,
+        rolling_window: int = 60,
+        threshold: float = 1.0,
+        symbol: str = '',
+    ):
+        self.financial_data = financial_data
+        self.rolling_window = rolling_window
+        self.threshold = threshold
+        self.symbol = symbol
+
+    def evaluate(self, data: pd.DataFrame) -> pd.Series:
+        ag = _align_financial(self.financial_data, data.index, 'asset_yoy')
+        if ag.isna().all():
+            return pd.Series(0.0, index=data.index)
+
+        # 截断极端值(>500% 视为重组 / 借壳,信号意义弱)
+        ag_clipped = ag.clip(-50.0, 500.0)
+        smoothed = ag_clipped.rolling(self.rolling_window, min_periods=1).mean()
+
+        # 反向:高扩张 → 低因子值
+        raw = -smoothed
+        return self.normalize(raw.fillna(0.0))
