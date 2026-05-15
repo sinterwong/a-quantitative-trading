@@ -1,12 +1,16 @@
 """
-core/data_sources.py — 统一数据源接口
+core/data_sources.py — 统一数据源接口（已全面迁移至 Gateway 唯一出口）
+
+所有数据源 fetch_latest() / fetch_history() 均通过 Gateway API 获取外部数据，
+不再直接请求外部 HTTP/yfinance 接口（历史 K 线除外，详见各类 docstring）。
 
 支持数据源：
-  - SPFuturesDataSource:     S&P 500 / Nasdaq 期货（yfinance）
-  - VIXDataSource:           CBOE VIX 指数（直接 HTTP）
-  - HSIFuturesDataSource:    恒生指数期货（yfinance）
-  - NorthBoundDataSource:    北向资金 KAMT（复用现有 cached_kamt）
-  - TencentMinuteDataSource:  腾讯分钟K线（复用现有逻辑）
+  - SPFuturesDataSource:     S&P 500 / Nasdaq 期货 → Gateway.market_index()
+  - VIXDataSource:           CBOE VIX 指数 → Gateway.market_index('^VIX')
+  - HSIFuturesDataSource:    恒生指数期货 → Gateway.market_index('^HSI')
+  - NorthBoundDataSource:    北向资金 KAMT（内部服务）
+  - TencentMinuteDataSource:  腾讯分钟K线 → Gateway.kline(interval='1m')
+  - _TencentMarketSource:    港股/美股/指数 → Gateway.market_index()
 
 所有数据源实现：
   - fetch_latest()  → 最新行情 dict
@@ -81,8 +85,9 @@ class DataSource(ABC):
 
 class SPFuturesDataSource(DataSource):
     """
-    S&P 500 (ES) / Nasdaq (NQ) 期货数据。
-    yfinance 优先级最高，失败则用 requests 直连 Yahoo Finance 历史接口。
+    S&P 500 (ES) / Nasdaq (NQ) 期货数据（已迁移至 Gateway 统一数据出口）。
+
+    走 Gateway.market_index(symbol)，底层由 yfinance provider 提供数据。
     """
 
     name = 'SPFutures'
@@ -99,60 +104,28 @@ class SPFuturesDataSource(DataSource):
             return self._cache
 
         try:
-            import yfinance as yf
-            ticker = yf.Ticker(self.symbol)
-            hist = ticker.history(period='2d', auto_adjust=True)
-            if hist.empty:
-                raise ValueError('Empty history')
-            latest = hist.iloc[-1]
-            prev = hist.iloc[-2] if len(hist) > 1 else latest
-
-            result = {
-                'symbol': self.symbol,
-                'timestamp': datetime.now(),
-                'open': float(latest['Open']),
-                'high': float(latest['High']),
-                'low': float(latest['Low']),
-                'close': float(latest['Close']),
-                'volume': int(latest['Volume']),
-                'prev_close': float(prev['Close']),
-                'change_pct': round(
-                    (float(latest['Close']) - float(prev['Close'])) / float(prev['Close']) * 100, 3
-                ),
-                'source': 'yfinance',
-            }
-            self._cache = result
-            self._cache_time = now
-            return result
+            from core.data_gateway import get_gateway
+            snap = get_gateway().market_index(self.symbol)
+            if snap and snap.price > 0:
+                result = {
+                    'symbol': self.symbol,
+                    'timestamp': snap.timestamp or datetime.now(),
+                    'close': snap.price,
+                    'prev_close': snap.prev_close,
+                    'change_pct': snap.change_pct,
+                    'source': 'gateway',
+                }
+            else:
+                result = {'symbol': self.symbol, 'error': 'no data from gateway'}
         except Exception as e:
-            print(f"[{self.name}] yfinance failed: {e}, trying direct...")
-            return self._fetch_direct()
+            result = {'symbol': self.symbol, 'error': str(e), 'source': 'failed'}
 
-    def _fetch_direct(self) -> Dict[str, Any]:
-        """使用 yfinance download（更稳定）"""
-        try:
-            import yfinance as yf
-            hist = yf.download(self.symbol, period='2d', auto_adjust=True, progress=False)
-            if hist.empty:
-                raise ValueError('empty')
-            closes = hist['Close'].dropna()
-            latest_close = float(closes.iloc[-1])
-            prev_close = float(closes.iloc[-2]) if len(closes) > 1 else latest_close
-            result_dict = {
-                'symbol': self.symbol,
-                'timestamp': datetime.now(),
-                'close': latest_close,
-                'prev_close': prev_close,
-                'change_pct': round((latest_close - prev_close) / prev_close * 100, 3),
-                'source': 'yfinance_direct',
-            }
-            self._cache = result_dict
-            self._cache_time = time.time()
-            return result_dict
-        except Exception as e:
-            return {'symbol': self.symbol, 'error': str(e), 'source': 'failed'}
+        self._cache = result
+        self._cache_time = now
+        return result
 
     def fetch_history(self, days: int = 5) -> pd.DataFrame:
+        # Gateway market_index 无历史，fallback 到 yfinance K线（历史场景，延迟可接受）
         try:
             import yfinance as yf
             ticker = yf.Ticker(self.symbol)
@@ -169,8 +142,9 @@ class SPFuturesDataSource(DataSource):
 
 class VIXDataSource(DataSource):
     """
-    CBOE VIX 波动率指数。
-    优先直连 CBOE（最可靠），fallback yfinance ^VIX。
+    CBOE VIX 波动率指数（已迁移至 Gateway 统一数据出口）。
+
+    走 Gateway.market_index('^VIX')，底层由 yfinance provider 提供数据。
     """
 
     name = 'VIX'
@@ -184,36 +158,29 @@ class VIXDataSource(DataSource):
         if self._cache and (now - self._cache_time) < 300:  # 5min TTL
             return self._cache
 
-        result = self._fetch_yfinance()
+        try:
+            from core.data_gateway import get_gateway
+            snap = get_gateway().market_index('^VIX')
+            if snap and snap.price > 0:
+                result = {
+                    'symbol': '^VIX',
+                    'timestamp': snap.timestamp or datetime.now(),
+                    'close': snap.price,
+                    'prev_close': snap.prev_close,
+                    'change_pct': snap.change_pct,
+                    'source': 'gateway',
+                }
+            else:
+                result = {'symbol': '^VIX', 'error': 'no data from gateway'}
+        except Exception as e:
+            result = {'symbol': '^VIX', 'error': str(e)}
+
         self._cache = result
         self._cache_time = now
         return result
 
-    def _fetch_yfinance(self) -> Dict[str, Any]:
-        """Yahoo Finance ^VIX"""
-        try:
-            import yfinance as yf
-            ticker = yf.Ticker('^VIX')
-            hist = ticker.history(period='2d', auto_adjust=True)
-            if hist.empty:
-                return {'symbol': '^VIX', 'error': 'empty'}
-            latest = hist.iloc[-1]
-            prev = hist.iloc[-2] if len(hist) > 1 else latest
-            result = {
-                'symbol': '^VIX',
-                'timestamp': datetime.now(),
-                'close': float(latest['Close']),
-                'prev_close': float(prev['Close']),
-                'change_pct': round(
-                    (float(latest['Close']) - float(prev['Close'])) / float(prev['Close']) * 100, 2
-                ),
-                'source': 'yfinance',
-            }
-            return result
-        except Exception as e:
-            return {'symbol': '^VIX', 'error': str(e)}
-
     def fetch_history(self, days: int = 5) -> pd.DataFrame:
+        # VIX 历史通过 yfinance K线兜底（Gateway market_index 无历史）
         try:
             import yfinance as yf
             ticker = yf.Ticker('^VIX')
@@ -224,7 +191,11 @@ class VIXDataSource(DataSource):
 
 
 class HSIFuturesDataSource(DataSource):
-    """恒生指数期货（HSI main）"""
+    """
+    恒生指数期货（已迁移至 Gateway 统一数据出口）。
+
+    走 Gateway.market_index('^HSI')，底层由 yfinance provider 提供数据。
+    """
 
     name = 'HSIFutures'
 
@@ -239,30 +210,28 @@ class HSIFuturesDataSource(DataSource):
             return self._cache
 
         try:
-            import yfinance as yf
-            ticker = yf.Ticker(self.symbol)
-            hist = ticker.history(period='2d', auto_adjust=True)
-            if hist.empty:
-                raise ValueError('empty')
-            latest = hist.iloc[-1]
-            prev = hist.iloc[-2] if len(hist) > 1 else latest
-            result = {
-                'symbol': self.symbol,
-                'timestamp': datetime.now(),
-                'close': float(latest['Close']),
-                'prev_close': float(prev['Close']),
-                'change_pct': round(
-                    (float(latest['Close']) - float(prev['Close'])) / float(prev['Close']) * 100, 3
-                ),
-                'source': 'yfinance',
-            }
-            self._cache = result
-            self._cache_time = now
-            return result
+            from core.data_gateway import get_gateway
+            snap = get_gateway().market_index(self.symbol)
+            if snap and snap.price > 0:
+                result = {
+                    'symbol': self.symbol,
+                    'timestamp': snap.timestamp or datetime.now(),
+                    'close': snap.price,
+                    'prev_close': snap.prev_close,
+                    'change_pct': snap.change_pct,
+                    'source': 'gateway',
+                }
+            else:
+                result = {'symbol': self.symbol, 'error': 'no data from gateway'}
         except Exception as e:
-            return {'symbol': self.symbol, 'error': str(e), 'source': 'failed'}
+            result = {'symbol': self.symbol, 'error': str(e), 'source': 'failed'}
+
+        self._cache = result
+        self._cache_time = now
+        return result
 
     def fetch_history(self, days: int = 5) -> pd.DataFrame:
+        # Gateway market_index 无历史，fallback 到 yfinance K线（历史场景，延迟可接受）
         try:
             import yfinance as yf
             ticker = yf.Ticker(self.symbol)
@@ -276,9 +245,10 @@ class HSIFuturesDataSource(DataSource):
 
 class TencentMinuteDataSource(DataSource):
     """
-    腾讯分钟K线数据（复用 scripts/ 中的逻辑）。
-    fetch_latest() → 最近1分钟 bar
-    fetch_history(minutes) → 最近 N 分钟
+    腾讯分钟K线数据（已迁移至 Gateway 统一数据出口）。
+
+    fetch_latest()  → 最近1分钟 bar（走 Gateway.kline interval=1m）
+    fetch_history(minutes) → 最近 N 分钟（走 Gateway.kline interval=1m）
     """
 
     name = 'TencentMinute'
@@ -288,39 +258,31 @@ class TencentMinuteDataSource(DataSource):
         self._cache: Optional[Dict] = None
         self._cache_time: float = 0
 
+    def _gateway_kline(self, limit: int) -> pd.DataFrame:
+        """通过 Gateway 获取分钟K线（使用 Sina provider 的 KLINE_MINUTE 能力）。"""
+        from core.data_gateway import get_gateway
+        return get_gateway().kline(self.symbol, interval="1m", limit=limit)
+
     def fetch_latest(self) -> Dict[str, Any]:
         now = time.time()
         if self._cache and (now - self._cache_time) < 30:
             return self._cache
 
         try:
-            import urllib.request
-            url = (
-                f'https://web.ifzq.gtimg.cn/appstock/app/kline/mkline'
-                f'?param={self.symbol},m1,,10'
-            )
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=8) as r:
-                raw = r.read().decode('gbk')
-            import json
-            data = json.loads(raw)
-            # 解析分钟数据
-            qt = data.get('data', {}).get(self.symbol, {})
-            m1 = qt.get('m1', [])
-            if not m1:
-                return {'symbol': self.symbol, 'error': 'no m1 data'}
-            # m1[-1] = [时间, 开, 收, 高, 低, 量]
-            last = m1[-1]
-            dt_str = last[0]
+            df = self._gateway_kline(limit=10)
+            if df.empty:
+                return {'symbol': self.symbol, 'error': 'no data from gateway'}
+            last = df.iloc[-1]
+            dt_col = 'datetime' if 'datetime' in df.columns else 'date'
             result = {
                 'symbol': self.symbol,
-                'timestamp': datetime.strptime(dt_str, '%Y%m%d%H%M%S') if len(dt_str) == 14 else datetime.now(),
-                'open': float(last[1]),
-                'close': float(last[2]),
-                'high': float(last[3]),
-                'low': float(last[4]),
-                'volume': float(last[5]) if len(last) > 5 else 0,
-                'source': 'tencent',
+                'timestamp': last.get(dt_col, datetime.now()),
+                'open': float(last['open']),
+                'close': float(last['close']),
+                'high': float(last['high']),
+                'low': float(last['low']),
+                'volume': float(last.get('volume', 0)),
+                'source': 'gateway',
             }
             self._cache = result
             self._cache_time = now
@@ -329,37 +291,10 @@ class TencentMinuteDataSource(DataSource):
             return {'symbol': self.symbol, 'error': str(e), 'source': 'failed'}
 
     def fetch_history(self, minutes: int = 60) -> pd.DataFrame:
-        """获取最近 N 分钟 K 线"""
+        """获取最近 N 分钟 K 线（走 Gateway）"""
         try:
-            import urllib.request
-            url = (
-                f'https://web.ifzq.gtimg.cn/appstock/app/kline/mkline'
-                f'?param={self.symbol},m1,,{minutes}'
-            )
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=8) as r:
-                raw = r.read().decode('gbk')
-            import json
-            data = json.loads(raw)
-            qt = data.get('data', {}).get(self.symbol, {})
-            m1 = qt.get('m1', [])
-            rows = []
-            for bar in m1:
-                dt_str = bar[0]
-                try:
-                    dt = datetime.strptime(dt_str, '%Y%m%d%H%M%S')
-                except ValueError:
-                    continue
-                rows.append({
-                    'datetime': dt,
-                    'open': float(bar[1]),
-                    'close': float(bar[2]),
-                    'high': float(bar[3]),
-                    'low': float(bar[4]),
-                    'volume': float(bar[5]) if len(bar) > 5 else 0,
-                })
-            df = pd.DataFrame(rows)
-            if not df.empty:
+            df = self._gateway_kline(limit=minutes)
+            if 'datetime' in df.columns:
                 df = df.set_index('datetime').sort_index()
             return df
         except Exception as e:
@@ -504,28 +439,35 @@ class MarketSnapshot:
 class CompositeMarketDataSource(DataSource):
     """
     组合所有外部数据源，生成统一的 MarketSnapshot。
-    EventBus 集成：在 MarketEvent 中携带完整市场快照。
+
+    所有数据源已迁移至 Gateway 统一数据出口：
+    - _TencentMarketSource → Gateway.quotes()
+    - SPFuturesDataSource / HSIFuturesDataSource → Gateway.market_index()
+    - VIXDataSource → Gateway.market_index('^VIX')
+    - NorthBoundDataSource → cached_kamt（内部服务，无外部直连）
     """
 
     name = 'CompositeMarket'
 
     def __init__(self):
-        # 优先使用腾讯数据源（免费、稳定），yfinance 作为 fallback
+        # 腾讯主源（走 Gateway.usHK/usUS market_index）
         self.sp500 = _TencentMarketSource('usSPY')
         self.nasdaq = _TencentMarketSource('usQQQ')
-        self.vix = VIXDataSource()
         self.hsi = _TencentMarketSource('hkHSI')
-        self.north = NorthBoundDataSource()
 
-        # Fallback 源（yfinance 延迟大，仅在腾讯失败时使用）
+        # yfinance 兜底（走 Gateway.market_index，Gateway 层内部路由）
         self._sp500_fb = SPFuturesDataSource('ES=F')
         self._nasdaq_fb = SPFuturesDataSource('NQ=F')
         self._hsi_fb = HSIFuturesDataSource()
 
+        # VIX / 北向
+        self.vix = VIXDataSource()
+        self.north = NorthBoundDataSource()
+
     def fetch_latest(self) -> MarketSnapshot:
         snap = MarketSnapshot()
 
-        # 外盘（腾讯优先，yfinance 兜底）
+        # 外盘（腾讯主源，yfinance 兜底——均已走 Gateway）
         for src, fb, attr in [
             (self.sp500, self._sp500_fb, 'sp500_change_pct'),
             (self.nasdaq, self._nasdaq_fb, 'nasdaq_change_pct'),
@@ -537,7 +479,6 @@ class CompositeMarketDataSource(DataSource):
                 if val or not d.get('error'):
                     setattr(snap, attr, val)
                 else:
-                    # 腾讯失败，尝试 yfinance
                     d2 = fb.fetch_latest()
                     setattr(snap, attr, d2.get('change_pct', 0))
             except Exception:
@@ -547,7 +488,7 @@ class CompositeMarketDataSource(DataSource):
                 except Exception:
                     pass
 
-        # VIX（保持 yfinance）
+        # VIX（走 Gateway.market_index('^VIX')）
         try:
             d = self.vix.fetch_latest()
             snap.vix = d.get('close', 0)
