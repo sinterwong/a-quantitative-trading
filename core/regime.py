@@ -42,7 +42,7 @@ logger = logging.getLogger("core.regime")
 
 # ─── 默认参数 ──────────────────────────────────────────────────────────────
 
-INDEX_SYMBOL = "sh000001"   # 上证综指（AkShare 格式）
+INDEX_SYMBOL = "sh000001"   # 上证综指（Gateway 统一格式 sh000001）
 MA_SHORT = 20
 MA_LONG = 60
 ATR_PERIOD = 14
@@ -69,7 +69,7 @@ class RegimeInfo:
     atr: float
     reason: str
     date_str: str
-    source: str = "akshare"   # 'akshare' | 'fallback'
+    source: str = "gateway"   # 'gateway' | 'fallback'
 
     # P1-13: 自适应阈值与斜率
     atr_threshold_dynamic: float = 0.0   # 当前轮使用的 VOLATILE 阈值
@@ -147,28 +147,36 @@ class RegimeInfo:
 
 def _fetch_index_data(lookback: int = 320) -> Optional[dict]:
     """
-    通过 AkShare 获取上证综指历史数据。
+    通过 DataGateway 获取上证综指历史数据。
 
     P1-13: lookback 从 80 → 320 天，以满足：
       - MA60 + MA60 30 日斜率 → 至少 90 根
       - ATR_PERCENTILE_WINDOW=252 + ATR_PERIOD=14 → 至少 270 根
 
+    数据源走 Gateway 统一出口（享受熔断/健康度路由/字段级合并），
+    底层 provider 由 gateway 自动选择（默认腾讯 INDEX KLINE）。
+
     返回 dict 含 closes / ma20 / ma60 / atr_ratio / atr / atr_arr / ma60_slope，
     或 None（失败时）。
     """
     try:
-        import akshare as ak
+        from core.data_gateway import get_gateway
 
-        end = date.today().isoformat()
-        start = (date.today() - timedelta(days=lookback + 90)).isoformat()
-
-        df = ak.stock_zh_index_daily(symbol=INDEX_SYMBOL)
-        df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
-        df = (
-            df[(df["date"] >= start) & (df["date"] <= end)]
-            .tail(lookback)
-            .reset_index(drop=True)
+        df = get_gateway().kline(
+            INDEX_SYMBOL, interval="daily", days=lookback + 90, limit=lookback,
         )
+        if df is None or df.empty:
+            logger.warning("_fetch_index_data: gateway returned empty kline for %s", INDEX_SYMBOL)
+            return None
+
+        # Provider 间列名差异:多数用 'date',Baostock 用 'timestamp'。
+        # 统一规整为按时间升序排列的 OHLC 数组。
+        time_col = "date" if "date" in df.columns else (
+            "timestamp" if "timestamp" in df.columns else None
+        )
+        if time_col is not None:
+            df = df.sort_values(time_col)
+        df = df.tail(lookback).reset_index(drop=True)
 
         if len(df) < MA_LONG + 5:
             logger.warning("Insufficient index data: %d bars", len(df))
@@ -236,7 +244,7 @@ def _compute_indicators(closes, highs, lows) -> Optional[dict]:
 
 def detect_regime() -> RegimeInfo:
     """
-    实时检测市场环境（调用 AkShare 获取上证数据）。
+    实时检测市场环境（通过 DataGateway 获取上证数据）。
     网络失败时返回 CALM（保守默认值）。
 
     P1-13: 三处升级
@@ -259,10 +267,10 @@ def detect_regime() -> RegimeInfo:
             ma60_slope=0.0,
         )
 
-    return _classify_regime(data, today_str, source="akshare")
+    return _classify_regime(data, today_str, source="gateway")
 
 
-def _classify_regime(data: dict, date_str: str, source: str = "akshare") -> RegimeInfo:
+def _classify_regime(data: dict, date_str: str, source: str = "gateway") -> RegimeInfo:
     """从计算好的 indicators dict 分类 regime。可单测。"""
     closes = data["closes"]
     ma20_arr = data["ma20"]
@@ -351,7 +359,7 @@ def _trading_days_between(d1: str, d2: str) -> int:
 
 def get_regime(force_refresh: bool = False) -> RegimeInfo:
     """
-    获取当日市场环境（进程内缓存，同一天只调用 AkShare 一次）。
+    获取当日市场环境（进程内缓存，同一天只通过 Gateway 拉取一次）。
 
     P1-13: 增加切换冷却期 — 距上次状态切换 < SWITCH_COOLDOWN_DAYS 时
     保持原状态以减少抖动。原始检测结果仍写入 reason 供诊断。

@@ -227,5 +227,75 @@ class TestRegimeCooldown(unittest.TestCase):
         self.assertIn('冷却期', info2.reason)
 
 
+class TestRegimeGatewayIntegration(unittest.TestCase):
+    """W0-2: _fetch_index_data 走 DataGateway,不再直连 akshare。"""
+
+    def test_fetch_index_data_calls_gateway(self):
+        """_fetch_index_data 应通过 gateway.kline() 获取上证数据。"""
+        import pandas as pd
+        from unittest.mock import MagicMock
+
+        c, h, l = _bull_prices(320)
+        # 构造 gateway 返回的 DataFrame(date / open / high / low / close / volume)
+        df_mock = pd.DataFrame({
+            "date": pd.bdate_range(end="2026-05-15", periods=len(c)),
+            "open": c,
+            "high": h,
+            "low": l,
+            "close": c,
+            "volume": [1.0] * len(c),
+        })
+
+        gw_mock = MagicMock()
+        gw_mock.kline.return_value = df_mock
+
+        from core import regime as mod
+        with patch("core.data_gateway.get_gateway", return_value=gw_mock):
+            data = mod._fetch_index_data(lookback=320)
+        self.assertIsNotNone(data)
+        # gateway 被调用一次
+        gw_mock.kline.assert_called_once()
+        # 参数应包含上证 INDEX_SYMBOL
+        call_args = gw_mock.kline.call_args
+        self.assertEqual(call_args.args[0], mod.INDEX_SYMBOL)
+        self.assertEqual(call_args.kwargs.get("interval"), "daily")
+
+    def test_fetch_index_data_empty_returns_none(self):
+        """gateway 返回空 DataFrame 时应返回 None,不抛异常。"""
+        import pandas as pd
+        from unittest.mock import MagicMock
+
+        gw_mock = MagicMock()
+        gw_mock.kline.return_value = pd.DataFrame()
+
+        from core import regime as mod
+        with patch("core.data_gateway.get_gateway", return_value=gw_mock):
+            data = mod._fetch_index_data(lookback=320)
+        self.assertIsNone(data)
+
+    def test_fetch_index_data_handles_timestamp_column(self):
+        """Baostock 返回 'timestamp' 列时也应能正常解析。"""
+        import pandas as pd
+        from unittest.mock import MagicMock
+
+        c, h, l = _bull_prices(320)
+        df_mock = pd.DataFrame({
+            "timestamp": pd.bdate_range(end="2026-05-15", periods=len(c)),
+            "open": c,
+            "high": h,
+            "low": l,
+            "close": c,
+            "volume": [1.0] * len(c),
+        })
+
+        gw_mock = MagicMock()
+        gw_mock.kline.return_value = df_mock
+
+        from core import regime as mod
+        with patch("core.data_gateway.get_gateway", return_value=gw_mock):
+            data = mod._fetch_index_data(lookback=320)
+        self.assertIsNotNone(data)
+
+
 if __name__ == '__main__':
     unittest.main()
