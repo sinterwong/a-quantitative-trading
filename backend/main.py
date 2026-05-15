@@ -6,7 +6,7 @@ Runs the unified Scheduler for full-day automation:
   09:30  morning_runner    — 选股→watchlist→RSI信号→下单→早报飞书
   09:31  IntradayMonitor   — 盘中信号扫描（每5分钟 RSI 金叉/死叉）
   15:00  afternoon_report  — 收盘晚报→飞书推送
-  15:10  /analysis/run     — 日终 DynamicStockSelectorV2 选股分析
+  15:10  /analysis/run     — 日终 DynamicStockSelector 选股分析
   16:00  DailyOpsReporter  — 每日运营报告推送
 
 Usage:
@@ -223,7 +223,7 @@ class Scheduler:
       09:30  — 早盘自动化（选股→watchlist→RSI信号→下单→早报飞书）
       09:31  — 盘中信号监控开启（IntradayMonitor，每5分钟扫 RSI 金叉/死叉）
       15:00  — 收盘晚报（持仓快照→日收益→飞书推送）
-      15:10  — 日终选股分析（DynamicStockSelectorV2 → 写入 analysis_*.json）
+      15:10  — 日终选股分析（DynamicStockSelector → 写入 analysis_*.json）
       16:00  — 每日运营报告（告警推送）
 
     非交易日（周末/节假日）全部跳过。

@@ -1074,7 +1074,7 @@ if __name__ == '__main__':
     print('=' * 60)
     print()
 
-    sel = DynamicStockSelectorV2()
+    sel = DynamicStockSelector()
 
     print('[1/4] Fetching market news...')
     news = sel.fetch_market_news(30)

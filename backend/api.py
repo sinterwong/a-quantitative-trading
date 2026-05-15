@@ -646,16 +646,16 @@ def run_analysis():
     """
     POST /analysis/run — trigger daily analysis.
 
-    运行 DynamicStockSelectorV2 选股 + 记录信号，并将完整结果持久化到
+    运行 DynamicStockSelector 选股 + 记录信号，并将完整结果持久化到
     outputs/analysis/analysis_{date}.json，供 /analysis/health 和
     DailyOpsReporter 读取。
     """
     # Import the dynamic selector to run analysis
     try:
         sys.path.insert(0, os.path.join(PROJ_DIR, 'scripts'))
-        from dynamic_selector import DynamicStockSelectorV2
+        from dynamic_selector import DynamicStockSelector
 
-        selector = DynamicStockSelectorV2()
+        selector = DynamicStockSelector()
         selector.fetch_market_news(20)
         selector.calc_all_scores()
         top_bks = selector.get_top_bk_sectors(5)
