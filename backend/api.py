@@ -1424,6 +1424,22 @@ def market_status():
 # ============================================================
 
 # ============================================================
+# P4-2: News headlines (供 streamlit / UI 替代 core.factors.nlp 直连)
+# ============================================================
+
+@app.route('/data/news/<symbol>', methods=['GET'])
+def data_news(symbol):
+    """GET /data/news/<symbol>?n=5 — 标的最新新闻标题列表(东方财富)。"""
+    n = int(request.args.get('n', 5))
+    try:
+        from core.factors.nlp import _fetch_news_eastmoney
+        headlines = _fetch_news_eastmoney(symbol, n=n) or []
+    except Exception as e:
+        return err(f'news fetch failed: {e}', 503)
+    return ok(symbol=symbol, headlines=headlines, count=len(headlines))
+
+
+# ============================================================
 # P2: LLM Signal Review (独立信号审核)
 # ============================================================
 

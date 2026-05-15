@@ -157,36 +157,20 @@ def load_wf_results(limit: int = 30) -> list:
 
 @st.cache_data(ttl=30)
 def load_realtime(symbol: str) -> dict:
-    u = symbol.upper()
-    if u.endswith('.SH'):
-        sym = 'sh' + u[:-3]
-    elif u.endswith('.SZ'):
-        sym = 'sz' + u[:-3]
-    else:
-        sym = symbol.lower()
-    try:
-        req = urllib.request.Request(
-            f'https://qt.gtimg.cn/q={sym}',
-            headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.qq.com'},
-        )
-        with urllib.request.urlopen(req, timeout=6, context=_SSL_CTX) as r:
-            raw = r.read().decode('gbk', errors='replace')
-        eq = raw.find('="')
-        if eq >= 0:
-            raw = raw[eq + 2:]
-        f = raw.split('~')
-        if len(f) < 40:
-            return {}
-        return {
-            'price':      float(f[3])  if f[3]  not in ('', '-') else 0.0,
-            'prev_close': float(f[4])  if f[4]  not in ('', '-') else 0.0,
-            'pct':        float(f[32]) if f[32] not in ('', '-') else 0.0,
-            'vol_ratio':  float(f[38]) if len(f) > 38 and f[38] not in ('', '-', '0') else None,
-            'high':       float(f[33]) if len(f) > 33 and f[33] not in ('', '-') else 0.0,
-            'low':        float(f[34]) if len(f) > 34 and f[34] not in ('', '-') else 0.0,
-        }
-    except Exception:
+    """实时报价(P4-2: 改为 backend /data/realtime/<symbol> 代理,UI 不再直连 qt.gtimg.cn)。"""
+    resp = api_get(f'/data/realtime/{symbol}', timeout=6)
+    if resp.get('status') != 'ok':
         return {}
+    return resp.get('data', resp) or {}
+
+
+@st.cache_data(ttl=60)
+def load_news_headlines(symbol: str, n: int = 5) -> list:
+    """新闻标题列表(P4-2: 改为 backend /data/news/<symbol> 代理)。"""
+    resp = api_get(f'/data/news/{symbol}?n={n}', timeout=8)
+    if resp.get('status') != 'ok':
+        return []
+    return resp.get('headlines', []) or []
 
 
 @st.cache_data(ttl=60)
@@ -568,8 +552,9 @@ elif page == '🎯 因子工作台':
                 st.markdown('---')
                 st.subheader('新闻情感（NewsSentimentFactor）')
                 try:
-                    from core.factors.nlp import NewsSentimentFactor, _fetch_news_eastmoney
-                    headlines = _fetch_news_eastmoney(symbol, n=5)
+                    from core.factors.nlp import NewsSentimentFactor
+                    # P4-2: 走 backend /data/news/<symbol>,UI 不再直接调因子内部 fetcher
+                    headlines = load_news_headlines(symbol, n=5)
                     if headlines:
                         st.caption('最新新闻标题：')
                         for h in headlines:
