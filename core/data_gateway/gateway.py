@@ -409,7 +409,7 @@ class DataGateway:
         if cached is not None:
             return cached
         result, _ = self._sequential_fetch(
-            Capability.SECTOR_RANKING, Market.GLOBAL, "fetch_sectors", limit,
+            Capability.SECTOR_RANKING, Market.A, "fetch_sectors", limit,
         )
         out = result or []
         if out:
