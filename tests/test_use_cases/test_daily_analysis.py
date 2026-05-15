@@ -36,11 +36,10 @@ def fake_selector():
 @pytest.fixture
 def patch_selector(fake_selector):
     """把 scripts.dynamic_selector.DynamicStockSelector 替换为 fake。"""
-    # daily_analysis 在函数体内做 sys.path 操作 + 局部 import
-    # 用一个 fake module 注入 sys.modules 中,绕过磁盘 import
-    fake_module = MagicMock()
-    fake_module.DynamicStockSelector = MagicMock(return_value=fake_selector)
-    with patch.dict(sys.modules, {'dynamic_selector': fake_module}):
+    # daily_analysis 现在走 `from scripts.dynamic_selector import ...`,
+    # 用 patch.object 直接替换包内符号即可,无需再注入 sys.modules。
+    import scripts.dynamic_selector as ds_mod
+    with patch.object(ds_mod, 'DynamicStockSelector', return_value=fake_selector):
         yield fake_selector
 
 

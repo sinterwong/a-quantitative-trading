@@ -49,12 +49,9 @@ def run_daily_analysis(req: DailyAnalysisRequest,
 
     持久化与 daily_meta 写入失败不会抛异常,只记录日志(降级行为)。
     """
-    import sys
-    PROJ_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    scripts_dir = os.path.join(PROJ_DIR, 'scripts')
-    if scripts_dir not in sys.path:
-        sys.path.insert(0, scripts_dir)
-    from dynamic_selector import DynamicStockSelector
+    # scripts/ 是 package(scripts/__init__.py 存在),repo root 在 sys.path
+    # 时直接可用——不必再做 sys.path 注入。
+    from scripts.dynamic_selector import DynamicStockSelector
 
     selector = DynamicStockSelector()
     selector.fetch_market_news(req.news_limit)

@@ -36,10 +36,6 @@ class DataMixin:
         if not self._broker:
             return
         try:
-            import sys as _sys
-            PROJ_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            if PROJ_DIR not in _sys.path:
-                _sys.path.insert(0, PROJ_DIR)
             from scripts.dynamic_selector import DynamicStockSelector
             sel = DynamicStockSelector()
             sel.fetch_market_news(30)
@@ -238,12 +234,7 @@ class DataMixin:
     def _load_sector_flows(self):
         """加载今日板块资金流向数据(从 dynamic_selector)。"""
         try:
-            import sys as _sys
-            PROJ_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            SCRIPTS_DIR = os.path.join(PROJ_DIR, 'scripts')
-            if SCRIPTS_DIR not in _sys.path:
-                _sys.path.insert(0, SCRIPTS_DIR)
-            from dynamic_selector import DynamicStockSelector
+            from scripts.dynamic_selector import DynamicStockSelector
             sel = DynamicStockSelector()
             sel.fetch_sectors()
             return sel.sector_scores
