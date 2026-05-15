@@ -1051,6 +1051,20 @@ def clear_alerts():
 # Data fetch endpoints (多源兜底路由)
 # ============================================================
 
+_DATA_NOT_FOUND_MARKERS = (
+    '所有数据源均失败',   # FetcherManager 所有 fetcher 都失败
+    '未获取到数据',
+    '空数据',
+    'no data',
+)
+
+
+def _is_symbol_not_found(err_msg: str) -> bool:
+    """根据 fetcher 错误消息判断是否属于"无此 symbol",而非内部异常。"""
+    s = str(err_msg)
+    return any(m in s for m in _DATA_NOT_FOUND_MARKERS)
+
+
 @app.route('/data/daily/<code>', methods=['GET'])
 def data_daily(code):
     """
@@ -1059,11 +1073,15 @@ def data_daily(code):
         days     — int, number of trading days (default 30, max 2000)
         start    — str, start date YYYY-MM-DD (optional)
         end      — str, end date YYYY-MM-DD (optional)
-    
+
     Returns:
         Standardized OHLCV daily data with MA5/MA10/MA20/volume_ratio.
-        Uses multi-source failover: Tencent → Sina → AkShare.
-        Circuit breaker protects each source.
+        Multi-source failover: Tencent → Sina → AkShare(熔断器保护)。
+
+    Status:
+        200 - 数据正常返回
+        404 - 全部 fetcher 都报"无该 symbol 数据",视为标的不存在
+        500 - 内部错误(网络全断 / fetcher_manager 加载失败 / 等)
     """
     try:
         from services.fetcher_manager import get_fetcher_manager
@@ -1074,28 +1092,29 @@ def data_daily(code):
 
         fm = get_fetcher_manager()
         df = fm.get_daily_data(code, start_date=start, end_date=end, days=days)
+    except Exception as exc:
+        app.logger.exception('data_daily(%s) failed', code)
+        if _is_symbol_not_found(exc):
+            return err(f'无该标的的行情数据: {code}', 404)
+        return err(f'数据获取失败: {exc}', 500)
 
-        # Convert to dict records (ISO date string)
-        records = []
-        for _, row in df.iterrows():
-            rec = {}
-            for col, val in row.items():
-                if col == 'date':
-                    rec[col] = str(val)[:10] if val else None
-                elif val is not None:
-                    rec[col] = round(float(val), 4) if isinstance(val, (int, float)) else val
-            records.append(rec)
+    records = []
+    for _, row in df.iterrows():
+        rec = {}
+        for col, val in row.items():
+            if col == 'date':
+                rec[col] = str(val)[:10] if val else None
+            elif val is not None:
+                rec[col] = round(float(val), 4) if isinstance(val, (int, float)) else val
+        records.append(rec)
 
-        return ok(
-            code=code,
-            rows=len(records),
-            columns=list(df.columns),
-            data=records,
-            fetcher_status=fm.get_fetcher_status(),
-        )
-    except Exception as e:
-        import traceback
-        return err(f'数据获取失败: {e}\n{traceback.format_exc()}', 500)
+    return ok(
+        code=code,
+        rows=len(records),
+        columns=list(df.columns),
+        data=records,
+        fetcher_status=fm.get_fetcher_status(),
+    )
 
 
 @app.route('/data/status', methods=['GET'])

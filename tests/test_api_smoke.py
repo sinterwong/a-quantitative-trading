@@ -122,14 +122,14 @@ def test_analysis_monthly_history_get(client):
 # Data 系列
 # ────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(
-    reason='Bug: /data/daily/<code> 对未知 symbol 返回 500 而非 404,'
-           'P1-2 修复',
-    strict=False,
-)
 def test_data_daily_get_unknown_symbol(client):
+    """未知 symbol 应返回 404,不应 500 + 不应泄漏 traceback。"""
     r = client.get('/data/daily/NONEXISTENT.SH')
-    assert _OK(r)
+    assert r.status_code == 404, f'expected 404, got {r.status_code}'
+    body = r.get_json()
+    assert body['status'] == 'error'
+    # 错误消息不应含 traceback
+    assert 'Traceback' not in body.get('error', '')
 
 
 def test_data_fund_flow_get(client):
