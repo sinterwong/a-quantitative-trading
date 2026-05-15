@@ -62,3 +62,5 @@ outputs/
 *.parquet
 live_params.json
 trading_mode.json
+.coverage
+htmlcov/
