@@ -79,12 +79,14 @@ class RiskMixin:
         情绪缓存:每天早上刷新一次(盘中不重复请求 LLM)。
         """
         today = date.today().isoformat()
-        if self._sentiment_cache_date != today:
-            self._sentiment_cache = {}
-            self._sentiment_cache_date = today
+        with self._state_lock:
+            if self._sentiment_cache_date != today:
+                self._sentiment_cache = {}
+                self._sentiment_cache_date = today
+            cached = self._sentiment_cache.get(symbol)
 
-        if symbol in self._sentiment_cache:
-            sent, conf, summ = self._sentiment_cache[symbol]
+        if cached is not None:
+            sent, conf, summ = cached
             blocked = (sent == 'bearish' and conf >= self.BEARISH_BLOCK_CONFIDENCE)
             return blocked, sent, conf, summ
 
@@ -100,7 +102,8 @@ class RiskMixin:
             sentiment = getattr(result, 'sentiment', 'neutral')
             confidence = getattr(result, 'confidence', 0.0)
             summary = getattr(result, 'summary', '')
-            self._sentiment_cache[symbol] = (sentiment, confidence, summary)
+            with self._state_lock:
+                self._sentiment_cache[symbol] = (sentiment, confidence, summary)
             blocked = (sentiment == 'bearish' and confidence >= self.BEARISH_BLOCK_CONFIDENCE)
             logger.info(
                 'NewsSentiment %s: sentiment=%s conf=%.2f blocked=%s',
@@ -109,7 +112,8 @@ class RiskMixin:
             return blocked, sentiment, confidence, summary
         except Exception as e:
             logger.warning('NewsSentiment %s failed: %s', symbol, e)
-            self._sentiment_cache[symbol] = ('unknown', 0.0, '')
+            with self._state_lock:
+                self._sentiment_cache[symbol] = ('unknown', 0.0, '')
             return False, 'unknown', 0.0, ''
 
     # ── Kelly 更新 ────────────────────────────────────────
@@ -134,11 +138,12 @@ class RiskMixin:
             trades = [{'pnl': float(t.get('pnl', 0))} for t in trades_raw]
             new_kelly = compute_kelly_from_trades(trades)
 
-            if abs(new_kelly - self._kelly_pct) > 0.005:
-                logger.info('Kelly updated: %.1f%% -> %.1f%% (from %d trades)',
-                           self._kelly_pct * 100, new_kelly * 100, len(trades))
-            self._kelly_pct = new_kelly
-            self._kelly_last_updated = date.today().isoformat()
+            with self._state_lock:
+                if abs(new_kelly - self._kelly_pct) > 0.005:
+                    logger.info('Kelly updated: %.1f%% -> %.1f%% (from %d trades)',
+                               self._kelly_pct * 100, new_kelly * 100, len(trades))
+                self._kelly_pct = new_kelly
+                self._kelly_last_updated = date.today().isoformat()
         except Exception as e:
             logger.warning('_refresh_kelly_from_trades failed: %s', e)
 
@@ -294,10 +299,12 @@ class RiskMixin:
             current_equity = float(summary.get('total_equity', 0) or 0)
         except Exception:
             pass
-        if current_equity > self._peak_equity:
-            self._peak_equity = current_equity
-            self._risk_warn_fired = False
-            self._risk_stop_fired = False
+        with self._state_lock:
+            if current_equity > self._peak_equity:
+                self._peak_equity = current_equity
+                self._risk_warn_fired = False
+                self._risk_stop_fired = False
+            equity_peak = self._peak_equity
 
         # ── 因子评分(FACTOR_REVERSAL 检查所需)──
         pipeline_scores: dict = {}
@@ -316,7 +323,7 @@ class RiskMixin:
         )
         signals = engine.generate(
             positions=enriched,
-            equity_peak=self._peak_equity,
+            equity_peak=equity_peak,
             current_equity=current_equity,
             pipeline_scores=pipeline_scores or None,
             price_bars=price_bars or None,
@@ -336,14 +343,15 @@ class RiskMixin:
             is_portfolio_level = sig.priority.value <= 1  # P0=EMERGENCY, P1=PORTFOLIO_REDUCE
 
             if is_portfolio_level:
-                if sig.priority.value == 0 and self._risk_stop_fired:
-                    continue
-                if sig.priority.value == 1 and self._risk_warn_fired:
-                    continue
-                if sig.priority.value == 0:
-                    self._risk_stop_fired = True
-                if sig.priority.value == 1:
-                    self._risk_warn_fired = True
+                with self._state_lock:
+                    if sig.priority.value == 0 and self._risk_stop_fired:
+                        continue
+                    if sig.priority.value == 1 and self._risk_warn_fired:
+                        continue
+                    if sig.priority.value == 0:
+                        self._risk_stop_fired = True
+                    if sig.priority.value == 1:
+                        self._risk_warn_fired = True
             else:
                 cooldown_key = f'exit_{sym}'
                 if not self._cooldown.can_fire(cooldown_key):

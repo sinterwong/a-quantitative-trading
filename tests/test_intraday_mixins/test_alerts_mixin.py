@@ -81,7 +81,7 @@ def test_get_status_returns_required_fields(monitor):
 
 
 def test_get_status_cooldown_active_counts_entries(monitor):
-    monitor._cooldown._last = {'A': 100.0, 'B': 200.0}
+    monitor._cooldown.size.return_value = 2
     monitor._thread = None
     monitor._signal_log = []
     monitor._skip_log = []

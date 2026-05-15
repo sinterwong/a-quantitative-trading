@@ -28,10 +28,11 @@ class DataMixin:
     def _load_selector_once(self):
         """每天开盘前只加载一次动态选股结果。"""
         today = date.today().isoformat()
-        if self._selector_loaded_date == today and self._selector_cache:
-            return
-        self._selector_loaded_date = today
-        self._selector_cache = []
+        with self._state_lock:
+            if self._selector_loaded_date == today and self._selector_cache:
+                return
+            self._selector_loaded_date = today
+            self._selector_cache = []
         if not self._broker:
             return
         try:
@@ -63,31 +64,44 @@ class DataMixin:
                         filtered.append(sym)
                 selected = filtered
 
-            self._selector_cache = selected
+            with self._state_lock:
+                self._selector_cache = selected
             logger.info('DynamicSelector: loaded %d stocks (after news filter)', len(selected))
         except Exception as e:
             logger.warning('DynamicSelector: failed to load: %s', e)
-            self._selector_cache = []
+            with self._state_lock:
+                self._selector_cache = []
 
     def _get_watched_symbols(self) -> set:
         """返回今日动态选股列表(仅未持仓的标的)。"""
         self._load_selector_once()
         existing = {p.get('symbol') for p in self._svc.get_positions() if p.get('symbol')}
-        return {s for s in self._selector_cache if s not in existing}
+        with self._state_lock:
+            cache_snapshot = list(self._selector_cache)
+        return {s for s in cache_snapshot if s not in existing}
 
     # ── per-symbol 参数缓存 ────────────────────────────────
 
     def _get_params(self, symbol: str) -> dict:
         """返回股票的参数集(WFA优先,fallback到params.json)。每天刷新一次。"""
         today = date.today().isoformat()
-        if self._params_cache_date != today:
-            self._params_cache = {}
-            self._params_cache_date = today
+        need_kelly_refresh = False
+        with self._state_lock:
+            if self._params_cache_date != today:
+                self._params_cache = {}
+                self._params_cache_date = today
+                need_kelly_refresh = True
+            cached = self._params_cache.get(symbol)
+        if need_kelly_refresh:
+            # 不在锁内做远程调用
             self._refresh_kelly_from_trades()
-        if symbol not in self._params_cache:
+        if cached is None:
             from services.signals import load_symbol_params
-            self._params_cache[symbol] = load_symbol_params(symbol)
-        return self._params_cache[symbol]
+            loaded = load_symbol_params(symbol)
+            with self._state_lock:
+                self._params_cache[symbol] = loaded
+            return loaded
+        return cached
 
     def _sync_market_regime(self):
         """从 StrategyRunner 同步最新市场环境到 _market_regime(供 LLM prompt 使用)。"""
@@ -95,22 +109,26 @@ class DataMixin:
             try:
                 r = self._strategy_runner.current_regime
                 if r is not None:
-                    self._market_regime = {
+                    payload = {
                         'regime': r.regime,
                         'reason': r.reason,
                         'atr_ratio': getattr(r, 'atr_ratio', 0.0),
                     }
+                    with self._state_lock:
+                        self._market_regime = payload
                     return
             except Exception:
                 pass
         try:
             from core.regime import get_regime
             r = get_regime()
-            self._market_regime = {
+            payload = {
                 'regime': r.regime,
                 'reason': r.reason,
                 'atr_ratio': getattr(r, 'atr_ratio', 0.0),
             }
+            with self._state_lock:
+                self._market_regime = payload
         except Exception:
             pass
 

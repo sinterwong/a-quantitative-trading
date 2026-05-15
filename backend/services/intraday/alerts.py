@@ -25,41 +25,47 @@ class AlertsMixin:
     def _record_signal(self, symbol: str, signal: str, price: float,
                        reason: str, result: str = ''):
         """记录一次信号触发事件。"""
-        self._signal_log.append({
+        entry = {
             'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'symbol': symbol,
             'signal': signal,
             'price': round(price, 2),
             'reason': reason[:200],
             'result': result,
-        })
-        if len(self._signal_log) > 50:
-            self._signal_log = self._signal_log[-50:]
+        }
+        with self._state_lock:
+            self._signal_log.append(entry)
+            if len(self._signal_log) > 50:
+                self._signal_log = self._signal_log[-50:]
 
     def _record_skip(self, symbol: str, reason: str, category: str = ''):
         """记录一次信号被跳过事件。"""
-        self._skip_log.append({
+        entry = {
             'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'symbol': symbol,
             'reason': reason[:200],
             'category': category,
-        })
-        if len(self._skip_log) > 50:
-            self._skip_log = self._skip_log[-50:]
+        }
+        with self._state_lock:
+            self._skip_log.append(entry)
+            if len(self._skip_log) > 50:
+                self._skip_log = self._skip_log[-50:]
 
     def _record_llm_review(self, symbol: str, direction: str, approved: bool,
                            reason: str, confidence: float):
         """记录一次 LLM 审核事件。"""
-        self._llm_review_log.append({
+        entry = {
             'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'symbol': symbol,
             'direction': direction,
             'approved': approved,
             'reason': reason[:200],
             'confidence': round(confidence, 2),
-        })
-        if len(self._llm_review_log) > 50:
-            self._llm_review_log = self._llm_review_log[-50:]
+        }
+        with self._state_lock:
+            self._llm_review_log.append(entry)
+            if len(self._llm_review_log) > 50:
+                self._llm_review_log = self._llm_review_log[-50:]
 
     def _record_position_alert(self, alert_type: str, symbol: str, message: str,
                                 price: float = None, pct: float = None):
@@ -71,30 +77,36 @@ class AlertsMixin:
             logger.debug('record_position_alert failed: %s', e)
 
     def get_status(self) -> dict:
-        """返回监控状态摘要，供 API 暴露。"""
+        """返回监控状态摘要，供 API 暴露。
+
+        所有字段在 _state_lock 内一次性读出,避免出现 "scan_count 已加 1 但
+        last_scan_time 还未更新" 的撕裂状态。
+        """
         thread_alive = self._thread.is_alive() if self._thread else False
-        return {
-            'running': self._running,
-            'thread_alive': thread_alive,
-            'trading_mode': self._trading_mode,
-            'interval_seconds': self._interval,
-            'last_scan_time': self._last_scan_time,
-            'last_scan_symbol': self._last_scan_symbol,
-            'scan_count': self._scan_count,
-            'error_count': self._error_count,
-            'last_error': self._last_error,
-            'kelly_pct': round(self._kelly_pct, 4),
-            'kelly_last_updated': self._kelly_last_updated,
-            'dd_warn': self._dd_warn,
-            'dd_stop': self._dd_stop,
-            'peak_equity': round(self._peak_equity, 2),
-            'risk_warn_fired': self._risk_warn_fired,
-            'risk_stop_fired': self._risk_stop_fired,
-            'cooldown_active': len(self._cooldown._last),
-            'signals': list(reversed(self._signal_log[-10:])),
-            'skips': list(reversed(self._skip_log[-10:])),
-            'llm_reviews': list(reversed(self._llm_review_log[-5:])),
-        }
+        cooldown_active = self._cooldown.size()
+        with self._state_lock:
+            return {
+                'running': self._running,
+                'thread_alive': thread_alive,
+                'trading_mode': self._trading_mode,
+                'interval_seconds': self._interval,
+                'last_scan_time': self._last_scan_time,
+                'last_scan_symbol': self._last_scan_symbol,
+                'scan_count': self._scan_count,
+                'error_count': self._error_count,
+                'last_error': self._last_error,
+                'kelly_pct': round(self._kelly_pct, 4),
+                'kelly_last_updated': self._kelly_last_updated,
+                'dd_warn': self._dd_warn,
+                'dd_stop': self._dd_stop,
+                'peak_equity': round(self._peak_equity, 2),
+                'risk_warn_fired': self._risk_warn_fired,
+                'risk_stop_fired': self._risk_stop_fired,
+                'cooldown_active': cooldown_active,
+                'signals': list(reversed(self._signal_log[-10:])),
+                'skips': list(reversed(self._skip_log[-10:])),
+                'llm_reviews': list(reversed(self._llm_review_log[-5:])),
+            }
 
     # ── LLM 终极审核 ───────────────────────────────────────
 

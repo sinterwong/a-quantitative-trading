@@ -180,8 +180,9 @@ class SignalingMixin:
 
     def _check_and_push(self, now: datetime):
         """获取持仓 → 检查信号 → 推送飞书 + 自动下单(使用WFA优化参数)。"""
-        self._scan_count += 1
-        self._last_scan_time = now.strftime('%Y-%m-%d %H:%M:%S')
+        with self._state_lock:
+            self._scan_count += 1
+            self._last_scan_time = now.strftime('%Y-%m-%d %H:%M:%S')
 
         # 每日策略健康度检查(开盘时运行一次)
         self._run_daily_health_check()
@@ -227,9 +228,11 @@ class SignalingMixin:
 
         if not positions:
             logger.debug('No positions, skipping signal check')
-            self._peak_equity = self._svc.get_portfolio_summary().get('total_equity', 0) or self._peak_equity
-            self._risk_warn_fired = False
-            self._risk_stop_fired = False
+            summary_equity = self._svc.get_portfolio_summary().get('total_equity', 0)
+            with self._state_lock:
+                self._peak_equity = summary_equity or self._peak_equity
+                self._risk_warn_fired = False
+                self._risk_stop_fired = False
             return
 
         # 行业集中度检查
@@ -257,7 +260,8 @@ class SignalingMixin:
             sym = pos.get('symbol')
             if not sym:
                 continue
-            self._last_scan_symbol = sym
+            with self._state_lock:
+                self._last_scan_symbol = sym
             score = pipeline_scores.get(sym, 0.0)
             if score <= BUY_THRESHOLD_ADD:
                 continue

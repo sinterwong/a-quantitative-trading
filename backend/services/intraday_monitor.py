@@ -86,6 +86,10 @@ class IntradayMonitor(DataMixin, SignalingMixin, RiskMixin, ExecutionMixin, Aler
         self._thread: Optional[threading.Thread] = None
         self._cooldown = CooldownTracker()
         self._running = False
+        # 保护所有可观测性 / 缓存字段——
+        # monitor 后台线程写,API 线程在 get_status() / set_strategy_runner() 读。
+        # RLock 让同线程嵌套调用(如 _record_signal 嵌入 _deliver_alert)不死锁。
+        self._state_lock = threading.RLock()
         self._max_pos_pct = max_position_pct
         self._selector_top_n = selector_top_n
         self._daily_refresh = daily_selector_refresh
@@ -154,9 +158,10 @@ class IntradayMonitor(DataMixin, SignalingMixin, RiskMixin, ExecutionMixin, Aler
     def set_strategy_runner(self, runner) -> None:
         """注入 StrategyRunner 实例,用于读取 pipeline_scores。
 
-        可在 monitor.start() 之前或之后调用;线程安全(GIL 保护的单次赋值)。
+        可在 monitor.start() 之前或之后调用,通过 _state_lock 保证可见性。
         """
-        self._strategy_runner = runner
+        with self._state_lock:
+            self._strategy_runner = runner
         logger.info('StrategyRunner injected into IntradayMonitor')
 
     # ── 主循环 ────────────────────────────────────────────
@@ -179,8 +184,9 @@ class IntradayMonitor(DataMixin, SignalingMixin, RiskMixin, ExecutionMixin, Aler
             try:
                 self._check_and_push(now)
             except Exception as e:
-                self._error_count += 1
-                self._last_error = f'{now.strftime("%H:%M:%S")}: {e}'
+                with self._state_lock:
+                    self._error_count += 1
+                    self._last_error = f'{now.strftime("%H:%M:%S")}: {e}'
                 logger.error('Signal check error: %s', e)
 
             # 清理过期冷却记录

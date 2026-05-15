@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -32,6 +33,9 @@ def monitor():
     m._strategy_runner = None
     m._cooldown = MagicMock()
     m._cooldown.can_fire.return_value = True
+    m._cooldown.size.return_value = 0
+    # 真锁,以便受锁保护的 _record_* / get_status 等方法能正常进入。
+    m._state_lock = threading.RLock()
     m._selector_cache = []
     m._selector_loaded_date = ''
     m._selector_top_n = 5
