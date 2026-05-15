@@ -16,7 +16,7 @@ from core.data_gateway.gateway import DataGateway
 from core.data_gateway.health import HealthTracker
 from core.data_gateway.providers.base import Provider, ProviderError
 from core.data_gateway.schemas import (
-    Fundamentals, MarketIndexSnapshot, NorthFlow, Quote,
+    BalanceSheet, Fundamentals, MarketIndexSnapshot, NorthFlow, Quote,
     SectorConstituent, SectorRanking,
 )
 
@@ -43,6 +43,10 @@ class _FakeProvider(Provider):
         north_value: Optional[NorthFlow] = None,
         index_value: Optional[MarketIndexSnapshot] = None,
         macro_value: Optional[pd.DataFrame] = None,
+        balance_value: Optional[BalanceSheet] = None,
+        margin_flow_value: Optional[pd.DataFrame] = None,
+        north_history_value: Optional[pd.DataFrame] = None,
+        news_value: Optional[List[str]] = None,
         raise_on: Optional[str] = None,
         field_authorities: Optional[Dict[Capability, Dict[str, float]]] = None,
     ):
@@ -59,6 +63,10 @@ class _FakeProvider(Provider):
         self._north = north_value
         self._index = index_value
         self._macro = macro_value if macro_value is not None else pd.DataFrame()
+        self._balance = balance_value
+        self._margin = margin_flow_value if margin_flow_value is not None else pd.DataFrame()
+        self._north_history = north_history_value if north_history_value is not None else pd.DataFrame()
+        self._news = news_value if news_value is not None else []
         self._raise_on = raise_on
         self._authority = field_authorities or {}
         self.call_log: List[str] = []
@@ -124,6 +132,26 @@ class _FakeProvider(Provider):
         self.call_log.append(f"fetch_macro:{indicator}")
         self._maybe_raise("fetch_macro")
         return self._macro
+
+    def fetch_balance_sheet(self, symbol):
+        self.call_log.append(f"fetch_balance_sheet:{symbol}")
+        self._maybe_raise("fetch_balance_sheet")
+        return self._balance
+
+    def fetch_margin_flow(self, symbol, start=None, end=None):
+        self.call_log.append(f"fetch_margin_flow:{symbol}")
+        self._maybe_raise("fetch_margin_flow")
+        return self._margin
+
+    def fetch_north_flow_history(self, days=252):
+        self.call_log.append(f"fetch_north_flow_history:{days}")
+        self._maybe_raise("fetch_north_flow_history")
+        return self._north_history
+
+    def fetch_news_headlines(self, symbol, n=20):
+        self.call_log.append(f"fetch_news_headlines:{symbol}:{n}")
+        self._maybe_raise("fetch_news_headlines")
+        return self._news
 
 
 @pytest.fixture
@@ -428,6 +456,222 @@ def test_fundamentals_merge(gw):
     f = gw.fundamentals("sh600519")
     assert f.pe_ttm == 20
     assert f.roe_ttm == 15
+
+
+# ── balance_sheet ───────────────────────────────────────────────────────────
+
+
+def test_balance_sheet_basic_route(gw):
+    """单 provider 提供 balance_sheet 即返回。"""
+    p = _FakeProvider(
+        "baostock_mock",
+        capabilities=(Capability.BALANCE_SHEET,),
+        markets=(Market.A,),
+        balance_value=BalanceSheet(
+            symbol="sh600519", debt_to_equity=35.2,
+            current_ratio=2.1, quick_ratio=1.8,
+        ),
+    )
+    gw.register_provider(p)
+    bs = gw.balance_sheet("sh600519")
+    assert bs is not None
+    assert bs.debt_to_equity == 35.2
+    assert bs.current_ratio == 2.1
+
+
+def test_balance_sheet_cache_hit_avoids_provider(gw):
+    p = _FakeProvider(
+        "p", capabilities=(Capability.BALANCE_SHEET,), markets=(Market.A,),
+        balance_value=BalanceSheet(symbol="sh600519", debt_to_equity=10),
+    )
+    gw.register_provider(p)
+    gw.balance_sheet("sh600519")
+    gw.balance_sheet("sh600519")  # 第二次命中缓存
+    assert len([c for c in p.call_log if "fetch_balance_sheet" in c]) == 1
+
+
+def test_balance_sheet_no_provider_returns_none(gw):
+    """无支持 BALANCE_SHEET 的 provider 时返回 None。"""
+    p = _FakeProvider("only_quote", capabilities=(Capability.QUOTE,))
+    gw.register_provider(p)
+    assert gw.balance_sheet("sh600519") is None
+
+
+def test_balance_sheet_merge_across_providers(gw):
+    """两家都给 balance_sheet 时,字段级合并。"""
+    a = _FakeProvider(
+        "A", capabilities=(Capability.BALANCE_SHEET,), markets=(Market.A,),
+        priority_hint=0.9,
+        balance_value=BalanceSheet(symbol="x", debt_to_equity=30, current_ratio=0),
+    )
+    b = _FakeProvider(
+        "B", capabilities=(Capability.BALANCE_SHEET,), markets=(Market.A,),
+        priority_hint=0.9,
+        balance_value=BalanceSheet(symbol="x", debt_to_equity=0, current_ratio=2.5),
+    )
+    gw.register_provider(a)
+    gw.register_provider(b)
+    bs = gw.balance_sheet("sh600519")
+    assert bs.debt_to_equity == 30
+    assert bs.current_ratio == 2.5
+
+
+# ── margin_flow / news_headlines ─────────────────────────────────────────────
+
+
+def test_margin_flow_routes_via_gateway(gw):
+    """gw.margin_flow() 顺序 failover,第一个非空 provider 即返回。"""
+    df = pd.DataFrame(
+        {"margin_balance": [1e8, 1.1e8], "short_balance": [1e6, 1.05e6]},
+        index=pd.to_datetime(["2026-05-13", "2026-05-14"]),
+    )
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.MARGIN_FLOW,), markets=(Market.GLOBAL,),
+        margin_flow_value=df,
+    )
+    gw.register_provider(p)
+    out = gw.margin_flow("sh600519")
+    assert not out.empty
+    assert "margin_balance" in out.columns
+    assert "short_balance" in out.columns
+
+
+def test_margin_flow_cache_hit_avoids_provider(gw):
+    df = pd.DataFrame({"margin_balance": [1e8]}, index=pd.to_datetime(["2026-05-14"]))
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.MARGIN_FLOW,), markets=(Market.GLOBAL,),
+        margin_flow_value=df,
+    )
+    gw.register_provider(p)
+    gw.margin_flow("sh600519")
+    gw.margin_flow("sh600519")
+    assert len([c for c in p.call_log if "fetch_margin_flow" in c]) == 1
+
+
+def test_news_headlines_routes_via_gateway(gw):
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.NEWS_HEADLINES,), markets=(Market.GLOBAL,),
+        news_value=["利好消息 A", "公司公告 B", "行业动态 C"],
+    )
+    gw.register_provider(p)
+    out = gw.news_headlines("sh600519", n=10)
+    assert len(out) == 3
+    assert out[0] == "利好消息 A"
+
+
+def test_news_headlines_no_provider_returns_empty(gw):
+    p = _FakeProvider("only_quote", capabilities=(Capability.QUOTE,))
+    gw.register_provider(p)
+    assert gw.news_headlines("sh600519") == []
+
+
+# ── fundamentals_history 列级合并 (W1-2 联动) ───────────────────────────────
+
+
+def _FakeHistoryProvider(name, columns_dict, priority=0.5):
+    """构造一个返回特定列字典的 FUNDAMENTALS_HISTORY provider。"""
+    from core.data_gateway.providers.base import Provider as _P
+
+    class _HP(_P):
+        def __init__(self):
+            self.name = name
+            self._cols = columns_dict
+            self._priority = priority
+            self.call_log = []
+
+        def declare(self):
+            return ProviderCapability(
+                capabilities=frozenset({Capability.FUNDAMENTALS_HISTORY}),
+                markets=frozenset({Market.GLOBAL}),
+                priority_hint=self._priority,
+            )
+
+        def supports(self, capability, market):
+            decl = self.declare()
+            if capability not in decl.capabilities:
+                return False
+            return Market.GLOBAL in decl.markets or market in decl.markets
+
+        def fetch_fundamentals_history(self, symbol, start=None, end=None):
+            self.call_log.append(f"fetch_fundamentals_history:{symbol}")
+            idx = pd.bdate_range(
+                start=start or "2024-01-01", end=end or "2024-03-31",
+            )
+            cols = {k: [v[0]] * len(idx) for k, v in self._cols.items()}
+            return pd.DataFrame(cols, index=idx)
+
+    return _HP()
+
+
+def test_fundamentals_history_column_merge(gw):
+    """两个 provider 各贡献不同列 → 合并后并集。"""
+    p1 = _FakeHistoryProvider(
+        "akshare", {"roe_ttm": [10.0] * 5, "eps_ttm": [0.5] * 5},
+        priority=0.3,
+    )
+    p2 = _FakeHistoryProvider(
+        "baostock", {"debt_to_equity": [25.0] * 5, "current_ratio": [2.5] * 5},
+        priority=0.75,
+    )
+    gw.register_provider(p1)
+    gw.register_provider(p2)
+    df = gw.fundamentals_history("sh600519", "2024-01-01", "2024-01-08")
+    assert not df.empty
+    # 两家的列都应在
+    for c in ("roe_ttm", "eps_ttm", "debt_to_equity", "current_ratio"):
+        assert c in df.columns, f"{c} missing"
+
+
+def test_fundamentals_history_overlap_higher_priority_wins(gw):
+    """重叠列 → 高优先级源胜出。"""
+    p1 = _FakeHistoryProvider(
+        "low", {"roe_ttm": [5.0] * 5}, priority=0.2,
+    )
+    p2 = _FakeHistoryProvider(
+        "high", {"roe_ttm": [15.0] * 5}, priority=0.9,
+    )
+    gw.register_provider(p1)
+    gw.register_provider(p2)
+    df = gw.fundamentals_history("sh600519", "2024-01-01", "2024-01-08")
+    # roe_ttm 应来自 high(15.0)
+    assert df["roe_ttm"].dropna().iloc[-1] == 15.0
+
+
+def test_fundamentals_history_empty_when_no_provider(gw):
+    df = gw.fundamentals_history("sh600519")
+    assert df.empty
+
+
+# ── north_flow_history (W2-1) ────────────────────────────────────────────────
+
+
+def test_north_flow_history_routes_to_provider(gw):
+    df_mock = pd.DataFrame(
+        {"north_flow": [10.0, -5.0, 20.0]},
+        index=pd.to_datetime(["2026-05-12", "2026-05-13", "2026-05-14"]),
+    )
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.NORTH_FLOW,), markets=(Market.GLOBAL,),
+        north_history_value=df_mock,
+    )
+    gw.register_provider(p)
+    out = gw.north_flow_history(days=10)
+    assert not out.empty
+    assert "north_flow" in out.columns
+
+
+def test_north_flow_history_cache_hit_avoids_provider(gw):
+    df_mock = pd.DataFrame(
+        {"north_flow": [10.0]}, index=pd.to_datetime(["2026-05-14"]),
+    )
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.NORTH_FLOW,), markets=(Market.GLOBAL,),
+        north_history_value=df_mock,
+    )
+    gw.register_provider(p)
+    gw.north_flow_history(days=20)
+    gw.north_flow_history(days=20)
+    assert len([c for c in p.call_log if "fetch_north_flow_history" in c]) == 1
 
 
 # ── 全局 singleton ──────────────────────────────────────────────────────────

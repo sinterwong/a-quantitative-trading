@@ -38,7 +38,7 @@ from .health import HealthTracker, get_health_tracker
 from .merge import Candidate, merge_field_level
 from .providers.base import Provider, ProviderError
 from .schemas import (
-    Fundamentals, MarketIndexSnapshot, NorthFlow,
+    BalanceSheet, Fundamentals, MarketIndexSnapshot, NorthFlow,
     Quote, SectorConstituent, SectorRanking,
 )
 from .symbols import detect_market
@@ -52,11 +52,14 @@ _DEFAULT_TTL = {
     Capability.QUOTE: 30.0,
     Capability.FUNDAMENTALS: 60.0,
     Capability.FUNDAMENTALS_HISTORY: 86400.0,  # 季度数据，24h 缓存足够
+    Capability.BALANCE_SHEET: 86400.0,         # 季报数据，24h 缓存足够
     Capability.SECTOR_RANKING: 3600.0,
     Capability.SECTOR_CONSTITUENTS: 60.0,
     Capability.NORTH_FLOW: 60.0,
     Capability.MARKET_INDEX: 60.0,
     Capability.MACRO: 86400.0,
+    Capability.MARGIN_FLOW: 14400.0,           # 融资融券日频，4h 缓存(收盘后更新)
+    Capability.NEWS_HEADLINES: 1800.0,         # 新闻标题，30min 缓存
 }
 
 
@@ -446,6 +449,30 @@ class DataGateway:
             self._cache.set(cache_key, result, _DEFAULT_TTL[Capability.NORTH_FLOW])
         return result
 
+    def north_flow_history(self, days: int = 252) -> pd.DataFrame:
+        """北向资金日频历史(顺序 failover)。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex,列 north_flow(亿元/天)。
+            空 DataFrame 表示无可用源。
+        """
+        cache_key = f"north_flow_history:{days}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        result, _ = self._sequential_fetch(
+            Capability.NORTH_FLOW, Market.GLOBAL,
+            "fetch_north_flow_history", days,
+        )
+        df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
+        if not df.empty:
+            # 历史数据 4h 缓存(每日收盘后更新)
+            self._cache.set(cache_key, df, 14400.0)
+        return df
+
     def market_index(self, code: str) -> Optional[MarketIndexSnapshot]:
         cache_key = f"market_index:{code}"
         cached = self._cache.get(cache_key)
@@ -479,29 +506,143 @@ class DataGateway:
             self._cache.set(cache_key, df, _DEFAULT_TTL[Capability.MACRO])
         return df
 
+    def balance_sheet(self, symbol: str) -> Optional[BalanceSheet]:
+        """资产负债表快照(字段级合并多源)。
+
+        通过 DataGateway 统一路由，享受熔断 + 健康度 + 缓存保护。
+        当前实现源:BaostockProvider(A股)。
+        """
+        cache_key = f"balance_sheet:{symbol}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        market = detect_market(symbol)
+        merged, prov = self._merged_fetch(
+            Capability.BALANCE_SHEET, market, "fetch_balance_sheet",
+            ("symbol",),
+            symbol,
+        )
+        if merged is not None:
+            self._cache.set(cache_key, merged, _DEFAULT_TTL[Capability.BALANCE_SHEET])
+            self._last_provenance[cache_key] = prov
+        return merged
+
+    def margin_flow(
+        self, symbol: str, start: str | None = None, end: str | None = None,
+    ) -> pd.DataFrame:
+        """个股融资融券日频时序（顺序 failover，不合并）。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex，列 margin_balance / short_balance。
+            空 DataFrame 表示无数据。
+        """
+        cache_key = f"margin_flow:{symbol}:{start}:{end}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        result, _ = self._sequential_fetch(
+            Capability.MARGIN_FLOW, Market.GLOBAL,
+            "fetch_margin_flow", symbol, start, end,
+        )
+        df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
+        if not df.empty:
+            self._cache.set(cache_key, df, _DEFAULT_TTL[Capability.MARGIN_FLOW])
+        return df
+
+    def news_headlines(self, symbol: str, n: int = 20) -> list:
+        """个股新闻标题列表（顺序 failover）。
+
+        Returns
+        -------
+        List[str]
+            最多 n 条标题（最新在前），空列表表示无数据。
+        """
+        cache_key = f"news_headlines:{symbol}:{n}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        result, _ = self._sequential_fetch(
+            Capability.NEWS_HEADLINES, Market.GLOBAL,
+            "fetch_news_headlines", symbol, n,
+        )
+        headlines = result if isinstance(result, list) else []
+        if headlines:
+            self._cache.set(cache_key, headlines, _DEFAULT_TTL[Capability.NEWS_HEADLINES])
+        return headlines
+
     def fundamentals_history(
         self, symbol: str, start: str | None = None, end: str | None = None,
     ) -> pd.DataFrame:
         """基本面历史时序（日频，前向填充季报）。
 
         通过 DataGateway 统一路由，享受熔断 + 健康度 + 缓存保护。
+        多 provider 列级合并:不同源贡献不同字段时取并集,重叠列由健康度
+        + priority_hint 更高者胜出(类似 Quote 的字段级合并)。
         """
         cache_key = f"fundamentals_history:{symbol}:{start}:{end}"
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
 
-        result, _ = self._sequential_fetch(
+        candidates = self._candidates_for(
             Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
-            "fetch_fundamentals_history", symbol, start, end,
         )
-        df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
-        if not df.empty:
-            self._cache.set(
-                cache_key, df,
-                _DEFAULT_TTL.get(Capability.FUNDAMENTALS_HISTORY, 86400.0),
-            )
-        return df
+        if not candidates:
+            return pd.DataFrame()
+
+        # 并发问 top-K 家(默认 4),每家返回一个 DataFrame
+        top = candidates[: self._max_parallel]
+        futures = {
+            self._executor.submit(
+                self._invoke, p, Capability.FUNDAMENTALS_HISTORY,
+                "fetch_fundamentals_history", symbol, start, end,
+            ): (p, score)
+            for p, score in top
+        }
+
+        # 按分数降序收集 (provider, score, df)
+        results: List[tuple] = []
+        for fut in as_completed(futures):
+            provider, score = futures[fut]
+            obj = fut.result()
+            if isinstance(obj, pd.DataFrame) and not obj.empty:
+                results.append((provider.name, score, obj))
+
+        if not results:
+            return pd.DataFrame()
+
+        # 列级合并:按 score 降序处理,新出现的列保留,已出现的列保留高分源版本
+        results.sort(key=lambda x: x[1], reverse=True)
+        merged: Optional[pd.DataFrame] = None
+        for _name, _score, df in results:
+            if merged is None:
+                merged = df.copy()
+                continue
+            # 把 df 中尚未在 merged 出现的列加入,行索引取并集后 ffill
+            new_cols = [c for c in df.columns if c not in merged.columns]
+            if not new_cols:
+                continue
+            union_idx = merged.index.union(df.index).sort_values()
+            merged = merged.reindex(union_idx)
+            extra = df[new_cols].reindex(union_idx).ffill()
+            for c in new_cols:
+                merged[c] = extra[c]
+
+        if merged is None or merged.empty:
+            return pd.DataFrame()
+
+        # 整体 ffill,确保 union 后引入的索引也有值
+        merged = merged.sort_index().ffill()
+        self._cache.set(
+            cache_key, merged,
+            _DEFAULT_TTL.get(Capability.FUNDAMENTALS_HISTORY, 86400.0),
+        )
+        return merged
 
     # ── 监控 / 调试 ──────────────────────────────────────────────────────────
 

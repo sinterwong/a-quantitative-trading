@@ -71,38 +71,24 @@ _SCORE_TTL = 24 * 3600     # 24 小时
 
 def _fetch_news_eastmoney(symbol: str, n: int = 20) -> List[str]:
     """
-    从东方财富获取股票新闻标题（AKShare）。
+    通过 DataGateway 获取股票新闻标题(底层东方财富/AkShare,享受熔断保护)。
 
     Parameters
     ----------
     symbol : str
-        标的代码（如 '000001.SZ'）
+        标的代码(如 '000001.SZ' / 'sh600519')
     n : int
         最多返回条数
 
     Returns
     -------
-    List[str] — 新闻标题列表（最新在前）
+    List[str] — 新闻标题列表(最新在前)
     """
     try:
-        import akshare as ak
-        # AKShare 代码格式：去掉后缀
-        code = symbol.split('.')[0]
-        df = ak.stock_news_em(symbol=code)
-        if df is None or df.empty:
-            return []
-        # 列名可能是 '标题' 或 'title'
-        title_col = None
-        for col in ['标题', 'title', '新闻标题', 'news_title']:
-            if col in df.columns:
-                title_col = col
-                break
-        if title_col is None:
-            return []
-        headlines = df[title_col].dropna().tolist()[:n]
-        return [str(h).strip() for h in headlines if h]
+        from core.data_gateway import get_gateway
+        return get_gateway().news_headlines(symbol, n=n)
     except Exception as e:
-        logger.debug('[NewsSentimentFactor] 东财新闻获取失败: %s', e)
+        logger.debug('[NewsSentimentFactor] 新闻获取失败: %s', e)
         return []
 
 

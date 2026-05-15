@@ -1,18 +1,20 @@
 """
 tests/test_margin_data_store.py — MarginDataStore 及融资融券因子自动拉取测试
 
-覆盖：
-  - MarginDataStore._normalize(): 各种 AKShare 原始列名归一化
+W0-3 起 MarginDataStore 不再持有 _normalize 静态方法,
+数据请求统一走 DataGateway.margin_flow()。本测试覆盖:
+
+  - AkshareProvider._normalize_margin: 列名归一化(下沉后的位置)
   - MarginDataStore.get(): 内存缓存命中
-  - MarginDataStore.get(): Parquet 命中（TTL 未过期）
-  - MarginDataStore.get(): AKShare 拉取成功 → 写入 Parquet
-  - MarginDataStore.get(): AKShare 失败 → 返回空 DataFrame
+  - MarginDataStore.get(): Parquet 命中(TTL 未过期)
+  - MarginDataStore.get(): gateway 返回有效数据 → 写入 Parquet
+  - MarginDataStore.get(): gateway 返回空 → 返回空 DataFrame
   - MarginDataStore.invalidate(): 清除内存缓存
   - MarginDataStore._slice(): start 参数过滤
   - MarginTradingFactor: sentiment_data=None + symbol → 调用 MarginDataStore
-  - MarginTradingFactor: AKShare 不可达 → 降级全零
+  - MarginTradingFactor: gateway 不可达 → 降级全零
   - ShortInterestFactor: sentiment_data=None + symbol → 调用 MarginDataStore
-  - ShortInterestFactor: AKShare 不可达 → 降级全零
+  - ShortInterestFactor: gateway 不可达 → 降级全零
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ def _make_raw_akshare(n: int = 60, use_cn_cols: bool = False) -> pd.DataFrame:
     dates = pd.date_range('2023-01-01', periods=n, freq='B')
     rng = np.random.default_rng(1)
     vals_m = 1e10 + np.cumsum(rng.normal(0, 1e8, n))
-    vals_s = 5e8  + np.cumsum(rng.normal(0, 1e7, n))
+    vals_s = 5e8 + np.cumsum(rng.normal(0, 1e7, n))
     if use_cn_cols:
         return pd.DataFrame({
             '信用交易日期': dates,
@@ -57,41 +59,58 @@ def _make_raw_akshare(n: int = 60, use_cn_cols: bool = False) -> pd.DataFrame:
     })
 
 
-class TestMarginDataStoreNormalize(unittest.TestCase):
-    """_normalize 列名归一化测试。"""
+def _make_normalized(n: int = 60) -> pd.DataFrame:
+    """直接构造已归一的 margin_flow DataFrame(供缓存测试)。"""
+    rng = np.random.default_rng(1)
+    dates = pd.date_range('2023-01-01', periods=n, freq='B')
+    return pd.DataFrame({
+        'margin_balance': 1e10 + np.cumsum(rng.normal(0, 1e8, n)),
+        'short_balance': 5e8 + np.cumsum(rng.normal(0, 1e7, n)),
+    }, index=dates)
 
-    def setUp(self):
-        from core.factors.sentiment import MarginDataStore
-        self.store = MarginDataStore()
+
+class TestAkshareMarginNormalize(unittest.TestCase):
+    """W0-3: _normalize_margin 下沉到 AkshareProvider 后的列名归一化。"""
 
     def test_english_cols(self):
+        from core.data_gateway.providers.akshare import AkshareProvider
         raw = _make_raw_akshare(10, use_cn_cols=False)
-        df = self.store._normalize(raw)
+        df = AkshareProvider._normalize_margin(raw, None, None)
         self.assertIn('margin_balance', df.columns)
         self.assertIn('short_balance', df.columns)
         self.assertIsInstance(df.index, pd.DatetimeIndex)
         self.assertEqual(len(df), 10)
 
     def test_chinese_cols(self):
+        from core.data_gateway.providers.akshare import AkshareProvider
         raw = _make_raw_akshare(10, use_cn_cols=True)
-        df = self.store._normalize(raw)
+        df = AkshareProvider._normalize_margin(raw, None, None)
         self.assertIn('margin_balance', df.columns)
         self.assertIn('short_balance', df.columns)
 
     def test_sorted_ascending(self):
+        from core.data_gateway.providers.akshare import AkshareProvider
         raw = _make_raw_akshare(20, use_cn_cols=False)
         raw = raw.iloc[::-1].reset_index(drop=True)  # reverse order
-        df = self.store._normalize(raw)
+        df = AkshareProvider._normalize_margin(raw, None, None)
         self.assertTrue(df.index.is_monotonic_increasing)
 
     def test_numeric_values(self):
+        from core.data_gateway.providers.akshare import AkshareProvider
         raw = _make_raw_akshare(5)
-        df = self.store._normalize(raw)
+        df = AkshareProvider._normalize_margin(raw, None, None)
         self.assertTrue(np.isfinite(df['margin_balance'].values).all())
+
+    def test_start_end_filters(self):
+        from core.data_gateway.providers.akshare import AkshareProvider
+        raw = _make_raw_akshare(60)
+        df = AkshareProvider._normalize_margin(raw, '2023-02-01', '2023-03-01')
+        self.assertTrue((df.index >= pd.Timestamp('2023-02-01')).all())
+        self.assertTrue((df.index <= pd.Timestamp('2023-03-01')).all())
 
 
 class TestMarginDataStoreCache(unittest.TestCase):
-    """内存缓存 / Parquet 缓存 / 网络拉取流程测试。"""
+    """内存缓存 / Parquet 缓存 / gateway 拉取流程测试。"""
 
     def setUp(self):
         from core.factors.sentiment import MarginDataStore
@@ -108,8 +127,7 @@ class TestMarginDataStoreCache(unittest.TestCase):
 
     # --- 内存缓存命中 ---
     def test_memory_cache_hit(self):
-        df_cached = _make_raw_akshare(10)
-        df_cached = self.store._normalize(df_cached)
+        df_cached = _make_normalized(10)
         self.store._memory['000001.SZ'] = (datetime.now(), df_cached)
 
         with patch.object(self.store, '_fetch') as mock_fetch, \
@@ -123,11 +141,11 @@ class TestMarginDataStoreCache(unittest.TestCase):
     # --- 内存缓存过期后走 Parquet ---
     def test_memory_expired_falls_to_parquet(self):
         from core.factors.sentiment import _MARGIN_TTL_HOURS
-        df_cached = self.store._normalize(_make_raw_akshare(10))
+        df_cached = _make_normalized(10)
         old_time = datetime.now() - timedelta(hours=_MARGIN_TTL_HOURS + 1)
         self.store._memory['000001.SZ'] = (old_time, df_cached)
 
-        df_parquet = self.store._normalize(_make_raw_akshare(15))
+        df_parquet = _make_normalized(15)
         with patch.object(self.store, '_load_parquet', return_value=df_parquet) as mock_parq, \
              patch.object(self.store, '_fetch') as mock_fetch:
             result = self.store.get('000001.SZ')
@@ -136,13 +154,12 @@ class TestMarginDataStoreCache(unittest.TestCase):
         mock_fetch.assert_not_called()
         self.assertEqual(len(result), 15)
 
-    # --- Parquet 未命中 → 网络拉取 ---
+    # --- Parquet 未命中 → 走 _fetch(底层调 gateway) ---
     def test_network_fetch_on_parquet_miss(self):
-        raw = _make_raw_akshare(20)
+        df_norm = _make_normalized(20)
 
         with patch.object(self.store, '_load_parquet', return_value=None), \
-             patch.object(self.store, '_fetch',
-                          return_value=self.store._normalize(raw)) as mock_fetch, \
+             patch.object(self.store, '_fetch', return_value=df_norm) as mock_fetch, \
              patch.object(self.store, '_save_parquet') as mock_save:
             result = self.store.get('600519.SH')
 
@@ -150,29 +167,39 @@ class TestMarginDataStoreCache(unittest.TestCase):
         mock_save.assert_called_once()
         self.assertEqual(len(result), 20)
 
-    # --- AKShare 失败 → 空 DataFrame ---
-    def test_akshare_failure_returns_empty(self):
+    # --- gateway 失败 → 空 DataFrame ---
+    def test_gateway_failure_returns_empty(self):
         with patch.object(self.store, '_load_parquet', return_value=None), \
              patch.object(self.store, '_fetch', return_value=None):
             result = self.store.get('000001.SZ')
 
         self.assertTrue(result.empty)
 
+    # --- _fetch 内部直接走 gateway.margin_flow ---
+    def test_fetch_routes_through_gateway(self):
+        gw_mock = MagicMock()
+        gw_mock.margin_flow.return_value = _make_normalized(5)
+        with patch('core.data_gateway.get_gateway', return_value=gw_mock):
+            result = self.store._fetch('sh600519')
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 5)
+        gw_mock.margin_flow.assert_called_once_with('sh600519')
+
     # --- invalidate ---
     def test_invalidate_clears_memory(self):
-        df = self.store._normalize(_make_raw_akshare(5))
+        df = _make_normalized(5)
         self.store._memory['000001.SZ'] = (datetime.now(), df)
         self.store.invalidate('000001.SZ')
         self.assertNotIn('000001.SZ', self.store._memory)
 
     # --- _slice ---
     def test_slice_by_start(self):
-        df = self.store._normalize(_make_raw_akshare(60))
+        df = _make_normalized(60)
         sliced = self.store._slice(df, '2023-03-01')
         self.assertTrue((sliced.index >= pd.Timestamp('2023-03-01')).all())
 
     def test_slice_none_returns_all(self):
-        df = self.store._normalize(_make_raw_akshare(60))
+        df = _make_normalized(60)
         sliced = self.store._slice(df, None)
         self.assertEqual(len(sliced), len(df))
 

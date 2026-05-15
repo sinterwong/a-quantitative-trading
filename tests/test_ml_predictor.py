@@ -127,6 +127,70 @@ class TestFeatureStore(unittest.TestCase):
         self.assertNotIn('RSI', X.columns)
         self.assertNotIn('MACD', X.columns)
 
+    # ── W5-1: external_data 解锁外部数据因子 ──────────────────────────────
+
+    def test_fundamental_factors_skipped_by_default(self):
+        """默认 build 不应包含基本面因子(需 financial_data)。"""
+        from core.ml.feature_store import FeatureStore
+        store = FeatureStore()
+        X, _ = store.build(self.data)
+        for name in ('PEPercentile', 'ROEMomentum', 'FinancialHealth'):
+            self.assertNotIn(name, X.columns)
+
+    def test_external_financial_data_unlocks_fundamental_factors(self):
+        """注入 financial_data → 基本面因子被自动启用。"""
+        from core.ml.feature_store import FeatureStore
+        # 构造 mock 财务数据
+        fin = pd.DataFrame({
+            'pe_ttm': 15.0,
+            'roe_ttm': 12.0,
+            'eps_ttm': 1.0,
+            'eps_yoy': 5.0,
+            'asset_yoy': 8.0,
+            'revenue_yoy': 10.0,
+            'profit_yoy': 8.0,
+            'ocf_to_profit': 1.2,
+            'dividend_yield': 2.5,
+            'debt_to_equity': 30.0,
+            'current_ratio': 2.0,
+            'quick_ratio': 1.5,
+        }, index=self.data.index)
+        store = FeatureStore(external_data={'financial_data': fin})
+        X, _ = store.build(self.data)
+        # 至少其中几个因子应出现
+        unlocked_names = [
+            'PEPercentile', 'ROEMomentum', 'FinancialHealth',
+            'DividendYield', 'AssetGrowth',
+        ]
+        present = [n for n in unlocked_names if n in X.columns]
+        self.assertGreaterEqual(len(present), 3,
+                                f"应至少解锁 3 个基本面因子,实际 {present}")
+
+    def test_external_sentiment_data_unlocks_sentiment_factors(self):
+        """注入 sentiment_data → 情绪因子被自动启用。"""
+        from core.ml.feature_store import FeatureStore
+        sent = pd.DataFrame({
+            'margin_balance': 1e10,
+            'short_balance': 5e8,
+            'north_flow': 50.0,
+            'south_flow': 20.0,
+        }, index=self.data.index)
+        store = FeatureStore(external_data={'sentiment_data': sent})
+        X, _ = store.build(self.data)
+        present = [n for n in ('MarginTrading', 'NorthboundFlow', 'ShortInterest', 'SouthboundFlow')
+                   if n in X.columns]
+        self.assertGreaterEqual(len(present), 2)
+
+    def test_external_data_partial_keys(self):
+        """只注入 financial_data 时,情绪因子仍被 skip。"""
+        from core.ml.feature_store import FeatureStore
+        fin = pd.DataFrame({'pe_ttm': 15.0, 'eps_ttm': 1.0},
+                           index=self.data.index)
+        store = FeatureStore(external_data={'financial_data': fin})
+        X, _ = store.build(self.data)
+        for name in ('MarginTrading', 'NorthboundFlow'):
+            self.assertNotIn(name, X.columns)
+
     def test_forward_days_affects_label(self):
         """forward_days 不同，标签不同。"""
         from core.ml.feature_store import FeatureStore

@@ -121,5 +121,139 @@ class TestPipelineDegradation(unittest.TestCase):
         self.assertEqual(len(ok), 2)
 
 
+class TestNewsSentimentInPipeline(unittest.TestCase):
+    """W2-3: NewsSentimentFactor 仅在 MINIMAX_API_KEY 存在时入 pipeline。"""
+
+    def test_no_api_key_does_not_load_news_factor(self):
+        from core.pipeline_factory import build_pipeline
+        # 显式清掉 env var
+        with patch.dict('os.environ', {}, clear=False):
+            os_env = __import__('os').environ
+            os_env.pop('MINIMAX_API_KEY', None)
+            pipeline = build_pipeline(symbol='000001.SZ', strict=False)
+        self.assertNotIn('NewsSentiment', pipeline.factor_names)
+
+    def test_with_api_key_loads_news_factor(self):
+        from core.pipeline_factory import build_pipeline
+        with patch.dict('os.environ', {'MINIMAX_API_KEY': 'dummy-key'}):
+            pipeline = build_pipeline(symbol='sh600519', strict=False)
+        self.assertIn('NewsSentiment', pipeline.factor_names)
+
+    def test_without_symbol_does_not_load_news_factor(self):
+        """symbol='' 时即使有 API key 也不应加载(无标的可拉新闻)。"""
+        from core.pipeline_factory import build_pipeline
+        with patch.dict('os.environ', {'MINIMAX_API_KEY': 'dummy-key'}):
+            pipeline = build_pipeline(symbol='', strict=False)
+        self.assertNotIn('NewsSentiment', pipeline.factor_names)
+
+
+class TestPipelineRebalanceAndQualityGate(unittest.TestCase):
+    """W5-2: 重平衡 + 数据质量感知降权。"""
+
+    def test_new_fundamental_factors_loaded_when_data_available(self):
+        """注入有效 financial_data → 新基本面因子(FinancialHealth/DividendYield/AssetGrowth)
+        被加入 pipeline。"""
+        from core.pipeline_factory import build_pipeline
+        idx = pd.bdate_range('2024-01-01', periods=30)
+        fake_fin = pd.DataFrame({
+            'roe_ttm': [10.0] * 30,
+            'eps_ttm': [1.0] * 30,
+            'eps_yoy': [5.0] * 30,
+            'asset_yoy': [8.0] * 30,
+            'pe_ttm': [15.0] * 30,
+            'dividend_yield': [3.0] * 30,
+            'debt_to_equity': [30.0] * 30,
+            'current_ratio': [2.0] * 30,
+            'quick_ratio': [1.5] * 30,
+            'ocf_to_profit': [1.2] * 30,
+            'revenue_yoy': [10.0] * 30,
+            'profit_yoy': [8.0] * 30,
+        }, index=idx)
+        with patch('core.fundamental_data.FundamentalDataManager.get_fundamentals',
+                   return_value=fake_fin):
+            pipeline = build_pipeline(symbol='sh600519', strict=False)
+        for name in ('FinancialHealth', 'DividendYield', 'AssetGrowth', 'EarningsSurprise'):
+            self.assertIn(name, pipeline.factor_names, f"{name} 未入 pipeline")
+
+    def test_fundamental_weights_halved_on_data_failure(self):
+        """W5-2: 基本面数据缺失时,基本面因子权重应×0.5。"""
+        from core.pipeline_factory import build_pipeline
+        # 让 get_fundamentals 返回空 → financial_data 仍为 None
+        with patch('core.fundamental_data.FundamentalDataManager.get_fundamentals',
+                   return_value=pd.DataFrame()):
+            pipeline = build_pipeline(symbol='sh600519', strict=False)
+
+        # 找出 PEPercentile 的实际权重
+        # 注:pipeline 内部用 _entries 字典存储,这里通过 factor_names + DynamicWeightPipeline 内部接口检查
+        # 当 financial_data 缺失时,PE 权重应是 0.05 × 0.5 = 0.025
+        entries = getattr(pipeline, '_entries', None)
+        self.assertIsNotNone(entries)
+        pe_entries = [e for e in entries if e.factor.name == 'PEPercentile']
+        self.assertEqual(len(pe_entries), 1)
+        self.assertAlmostEqual(pe_entries[0].weight, 0.025, places=4)
+
+    def test_fundamental_weights_normal_when_data_present(self):
+        """有有效数据时,PE 权重保持 0.05。"""
+        from core.pipeline_factory import build_pipeline
+        idx = pd.bdate_range('2024-01-01', periods=30)
+        fake_fin = pd.DataFrame({'pe_ttm': [15.0] * 30, 'eps_ttm': [1.0] * 30},
+                                index=idx)
+        with patch('core.fundamental_data.FundamentalDataManager.get_fundamentals',
+                   return_value=fake_fin):
+            pipeline = build_pipeline(symbol='sh600519', strict=False)
+        pe_entries = [e for e in pipeline._entries if e.factor.name == 'PEPercentile']
+        self.assertEqual(len(pe_entries), 1)
+        self.assertAlmostEqual(pe_entries[0].weight, 0.05, places=4)
+
+
+class TestFundamentalWhitelistExpansion(unittest.TestCase):
+    """W1-3: pipeline_factory 基本面白名单扩展到 12 列。"""
+
+    def test_whitelist_includes_new_fields(self):
+        """build_pipeline 应把 eps_yoy/asset_yoy/debt_to_equity 等新字段传给因子。"""
+        from core.pipeline_factory import build_pipeline
+        from unittest.mock import patch, MagicMock
+
+        # mock FundamentalDataManager 返回包含所有新字段的 DataFrame
+        full_cols = [
+            'roe_ttm', 'eps_ttm', 'revenue_yoy', 'profit_yoy',
+            'eps_yoy', 'asset_yoy', 'ocf_to_profit',
+            'pe_ttm', 'pb', 'dividend_yield',
+            'debt_to_equity', 'current_ratio', 'quick_ratio',
+            'unrelated_column',  # 不在白名单
+        ]
+        idx = pd.bdate_range('2024-01-01', periods=30)
+        fake_fin = pd.DataFrame({c: [1.0] * len(idx) for c in full_cols}, index=idx)
+
+        captured: dict = {}
+        original_safe_add = None
+
+        # 拦截 _safe_add 看 params 传了什么
+        import core.pipeline_factory as pf
+        original_safe_add = pf._safe_add
+
+        def spying_safe_add(pipeline, factor_cls, *, weight, params=None, label=''):
+            if params and 'financial_data' in params:
+                captured.setdefault('fin_cols', set()).update(
+                    params['financial_data'].columns
+                )
+            return original_safe_add(
+                pipeline, factor_cls, weight=weight, params=params, label=label,
+            )
+
+        with patch.object(pf, '_safe_add', side_effect=spying_safe_add):
+            with patch('core.fundamental_data.FundamentalDataManager.get_fundamentals',
+                       return_value=fake_fin):
+                build_pipeline(symbol='000001.SZ', strict=False)
+
+        fin_cols = captured.get('fin_cols', set())
+        # 关键字段应在
+        for c in ('eps_yoy', 'asset_yoy', 'debt_to_equity',
+                  'current_ratio', 'quick_ratio', 'dividend_yield'):
+            self.assertIn(c, fin_cols, f"{c} 未被白名单纳入")
+        # 非白名单字段应被过滤
+        self.assertNotIn('unrelated_column', fin_cols)
+
+
 if __name__ == '__main__':
     unittest.main()

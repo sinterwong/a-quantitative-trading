@@ -227,5 +227,158 @@ class TestRegimeCooldown(unittest.TestCase):
         self.assertIn('冷却期', info2.reason)
 
 
+class TestRegimeVixPercentile(unittest.TestCase):
+    """W4-1: VIX 分位辅助 VOLATILE 触发。"""
+
+    def test_high_vix_percentile_forces_volatile_in_calm_setup(self):
+        """非 BULL/BEAR/ATR-VOLATILE 时,VIX 分位 >= 80 应触发 VOLATILE。"""
+        from core.regime import _classify_regime, ATR_VOLATILE_THRESHOLD
+        import numpy as np
+
+        # 构造 CALM 形态:close > MA20 但 slope < 0(不满足 BULL),ATR 低
+        d = {
+            'closes': np.array([100.0]),
+            'ma20': np.array([99.5]),
+            'ma60': np.array([99.0]),
+            'atr_ratio': 0.20,
+            'atr': 0.5,
+            'atr_threshold_dynamic': 0.85,
+            'ma60_slope': -0.001,
+        }
+        info = _classify_regime(d, '2026-05-15', vix_percentile=85.0)
+        self.assertEqual(info.regime, 'VOLATILE')
+        self.assertIn('VIX', info.reason)
+        self.assertEqual(info.vix_percentile, 85.0)
+
+    def test_low_vix_keeps_calm(self):
+        from core.regime import _classify_regime
+        import numpy as np
+        d = {
+            'closes': np.array([100.0]),
+            'ma20': np.array([99.5]),
+            'ma60': np.array([99.0]),
+            'atr_ratio': 0.20,
+            'atr': 0.5,
+            'atr_threshold_dynamic': 0.85,
+            'ma60_slope': -0.001,
+        }
+        info = _classify_regime(d, '2026-05-15', vix_percentile=30.0)
+        self.assertEqual(info.regime, 'CALM')
+
+    def test_bull_overrides_vix(self):
+        """BULL 信号优先级高于 VIX 触发。"""
+        from core.regime import _classify_regime, _compute_indicators
+        c, h, l = _bull_prices()
+        d = _compute_indicators(c, h, l)
+        info = _classify_regime(d, '2026-05-15', vix_percentile=95.0)
+        self.assertEqual(info.regime, 'BULL')
+
+    def test_bear_overrides_vix(self):
+        from core.regime import _classify_regime, _compute_indicators
+        c, h, l = _bear_prices()
+        d = _compute_indicators(c, h, l)
+        info = _classify_regime(d, '2026-05-15', vix_percentile=95.0)
+        self.assertEqual(info.regime, 'BEAR')
+
+    def test_fetch_vix_percentile_success(self):
+        """_fetch_vix_percentile 通过 gateway.kline 拉取并计算分位。"""
+        import pandas as pd
+        from unittest.mock import MagicMock, patch
+        from core import regime as mod
+
+        # 构造 1 年历史,当前值是最大值 → 分位 100
+        closes = [10.0, 11.0, 12.0, 13.0, 14.0] * 60
+        closes[-1] = 50.0  # 当前最高
+        df_mock = pd.DataFrame({
+            'date': pd.bdate_range(end='2026-05-15', periods=len(closes)),
+            'close': closes,
+        })
+        gw_mock = MagicMock()
+        gw_mock.kline.return_value = df_mock
+        with patch("core.data_gateway.get_gateway", return_value=gw_mock):
+            pct = mod._fetch_vix_percentile()
+        self.assertGreaterEqual(pct, 99.0)
+
+    def test_fetch_vix_percentile_failure_returns_zero(self):
+        from unittest.mock import MagicMock, patch
+        from core import regime as mod
+
+        gw_mock = MagicMock()
+        gw_mock.kline.side_effect = RuntimeError('net fail')
+        with patch("core.data_gateway.get_gateway", return_value=gw_mock):
+            pct = mod._fetch_vix_percentile()
+        self.assertEqual(pct, 0.0)
+
+
+class TestRegimeGatewayIntegration(unittest.TestCase):
+    """W0-2: _fetch_index_data 走 DataGateway,不再直连 akshare。"""
+
+    def test_fetch_index_data_calls_gateway(self):
+        """_fetch_index_data 应通过 gateway.kline() 获取上证数据。"""
+        import pandas as pd
+        from unittest.mock import MagicMock
+
+        c, h, l = _bull_prices(320)
+        # 构造 gateway 返回的 DataFrame(date / open / high / low / close / volume)
+        df_mock = pd.DataFrame({
+            "date": pd.bdate_range(end="2026-05-15", periods=len(c)),
+            "open": c,
+            "high": h,
+            "low": l,
+            "close": c,
+            "volume": [1.0] * len(c),
+        })
+
+        gw_mock = MagicMock()
+        gw_mock.kline.return_value = df_mock
+
+        from core import regime as mod
+        with patch("core.data_gateway.get_gateway", return_value=gw_mock):
+            data = mod._fetch_index_data(lookback=320)
+        self.assertIsNotNone(data)
+        # gateway 被调用一次
+        gw_mock.kline.assert_called_once()
+        # 参数应包含上证 INDEX_SYMBOL
+        call_args = gw_mock.kline.call_args
+        self.assertEqual(call_args.args[0], mod.INDEX_SYMBOL)
+        self.assertEqual(call_args.kwargs.get("interval"), "daily")
+
+    def test_fetch_index_data_empty_returns_none(self):
+        """gateway 返回空 DataFrame 时应返回 None,不抛异常。"""
+        import pandas as pd
+        from unittest.mock import MagicMock
+
+        gw_mock = MagicMock()
+        gw_mock.kline.return_value = pd.DataFrame()
+
+        from core import regime as mod
+        with patch("core.data_gateway.get_gateway", return_value=gw_mock):
+            data = mod._fetch_index_data(lookback=320)
+        self.assertIsNone(data)
+
+    def test_fetch_index_data_handles_timestamp_column(self):
+        """Baostock 返回 'timestamp' 列时也应能正常解析。"""
+        import pandas as pd
+        from unittest.mock import MagicMock
+
+        c, h, l = _bull_prices(320)
+        df_mock = pd.DataFrame({
+            "timestamp": pd.bdate_range(end="2026-05-15", periods=len(c)),
+            "open": c,
+            "high": h,
+            "low": l,
+            "close": c,
+            "volume": [1.0] * len(c),
+        })
+
+        gw_mock = MagicMock()
+        gw_mock.kline.return_value = df_mock
+
+        from core import regime as mod
+        with patch("core.data_gateway.get_gateway", return_value=gw_mock):
+            data = mod._fetch_index_data(lookback=320)
+        self.assertIsNotNone(data)
+
+
 if __name__ == '__main__':
     unittest.main()

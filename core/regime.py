@@ -42,7 +42,7 @@ logger = logging.getLogger("core.regime")
 
 # ─── 默认参数 ──────────────────────────────────────────────────────────────
 
-INDEX_SYMBOL = "sh000001"   # 上证综指（AkShare 格式）
+INDEX_SYMBOL = "sh000001"   # 上证综指（Gateway 统一格式 sh000001）
 MA_SHORT = 20
 MA_LONG = 60
 ATR_PERIOD = 14
@@ -54,6 +54,11 @@ ATR_VOLATILE_THRESHOLD = 0.85   # 后向兼容：固定阈值 fallback
 # P1-13: 切换冷却期 + 主动减仓
 SWITCH_COOLDOWN_DAYS = 5
 BEAR_POSITION_REDUCE_PCT = 0.75   # BEAR 时主动减到原仓位的 75%（即减仓 25%）
+
+# W4-1: VIX 分位强制 VOLATILE 触发线
+VIX_SYMBOL = "^VIX"                # yfinance ticker
+VIX_LOOKBACK_DAYS = 252            # 1 年历史
+VIX_PERCENTILE_THRESHOLD = 80.0    # VIX 处于 1 年 80 分位以上 → 强制 VOLATILE
 
 
 # ─── 数据类 ────────────────────────────────────────────────────────────────
@@ -69,11 +74,14 @@ class RegimeInfo:
     atr: float
     reason: str
     date_str: str
-    source: str = "akshare"   # 'akshare' | 'fallback'
+    source: str = "gateway"   # 'gateway' | 'fallback'
 
     # P1-13: 自适应阈值与斜率
     atr_threshold_dynamic: float = 0.0   # 当前轮使用的 VOLATILE 阈值
     ma60_slope: float = 0.0              # 30 日 MA60 变化率（正=向上）
+
+    # W4-1: VIX 分位(海外恐慌指数,辅助 VOLATILE 判定)
+    vix_percentile: float = 0.0          # 当前 VIX 在过去 1 年中的分位(0-100)
 
     @property
     def is_bull(self) -> bool:
@@ -145,30 +153,71 @@ class RegimeInfo:
 
 # ─── 内部：数据获取 ────────────────────────────────────────────────────────
 
+def _fetch_vix_percentile(lookback_days: int = VIX_LOOKBACK_DAYS) -> float:
+    """W4-1: 通过 Gateway 取 VIX 历史,计算当前值的百分位(0-100)。
+
+    返回 0 表示数据获取失败或无意义(不影响 regime 判定)。
+    """
+    try:
+        from core.data_gateway import get_gateway
+        df = get_gateway().kline(VIX_SYMBOL, interval="daily", days=lookback_days + 30)
+    except Exception as exc:
+        logger.debug("_fetch_vix_percentile failed: %s", exc)
+        return 0.0
+
+    if df is None or df.empty:
+        return 0.0
+
+    # 列名可能为 date 或 timestamp(provider 差异)
+    time_col = "date" if "date" in df.columns else (
+        "timestamp" if "timestamp" in df.columns else None
+    )
+    if time_col is not None:
+        df = df.sort_values(time_col)
+
+    closes = pd.to_numeric(df.get("close"), errors="coerce").dropna()
+    if len(closes) < 30:
+        return 0.0
+
+    closes = closes.tail(lookback_days)
+    current = float(closes.iloc[-1])
+    # 百分位:有多少历史值 <= 当前值
+    pct = float((closes <= current).sum()) / len(closes) * 100.0
+    return round(pct, 2)
+
+
 def _fetch_index_data(lookback: int = 320) -> Optional[dict]:
     """
-    通过 AkShare 获取上证综指历史数据。
+    通过 DataGateway 获取上证综指历史数据。
 
     P1-13: lookback 从 80 → 320 天，以满足：
       - MA60 + MA60 30 日斜率 → 至少 90 根
       - ATR_PERCENTILE_WINDOW=252 + ATR_PERIOD=14 → 至少 270 根
 
+    数据源走 Gateway 统一出口（享受熔断/健康度路由/字段级合并），
+    底层 provider 由 gateway 自动选择（默认腾讯 INDEX KLINE）。
+
     返回 dict 含 closes / ma20 / ma60 / atr_ratio / atr / atr_arr / ma60_slope，
     或 None（失败时）。
     """
     try:
-        import akshare as ak
+        from core.data_gateway import get_gateway
 
-        end = date.today().isoformat()
-        start = (date.today() - timedelta(days=lookback + 90)).isoformat()
-
-        df = ak.stock_zh_index_daily(symbol=INDEX_SYMBOL)
-        df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
-        df = (
-            df[(df["date"] >= start) & (df["date"] <= end)]
-            .tail(lookback)
-            .reset_index(drop=True)
+        df = get_gateway().kline(
+            INDEX_SYMBOL, interval="daily", days=lookback + 90, limit=lookback,
         )
+        if df is None or df.empty:
+            logger.warning("_fetch_index_data: gateway returned empty kline for %s", INDEX_SYMBOL)
+            return None
+
+        # Provider 间列名差异:多数用 'date',Baostock 用 'timestamp'。
+        # 统一规整为按时间升序排列的 OHLC 数组。
+        time_col = "date" if "date" in df.columns else (
+            "timestamp" if "timestamp" in df.columns else None
+        )
+        if time_col is not None:
+            df = df.sort_values(time_col)
+        df = df.tail(lookback).reset_index(drop=True)
 
         if len(df) < MA_LONG + 5:
             logger.warning("Insufficient index data: %d bars", len(df))
@@ -236,7 +285,7 @@ def _compute_indicators(closes, highs, lows) -> Optional[dict]:
 
 def detect_regime() -> RegimeInfo:
     """
-    实时检测市场环境（调用 AkShare 获取上证数据）。
+    实时检测市场环境（通过 DataGateway 获取上证数据）。
     网络失败时返回 CALM（保守默认值）。
 
     P1-13: 三处升级
@@ -246,6 +295,9 @@ def detect_regime() -> RegimeInfo:
     """
     today_str = date.today().isoformat()
     data = _fetch_index_data(lookback=320)
+
+    # W4-1: VIX 分位辅助判定(best-effort,失败不阻塞主链路)
+    vix_pct = _fetch_vix_percentile()
 
     if data is None:
         return RegimeInfo(
@@ -257,13 +309,21 @@ def detect_regime() -> RegimeInfo:
             source="fallback",
             atr_threshold_dynamic=ATR_VOLATILE_THRESHOLD,
             ma60_slope=0.0,
+            vix_percentile=vix_pct,
         )
 
-    return _classify_regime(data, today_str, source="akshare")
+    return _classify_regime(data, today_str, source="gateway", vix_percentile=vix_pct)
 
 
-def _classify_regime(data: dict, date_str: str, source: str = "akshare") -> RegimeInfo:
-    """从计算好的 indicators dict 分类 regime。可单测。"""
+def _classify_regime(
+    data: dict, date_str: str, source: str = "gateway",
+    vix_percentile: float = 0.0,
+) -> RegimeInfo:
+    """从计算好的 indicators dict 分类 regime。可单测。
+
+    W4-1: VIX 分位 > 80 → 即使 A股 ATR 未到动态阈值,也强制 VOLATILE
+    (海外恐慌优先级高于本土平静)。BULL/BEAR 信号仍可压过 VIX 触发。
+    """
     closes = data["closes"]
     ma20_arr = data["ma20"]
     ma60_arr = data["ma60"]
@@ -285,6 +345,9 @@ def _classify_regime(data: dict, date_str: str, source: str = "akshare") -> Regi
     bull_confirmed = above_ma20 and ma20_above_ma60 and ma60_slope >= 0
     bear_confirmed = below_ma20 and ma20_below_ma60 and ma60_slope < 0
 
+    # W4-1: VIX 高分位辅助触发(优先级低于明确的 BULL/BEAR)
+    vix_volatile_trigger = vix_percentile >= VIX_PERCENTILE_THRESHOLD
+
     if bull_confirmed:
         regime = "BULL"
         reason = (
@@ -303,11 +366,17 @@ def _classify_regime(data: dict, date_str: str, source: str = "akshare") -> Regi
             f"ATR ratio={atr_ratio:.3f} > 动态阈值 {atr_threshold_dynamic:.3f}"
             f"（过去 {ATR_PERCENTILE_WINDOW} 日 P{ATR_PERCENTILE}），高波动环境"
         )
+    elif vix_volatile_trigger:
+        regime = "VOLATILE"
+        reason = (
+            f"VIX 分位 {vix_percentile:.1f} ≥ {VIX_PERCENTILE_THRESHOLD:.0f}"
+            f"，海外恐慌升温,强制 VOLATILE"
+        )
     else:
         regime = "CALM"
         reason = (
             f"ATR ratio={atr_ratio:.3f} ≤ 动态阈值 {atr_threshold_dynamic:.3f}，"
-            f"MA60 斜率 {ma60_slope*100:+.2f}%，趋势不明朗"
+            f"MA60 斜率 {ma60_slope*100:+.2f}%，VIX 分位 {vix_percentile:.1f}，趋势不明朗"
         )
 
     info = RegimeInfo(
@@ -322,6 +391,7 @@ def _classify_regime(data: dict, date_str: str, source: str = "akshare") -> Regi
         source=source,
         atr_threshold_dynamic=round(atr_threshold_dynamic, 4),
         ma60_slope=round(ma60_slope, 6),
+        vix_percentile=round(vix_percentile, 2),
     )
     logger.info("[Regime] %s", info)
     return info
@@ -351,7 +421,7 @@ def _trading_days_between(d1: str, d2: str) -> int:
 
 def get_regime(force_refresh: bool = False) -> RegimeInfo:
     """
-    获取当日市场环境（进程内缓存，同一天只调用 AkShare 一次）。
+    获取当日市场环境（进程内缓存，同一天只通过 Gateway 拉取一次）。
 
     P1-13: 增加切换冷却期 — 距上次状态切换 < SWITCH_COOLDOWN_DAYS 时
     保持原状态以减少抖动。原始检测结果仍写入 reason 供诊断。

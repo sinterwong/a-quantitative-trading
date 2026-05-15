@@ -160,3 +160,62 @@ class TestBaostockFetchFundamentalsGrowthFields:
         assert f.profit_yoy == pytest.approx(-0.045049)
         assert f.eps_yoy == pytest.approx(-0.043415)
         assert f.asset_yoy == pytest.approx(0.016358)
+
+
+class TestBaostockFundamentalsHistory:
+    """W1-2: fetch_fundamentals_history 输出 balance sheet 日频时序。"""
+
+    def test_normalize_balance_history_maps_fields(self):
+        from core.data_gateway.providers.baostock import BaostockProvider
+        import pandas as pd
+
+        raw = pd.DataFrame([
+            {"statDate": "2024-03-31", "liabilityToAsset": "0.20",
+             "currentRatio": "2.5", "quickRatio": "2.0"},
+            {"statDate": "2024-06-30", "liabilityToAsset": "0.25",
+             "currentRatio": "2.6", "quickRatio": "2.1"},
+            {"statDate": "2024-09-30", "liabilityToAsset": "0.22",
+             "currentRatio": "2.7", "quickRatio": "2.2"},
+        ])
+        daily = BaostockProvider._normalize_balance_history(
+            raw, "2024-04-01", "2024-10-15",
+        )
+
+        assert "debt_to_equity" in daily.columns
+        assert "current_ratio" in daily.columns
+        assert "quick_ratio" in daily.columns
+        # 周末季末 (03-31/06-30) 也应被前向填充到日频
+        # 最新值应反映 2024-09-30 的数据
+        assert daily["debt_to_equity"].iloc[-1] == pytest.approx(22.0)  # 0.22 × 100
+        assert daily["current_ratio"].iloc[-1] == pytest.approx(2.7)
+
+    def test_normalize_balance_history_empty(self):
+        from core.data_gateway.providers.baostock import BaostockProvider
+        import pandas as pd
+        out = BaostockProvider._normalize_balance_history(
+            pd.DataFrame(), "2024-01-01", "2024-12-31",
+        )
+        assert out.empty
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_fetch_fundamentals_history_routes(self, mock_get_session):
+        from core.data_gateway.providers.baostock import BaostockProvider
+        import pandas as pd
+
+        # 模拟 query_balance_data 在某个季度返回数据
+        mock_session = MagicMock()
+        mock_rs = MagicMock()
+        mock_rs.error_msg = "success"
+        mock_rs.get_data = MagicMock(return_value=pd.DataFrame([{
+            "statDate": "2024-12-31",
+            "liabilityToAsset": "0.18",
+            "currentRatio": "3.1",
+            "quickRatio": "2.5",
+        }]))
+        mock_session._bs.query_balance_data = MagicMock(return_value=mock_rs)
+        mock_get_session.return_value = mock_session
+
+        provider = BaostockProvider()
+        df = provider.fetch_fundamentals_history("sh600519", "2025-01-01", "2025-03-31")
+        assert not df.empty
+        assert df["debt_to_equity"].iloc[-1] == pytest.approx(18.0)

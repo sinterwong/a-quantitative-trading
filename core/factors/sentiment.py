@@ -8,13 +8,13 @@ core/factors/sentiment.py — 情绪因子库
   3. ShortInterestFactor  : 融券余额变化率（融券增加 = 看空压力上升）
 
 数据来源：
-  - 融资融券：MarginDataStore（自动拉取 + Parquet 日更新时序）
+  - 融资融券：MarginDataStore → DataGateway.margin_flow()（自动拉取 + Parquet 日更新时序）
   - 北向资金：复用 core/external_signal.py 的 NorthboundStatsAnalyzer 数据接口，
     或直接接受注入的 DataFrame
 
 设计原则：
   - 接受 sentiment_data: pd.DataFrame（外部注入，优先于自动拉取）
-  - sentiment_data=None 时，MarginDataStore 自动从 AKShare 拉取并缓存 Parquet
+  - sentiment_data=None 时，MarginDataStore 自动通过 DataGateway 拉取并缓存 Parquet
   - 无数据时返回全零（降级不崩溃）
   - 数据频率为日频（每日收盘后更新）
 
@@ -61,7 +61,7 @@ class MarginDataStore:
     融资融券数据管理器。
 
     功能：
-      - 从 AKShare stock_margin_detail() 拉取个股融资融券日序列
+      - 通过 DataGateway.margin_flow() 拉取个股融资融券日序列(底层 AkShare stock_margin_detail)
       - 本地 Parquet 持久化（data/sentiment/margin_{symbol}.parquet）
       - TTL=24h：交易日收盘后触发一次更新，日内重复调用走缓存
       - 返回包含 margin_balance（融资余额）和 short_balance（融券余额）的日频 DataFrame
@@ -126,70 +126,16 @@ class MarginDataStore:
     # ------------------------------------------------------------------
 
     def _fetch(self, symbol: str) -> Optional[pd.DataFrame]:
-        """调用 AKShare stock_margin_detail() 构建日频时序。"""
+        """通过 DataGateway 获取融资融券日频时序（享受熔断/健康度/缓存保护）。"""
         try:
-            import akshare as ak
-            code = symbol.replace('.SH', '').replace('.SZ', '')
-            raw = ak.stock_margin_detail(symbol=code)
-            if raw is None or raw.empty:
+            from core.data_gateway import get_gateway
+            df = get_gateway().margin_flow(symbol)
+            if df is None or df.empty:
                 return None
-            return self._normalize(raw)
+            return df
         except Exception as e:
             logger.warning('MarginDataStore fetch failed for %s: %s', symbol, e)
             return None
-
-    @staticmethod
-    def _normalize(raw: pd.DataFrame) -> pd.DataFrame:
-        """
-        将 AKShare stock_margin_detail 原始列名归一化为标准列：
-          margin_balance（融资余额）、short_balance（融券余额）
-        AKShare 返回列名可能为：信用交易日期/rz_ye/rz_mre/rq_ye/rq_sl 等。
-        """
-        col_map_margin = {
-            'rz_ye': 'margin_balance',
-            'rzye': 'margin_balance',
-            '融资余额': 'margin_balance',
-            'margin_balance': 'margin_balance',
-        }
-        col_map_short = {
-            'rq_ye': 'short_balance',
-            'rqye': 'short_balance',
-            '融券余额': 'short_balance',
-            'short_balance': 'short_balance',
-        }
-        col_map_date = {
-            '信用交易日期': 'date',
-            'trade_date': 'date',
-            'date': 'date',
-        }
-
-        df = raw.copy()
-        # 统一列名（小写）
-        df.columns = [c.strip().lower() for c in df.columns]
-
-        rename = {}
-        for src, dst in {**col_map_margin, **col_map_short, **col_map_date}.items():
-            if src.lower() in df.columns:
-                rename[src.lower()] = dst
-        df = df.rename(columns=rename)
-
-        # 确保日期列存在
-        date_candidates = ['date', '信用交易日期', 'trade_date']
-        date_col = next((c for c in date_candidates if c in df.columns), None)
-        if date_col is None:
-            # 尝试找第一列作为日期
-            date_col = df.columns[0]
-
-        df['date'] = pd.to_datetime(df[date_col], errors='coerce')
-        df = df.dropna(subset=['date']).set_index('date').sort_index()
-
-        result = pd.DataFrame(index=df.index)
-        if 'margin_balance' in df.columns:
-            result['margin_balance'] = pd.to_numeric(df['margin_balance'], errors='coerce')
-        if 'short_balance' in df.columns:
-            result['short_balance'] = pd.to_numeric(df['short_balance'], errors='coerce')
-
-        return result.dropna(how='all')
 
     # ------------------------------------------------------------------
     # Parquet 持久化
@@ -337,13 +283,17 @@ class NorthboundFlowFactor(Factor):
       - z > threshold：北向持续大额净买入 → 外资看多 → BUY
       - z < -threshold：北向持续大额净卖出 → 外资撤离 → SELL
 
+    W2-1 起支持自动 fetch:
+      - sentiment_data 显式注入时优先使用
+      - 否则通过 gw.north_flow_history(days) 自动拉取日频时序
+
     Parameters
     ----------
-    sentiment_data : pd.DataFrame
+    sentiment_data : pd.DataFrame, optional
         需包含列 'north_flow'（北向净流入，亿元/天）。
-        可来自 AKShare stock_connect_north_net_flow_in() 或
-        DataLayer.get_north_flow()。
+        为 None 时自动通过 DataGateway 拉取历史时序。
     window : 平滑窗口（默认 5 天）
+    history_days : 自动拉取的历史天数(默认 252)
     """
 
     name = 'NorthboundFlow'
@@ -355,14 +305,30 @@ class NorthboundFlowFactor(Factor):
         window: int = 5,
         threshold: float = 1.0,
         symbol: str = '',
+        history_days: int = 252,
     ):
         self.sentiment_data = sentiment_data
         self.window = window
         self.threshold = threshold
         self.symbol = symbol
+        self.history_days = history_days
+
+    def _get_sentiment(self, price_index: pd.Index) -> Optional[pd.DataFrame]:
+        """sentiment_data 优先;否则走 gw.north_flow_history()。"""
+        if self.sentiment_data is not None:
+            return self.sentiment_data
+        try:
+            from core.data_gateway import get_gateway
+            df = get_gateway().north_flow_history(days=self.history_days)
+            if df is not None and not df.empty:
+                return df
+        except Exception as e:
+            logger.warning('NorthboundFlowFactor auto-fetch failed: %s', e)
+        return None
 
     def evaluate(self, data: pd.DataFrame) -> pd.Series:
-        flow = _align_sentiment(self.sentiment_data, data.index, 'north_flow')
+        sentiment = self._get_sentiment(data.index)
+        flow = _align_sentiment(sentiment, data.index, 'north_flow')
 
         if flow.isna().all():
             return pd.Series(0.0, index=data.index)
@@ -408,7 +374,97 @@ class NorthboundFlowFactor(Factor):
 
 
 # ---------------------------------------------------------------------------
-# 3. 融券余额变化率因子（做空压力）
+# 3. 南向资金净流入因子（港股专用，W2-2）
+# ---------------------------------------------------------------------------
+
+class SouthboundFlowFactor(Factor):
+    """
+    南向资金净流入强度因子(港股 universe 专用)。
+
+    机制与 NorthboundFlowFactor 镜像:
+      - 内地资金通过港股通净买入 → 港股买盘动力
+      - z > threshold:南向持续大额净买入 → BUY
+      - z < -threshold:南向持续大额净卖出 → SELL
+
+    Parameters
+    ----------
+    sentiment_data : pd.DataFrame, optional
+        需含 'south_flow' 列(亿元/天)。
+        为 None 时自动通过 gw.north_flow_history(...) 拉取(返回的
+        DataFrame 同时含 north_flow / south_flow)。
+    window : 平滑窗口(默认 5 天)
+    history_days : 自动拉取天数(默认 252)
+    """
+
+    name = 'SouthboundFlow'
+    category = FactorCategory.SENTIMENT
+
+    def __init__(
+        self,
+        sentiment_data: Optional[pd.DataFrame] = None,
+        window: int = 5,
+        threshold: float = 1.0,
+        symbol: str = '',
+        history_days: int = 252,
+    ):
+        self.sentiment_data = sentiment_data
+        self.window = window
+        self.threshold = threshold
+        self.symbol = symbol
+        self.history_days = history_days
+
+    def _get_sentiment(self, price_index: pd.Index) -> Optional[pd.DataFrame]:
+        if self.sentiment_data is not None:
+            return self.sentiment_data
+        try:
+            from core.data_gateway import get_gateway
+            df = get_gateway().north_flow_history(days=self.history_days)
+            if df is not None and not df.empty:
+                return df
+        except Exception as e:
+            logger.warning('SouthboundFlowFactor auto-fetch failed: %s', e)
+        return None
+
+    def evaluate(self, data: pd.DataFrame) -> pd.Series:
+        sentiment = self._get_sentiment(data.index)
+        flow = _align_sentiment(sentiment, data.index, 'south_flow')
+
+        if flow.isna().all():
+            return pd.Series(0.0, index=data.index)
+
+        smoothed = flow.fillna(0.0).rolling(self.window, min_periods=1).mean()
+        return self.normalize(smoothed)
+
+    def signals(
+        self,
+        factor_values: pd.Series,
+        price: float,
+        threshold: float = 1.0,
+    ) -> List[Signal]:
+        latest = factor_values.iloc[-1]
+        from datetime import datetime
+
+        if latest > threshold:
+            strength = min((latest - threshold) / threshold, 1.0)
+            return [Signal(
+                timestamp=datetime.now(), symbol=self.symbol,
+                direction='BUY', strength=strength,
+                factor_name=self.name, price=price,
+                metadata={'south_flow_zscore': round(float(latest), 3)},
+            )]
+        if latest < -threshold:
+            strength = min((abs(latest) - threshold) / threshold, 1.0)
+            return [Signal(
+                timestamp=datetime.now(), symbol=self.symbol,
+                direction='SELL', strength=strength,
+                factor_name=self.name, price=price,
+                metadata={'south_flow_zscore': round(float(latest), 3)},
+            )]
+        return []
+
+
+# ---------------------------------------------------------------------------
+# 4. 融券余额变化率因子（做空压力）
 # ---------------------------------------------------------------------------
 
 class ShortInterestFactor(Factor):

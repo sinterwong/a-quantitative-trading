@@ -18,6 +18,7 @@ import pandas as pd
 
 from ..capabilities import Capability, MacroIndicator, Market, ProviderCapability
 from ..schemas import (
+    BalanceSheet,
     Fundamentals,
     MarketIndexSnapshot,
     NorthFlow,
@@ -121,6 +122,17 @@ class Provider(ABC):
     def fetch_north_flow(self) -> Optional[NorthFlow]:
         return None
 
+    def fetch_north_flow_history(self, days: int = 252) -> pd.DataFrame:
+        """北向资金日频历史时序。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex,列 north_flow(亿元/天) 与可选 south_flow。
+            空 DataFrame 表示本源无数据。
+        """
+        return pd.DataFrame()
+
     def fetch_market_index(self, code: str) -> Optional[MarketIndexSnapshot]:
         return None
 
@@ -140,6 +152,30 @@ class Provider(ABC):
         pd.DataFrame
             DatetimeIndex，列：roe_ttm / eps_ttm / revenue_yoy / profit_yoy /
             ocf_to_profit 等。若无数据返回空 DataFrame。
+        """
+        return pd.DataFrame()
+
+    def fetch_balance_sheet(self, symbol: str) -> Optional[BalanceSheet]:
+        """资产负债表快照（最新一期）。
+
+        Returns
+        -------
+        BalanceSheet | None
+            含 debt_to_equity / current_ratio / quick_ratio 等。
+            None 表示本源不支持或无数据。
+        """
+        return None
+
+    def fetch_margin_flow(
+        self, symbol: str, start: str | None = None, end: str | None = None,
+    ) -> pd.DataFrame:
+        """个股融资融券日频时序。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex，列 margin_balance（融资余额，元）/ short_balance（融券余额，元）。
+            空 DataFrame 表示本源无数据。
         """
         return pd.DataFrame()
 

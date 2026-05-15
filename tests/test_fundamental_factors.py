@@ -237,6 +237,54 @@ class TestEarningsSurpriseFactor(unittest.TestCase):
         f = registry.create('EarningsSurprise')
         self.assertEqual(f.name, 'EarningsSurprise')
 
+    # ── W1-4: 优先消费 eps_yoy 直接字段 ────────────────────────────────────
+
+    def test_eps_yoy_direct_takes_priority(self):
+        """有 eps_yoy 列时,优先消费,不再走自算路径。"""
+        from core.factors.fundamental import EarningsSurpriseFactor
+        price = _make_price_df(300)
+        fin = _make_financial_df(300)
+        # eps_yoy 从低升至高 — 增长加速,因子应整体偏正(末段比头段大)
+        fin['eps_yoy'] = np.linspace(5.0, 50.0, 300)
+        # 同时把 eps_ttm 设成下降趋势(自算路径会得到负值)
+        fin['eps_ttm'] = np.linspace(3.0, 1.0, 300)
+
+        f = EarningsSurpriseFactor(financial_data=fin, diff_days=120)
+        result = f.evaluate(price)
+        # 直接路径下,末端 z-score 应显著大于前段
+        self.assertGreater(result.iloc[200:].mean(), result.iloc[:100].mean(),
+                           "应优先用 eps_yoy 直接字段,而非 eps_ttm 自算")
+        # 关键反向校验:若走 eps_ttm 自算,末端应为负;直接路径下末端为正
+        self.assertGreater(result.iloc[-30:].mean(), 0)
+
+    def test_eps_yoy_all_nan_falls_back_to_self_compute(self):
+        """eps_yoy 列存在但全 NaN 时应回退到 eps_ttm 自算。"""
+        from core.factors.fundamental import EarningsSurpriseFactor
+        price = _make_price_df(300)
+        fin = _make_financial_df(300)
+        fin['eps_yoy'] = np.nan
+        fin['eps_ttm'] = np.linspace(1.0, 3.0, 300)  # +200% growth
+
+        f = EarningsSurpriseFactor(financial_data=fin, diff_days=120)
+        result = f.evaluate(price)
+        # 走 fallback 时应为正
+        self.assertGreater(result.iloc[150:].mean(), 0)
+
+    def test_eps_yoy_negative_value(self):
+        """eps_yoy 持续下滑 → 末段因子值显著低于前段。"""
+        from core.factors.fundamental import EarningsSurpriseFactor
+        price = _make_price_df(300)
+        fin = _make_financial_df(300)
+        # 从正同比逐渐变到大幅负同比
+        fin['eps_yoy'] = np.linspace(20.0, -50.0, 300)
+        fin['eps_ttm'] = 1.0     # 自算路径下没信号(常数)
+
+        f = EarningsSurpriseFactor(financial_data=fin, diff_days=120)
+        result = f.evaluate(price)
+        self.assertLess(result.iloc[-30:].mean(), result.iloc[:50].mean())
+        # 末端应为负
+        self.assertLess(result.iloc[-30:].mean(), 0)
+
 
 # ---------------------------------------------------------------------------
 # RevenueGrowthFactor
@@ -425,20 +473,179 @@ class TestFundamentalDataManager(unittest.TestCase):
 # 注册表集成测试
 # ---------------------------------------------------------------------------
 
+class TestFinancialHealthFactor(unittest.TestCase):
+    """W1-5: FinancialHealthFactor 合成 debt_to_equity + current_ratio + ocf_to_profit。"""
+
+    def setUp(self):
+        self.price = _make_price_df(300)
+        self.fin = _make_financial_df(300)
+
+    def test_no_data_returns_zero(self):
+        from core.factors.fundamental import FinancialHealthFactor
+        f = FinancialHealthFactor(financial_data=None)
+        result = f.evaluate(self.price)
+        self.assertTrue((result == 0).all())
+
+    def test_partial_data_does_not_crash(self):
+        """三项中只有一项可用时也能产出结果。"""
+        from core.factors.fundamental import FinancialHealthFactor
+        # 只给 current_ratio,且有变化
+        fin = pd.DataFrame({
+            'current_ratio': np.linspace(2.0, 3.0, 300),
+        }, index=self.fin.index)
+        f = FinancialHealthFactor(financial_data=fin)
+        result = f.evaluate(self.price)
+        self.assertEqual(len(result), len(self.price))
+
+    def test_improving_health_positive_trend(self):
+        """财务健康度持续改善 → 末段因子值显著高于前段。"""
+        from core.factors.fundamental import FinancialHealthFactor
+        n = 300
+        # debt 下降(好) + current_ratio 上升(好) + ocf 上升(好)
+        fin = pd.DataFrame({
+            'debt_to_equity': np.linspace(60.0, 30.0, n),
+            'current_ratio': np.linspace(1.5, 3.5, n),
+            'ocf_to_profit': np.linspace(0.5, 1.5, n),
+        }, index=pd.date_range('2022-01-01', periods=n, freq='B'))
+        price = _make_price_df(n)
+
+        f = FinancialHealthFactor(financial_data=fin, rolling_window=20)
+        result = f.evaluate(price)
+        self.assertGreater(result.iloc[-30:].mean(), result.iloc[:30].mean())
+
+    def test_deteriorating_health_negative_trend(self):
+        """财务健康度持续恶化 → 末段因子值显著低于前段。"""
+        from core.factors.fundamental import FinancialHealthFactor
+        n = 300
+        fin = pd.DataFrame({
+            'debt_to_equity': np.linspace(30.0, 80.0, n),
+            'current_ratio': np.linspace(3.0, 1.0, n),
+            'ocf_to_profit': np.linspace(1.5, 0.3, n),
+        }, index=pd.date_range('2022-01-01', periods=n, freq='B'))
+        price = _make_price_df(n)
+
+        f = FinancialHealthFactor(financial_data=fin, rolling_window=20)
+        result = f.evaluate(price)
+        self.assertLess(result.iloc[-30:].mean(), result.iloc[:30].mean())
+
+    def test_registry_create(self):
+        from core.factor_registry import registry
+        f = registry.create('FinancialHealth')
+        self.assertEqual(f.name, 'FinancialHealth')
+
+
+class TestDividendYieldFactor(unittest.TestCase):
+    """W1-6: DividendYieldFactor 股息率历史百分位。"""
+
+    def test_no_data_returns_zero(self):
+        from core.factors.fundamental import DividendYieldFactor
+        price = _make_price_df(300)
+        f = DividendYieldFactor(financial_data=None)
+        result = f.evaluate(price)
+        self.assertTrue((result == 0).all())
+
+    def test_no_dividend_yield_column_returns_zero(self):
+        from core.factors.fundamental import DividendYieldFactor
+        price = _make_price_df(300)
+        # financial_data 不含 dividend_yield 列
+        fin = _make_financial_df(300)
+        f = DividendYieldFactor(financial_data=fin)
+        result = f.evaluate(price)
+        self.assertTrue((result == 0).all())
+
+    def test_rising_dividend_yield_positive_trend(self):
+        """股息率上升 → 末段百分位高 → 因子值为正。"""
+        from core.factors.fundamental import DividendYieldFactor
+        n = 800   # 充分长以让滚动百分位窗口 (3y) 有效
+        idx = pd.date_range('2022-01-01', periods=n, freq='B')
+        fin = pd.DataFrame({
+            'dividend_yield': np.linspace(1.0, 5.0, n),
+        }, index=idx)
+        price = _make_price_df(n)
+
+        f = DividendYieldFactor(financial_data=fin, lookback_years=1)
+        result = f.evaluate(price)
+        # 末段股息率高 → 高百分位 → 高 z-score
+        self.assertGreater(result.iloc[-30:].mean(), 0)
+
+    def test_registry_create(self):
+        from core.factor_registry import registry
+        f = registry.create('DividendYield')
+        self.assertEqual(f.name, 'DividendYield')
+
+
+class TestAssetGrowthFactor(unittest.TestCase):
+    """W1-7: AssetGrowthFactor 反向因子(高扩张→SELL)。"""
+
+    def test_no_data_returns_zero(self):
+        from core.factors.fundamental import AssetGrowthFactor
+        price = _make_price_df(300)
+        f = AssetGrowthFactor(financial_data=None)
+        result = f.evaluate(price)
+        self.assertTrue((result == 0).all())
+
+    def test_high_asset_growth_negative_factor(self):
+        """资产扩张持续加速 → 末段因子值显著低于前段(反向)。"""
+        from core.factors.fundamental import AssetGrowthFactor
+        n = 300
+        fin = pd.DataFrame({
+            'asset_yoy': np.linspace(5.0, 50.0, n),  # 从 5% 升至 50%
+        }, index=pd.date_range('2022-01-01', periods=n, freq='B'))
+        price = _make_price_df(n)
+
+        f = AssetGrowthFactor(financial_data=fin, rolling_window=20)
+        result = f.evaluate(price)
+        # 反向:高扩张末段应为负
+        self.assertLess(result.iloc[-30:].mean(), result.iloc[:30].mean())
+        self.assertLess(result.iloc[-30:].mean(), 0)
+
+    def test_low_asset_growth_positive_factor(self):
+        """资产扩张减速 → 末段因子值为正。"""
+        from core.factors.fundamental import AssetGrowthFactor
+        n = 300
+        fin = pd.DataFrame({
+            'asset_yoy': np.linspace(40.0, 2.0, n),
+        }, index=pd.date_range('2022-01-01', periods=n, freq='B'))
+        price = _make_price_df(n)
+
+        f = AssetGrowthFactor(financial_data=fin, rolling_window=20)
+        result = f.evaluate(price)
+        self.assertGreater(result.iloc[-30:].mean(), 0)
+
+    def test_extreme_values_clipped(self):
+        """极端值(>500% 资产同比)被截断,不引发数值问题。"""
+        from core.factors.fundamental import AssetGrowthFactor
+        n = 300
+        fin = pd.DataFrame({
+            'asset_yoy': np.full(n, 800.0),  # 远超 500%
+        }, index=pd.date_range('2022-01-01', periods=n, freq='B'))
+        price = _make_price_df(n)
+
+        f = AssetGrowthFactor(financial_data=fin)
+        result = f.evaluate(price)
+        self.assertTrue(np.all(np.isfinite(result.values)))
+
+    def test_registry_create(self):
+        from core.factor_registry import registry
+        f = registry.create('AssetGrowth')
+        self.assertEqual(f.name, 'AssetGrowth')
+
+
 class TestFundamentalRegistryIntegration(unittest.TestCase):
 
     def test_all_fundamental_factors_registered(self):
         from core.factor_registry import registry
         names = ['PEPercentile', 'ROEMomentum', 'EarningsSurprise',
-                 'RevenueGrowth', 'CashFlowQuality']
+                 'RevenueGrowth', 'CashFlowQuality',
+                 'FinancialHealth', 'DividendYield', 'AssetGrowth']
         for name in names:
             with self.subTest(name=name):
                 self.assertIn(name, registry)
 
-    def test_total_factor_count_at_least_17(self):
-        """原5 + 技术7 + 基本面5 = 17 个因子"""
+    def test_total_factor_count_at_least_20(self):
+        """原5 + 技术7 + 基本面8(W1-5/6/7 新增 3 个) = 20 个因子"""
         from core.factor_registry import registry
-        self.assertGreaterEqual(len(registry), 17)
+        self.assertGreaterEqual(len(registry), 20)
 
     def test_fundamental_factor_in_pipeline_no_financial_data(self):
         """基本面因子（无数据时）加入流水线正常运行，不破坏其他因子"""

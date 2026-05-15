@@ -380,6 +380,24 @@ class BaostockProvider(Provider):
                         return df
         return pd.DataFrame()
 
+    def _fetch_balance_history(
+        self, session: _BaostockSession, bs_code: str, years: int = 4,
+    ) -> pd.DataFrame:
+        """拉取近 N 年全部 balance_data 季度数据(用于构建日频时序)。"""
+        all_rows = []
+        year = datetime.now().year
+        for offset in range(years):
+            y = year - offset
+            for q in [4, 3, 2, 1]:
+                rs = session._bs.query_balance_data(bs_code, year=y, quarter=q)
+                if rs.error_msg == "success":
+                    df = rs.get_data()
+                    if df is not None and not df.empty:
+                        all_rows.append(df)
+        if not all_rows:
+            return pd.DataFrame()
+        return pd.concat(all_rows, ignore_index=True)
+
     def _fetch_industry(self, session: _BaostockSession, bs_code: str) -> str:
         """通过 stock_industry 查询行业分类。"""
         try:
@@ -421,6 +439,85 @@ class BaostockProvider(Provider):
             quick_ratio=_safe_float(row.get("quickRatio")),
             equity=0.0,  # assetToEquity 是杠杆倍数，不是股东权益金额
         )
+
+    # ─── FUNDAMENTALS_HISTORY ────────────────────────────────────────────────
+
+    def fetch_fundamentals_history(
+        self, symbol: str, start: str | None = None, end: str | None = None,
+    ) -> pd.DataFrame:
+        """A股财务历史时序(日频,前向填充季报)。
+
+        当前仅输出 balance sheet 衍生字段(W1-2),与 AkshareProvider 提供的
+        利润表字段(roe_ttm/eps_ttm/...)互为字段级互补。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex(工作日),列:
+              debt_to_equity (%)   - liabilityToAsset × 100
+              current_ratio        - 流动比率
+              quick_ratio          - 速动比率
+        """
+        try:
+            session = _get_session()
+        except Exception as exc:
+            raise ProviderError(f"baostock 会话获取失败: {exc}") from exc
+
+        bs_code = _symbol_to_bs(symbol)
+        try:
+            raw = self._fetch_balance_history(session, bs_code)
+        except Exception as exc:
+            raise ProviderError(
+                f"baostock fetch_fundamentals_history({symbol}): {exc}"
+            ) from exc
+
+        if raw is None or raw.empty:
+            return pd.DataFrame()
+
+        return self._normalize_balance_history(raw, start, end)
+
+    @staticmethod
+    def _normalize_balance_history(
+        raw: pd.DataFrame, start: str | None, end: str | None,
+    ) -> pd.DataFrame:
+        """把 baostock balance_data 多季度 DataFrame 标准化为日频时序。"""
+        df = raw.copy()
+        if "statDate" not in df.columns:
+            return pd.DataFrame()
+        df["_dt"] = pd.to_datetime(df["statDate"], errors="coerce")
+        df = df.dropna(subset=["_dt"]).sort_values("_dt")
+        if df.empty:
+            return pd.DataFrame()
+        df = df.drop_duplicates(subset=["_dt"], keep="last").set_index("_dt")
+
+        result = {}
+        if "liabilityToAsset" in df.columns:
+            # baostock 给出小数(0.5 = 50%),统一转 %
+            result["debt_to_equity"] = pd.to_numeric(
+                df["liabilityToAsset"], errors="coerce",
+            ) * 100
+        if "currentRatio" in df.columns:
+            result["current_ratio"] = pd.to_numeric(
+                df["currentRatio"], errors="coerce",
+            )
+        if "quickRatio" in df.columns:
+            result["quick_ratio"] = pd.to_numeric(
+                df["quickRatio"], errors="coerce",
+            )
+
+        if not result:
+            return pd.DataFrame()
+
+        quarterly = pd.DataFrame(result).sort_index()
+
+        # 季频 → 日频(union-reindex-ffill,避免季末是周末时丢值)
+        start_dt = pd.Timestamp(start) if start else quarterly.index.min()
+        end_dt = pd.Timestamp(end) if end else pd.Timestamp.now()
+        daily_idx = pd.bdate_range(start=start_dt, end=end_dt)
+
+        union_idx = quarterly.index.union(daily_idx).sort_values()
+        daily = quarterly.reindex(union_idx).ffill().reindex(daily_idx)
+        return daily
 
     def _fetch_stock_name(self, session: _BaostockSession, bs_code: str) -> str:
         """通过 stock_basic 查询股票名称。"""

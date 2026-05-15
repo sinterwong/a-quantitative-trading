@@ -172,10 +172,13 @@ class EarningsSurpriseFactor(Factor):
     财报超预期因子（Earnings Surprise）。
 
     由于 A 股无统一分析师预期数据库（Bloomberg/Wind 收费），
-    此处用 EPS 自身动量代理：
+    此处用 EPS 自身动量代理。两种数据路径(W1-4 起):
 
-    因子值 = (EPS_ttm_t - EPS_ttm_{t-252}) / |EPS_ttm_{t-252}|
-           = EPS 同比增长率
+    优先(数据源直接提供 eps_yoy 时):
+      因子值 = eps_yoy / 100   (AkShare EPSJBHBZC 已是百分比)
+
+    Fallback(无 eps_yoy 时):
+      因子值 = (EPS_ttm_t - EPS_ttm_{t-252}) / |EPS_ttm_{t-252}|
 
     正值：EPS 同比增长（超预期方向）→ BUY
     负值：EPS 同比下滑（低于预期）→ SELL
@@ -183,7 +186,7 @@ class EarningsSurpriseFactor(Factor):
     Parameters
     ----------
     financial_data : FundamentalDataManager.get_fundamentals() 的返回值
-    diff_days      : 同比窗口（默认 252 天 ≈ 1 年）
+    diff_days      : 同比窗口（默认 252 天 ≈ 1 年，仅 fallback 路径使用）
     """
 
     name = 'EarningsSurprise'
@@ -202,6 +205,14 @@ class EarningsSurpriseFactor(Factor):
         self.symbol = symbol
 
     def evaluate(self, data: pd.DataFrame) -> pd.Series:
+        # 优先路径:直接消费数据源提供的 eps_yoy(%)
+        eps_yoy_direct = _align_financial(self.financial_data, data.index, 'eps_yoy')
+        if not eps_yoy_direct.isna().all():
+            # eps_yoy 是百分比(20.0 = 20%),除以 100 与 fallback 自算口径一致
+            yoy = (eps_yoy_direct / 100.0).clip(-1.0, 3.0)
+            return self.normalize(yoy.fillna(0.0))
+
+        # Fallback:从 eps_ttm 自算同比
         eps = _align_financial(self.financial_data, data.index, 'eps_ttm')
 
         if eps.isna().all():
@@ -375,3 +386,201 @@ class ShareholderConcentrationFactor(Factor):
         smoothed = raw.rolling(self.rolling_window, min_periods=1).mean()
 
         return self.normalize(smoothed.fillna(0.0))
+
+
+# ---------------------------------------------------------------------------
+# 7. 财务健康因子（W1-5）
+# ---------------------------------------------------------------------------
+
+class FinancialHealthFactor(Factor):
+    """
+    财务健康度因子(Altman-Z 简化版)。
+
+    合成三个公司财务健康维度:
+      - 偿债压力(取负):debt_to_equity 越高 → 越不健康 → 因子分量为负
+      - 短期流动性  :current_ratio 越高 → 越健康
+      - 盈利质量    :ocf_to_profit 越高 → 越健康
+
+    因子值 = z(-debt_to_equity) + z(current_ratio) + z(ocf_to_profit),
+            再做总体 z-score。
+
+    解读:
+      - z > threshold:财务质量显著高于均值 → 配置加权
+      - z < -threshold:财务质量明显恶化 → SELL
+
+    数据来源:
+      DataGateway.fundamentals_history()
+      - Baostock 提供 debt_to_equity / current_ratio (W1-2)
+      - Akshare 或 Baostock 提供 ocf_to_profit
+
+    任意一项缺失时使用其它两项,均缺失时返回全零(降级)。
+
+    Parameters
+    ----------
+    financial_data : pd.DataFrame, optional
+        需含 debt_to_equity / current_ratio / ocf_to_profit 列。
+    rolling_window : int
+        平滑窗口(默认 60 天)。
+    """
+
+    name = 'FinancialHealth'
+    category = FactorCategory.FUNDAMENTAL
+
+    def __init__(
+        self,
+        financial_data: Optional[pd.DataFrame] = None,
+        rolling_window: int = 60,
+        threshold: float = 1.0,
+        symbol: str = '',
+    ):
+        self.financial_data = financial_data
+        self.rolling_window = rolling_window
+        self.threshold = threshold
+        self.symbol = symbol
+
+    def evaluate(self, data: pd.DataFrame) -> pd.Series:
+        debt = _align_financial(self.financial_data, data.index, 'debt_to_equity')
+        cr = _align_financial(self.financial_data, data.index, 'current_ratio')
+        ocf = _align_financial(self.financial_data, data.index, 'ocf_to_profit')
+
+        # 三项均缺失则降级
+        if debt.isna().all() and cr.isna().all() and ocf.isna().all():
+            return pd.Series(0.0, index=data.index)
+
+        # 各分量先平滑去噪 + 缺失补 0
+        def _smooth(s: pd.Series) -> pd.Series:
+            return s.rolling(self.rolling_window, min_periods=1).mean().fillna(0.0)
+
+        debt_s = _smooth(debt) if not debt.isna().all() else pd.Series(0.0, index=data.index)
+        cr_s = _smooth(cr) if not cr.isna().all() else pd.Series(0.0, index=data.index)
+        ocf_s = _smooth(ocf) if not ocf.isna().all() else pd.Series(0.0, index=data.index)
+
+        # 简单 z 拼接:对各分量分别 z-score,避免量纲差异(% vs 倍数)
+        def _z(s: pd.Series) -> pd.Series:
+            mu = s.mean()
+            std = s.std(ddof=0) or 1.0
+            return (s - mu) / std
+
+        # debt_to_equity 是越低越好,所以取负
+        composite = -_z(debt_s) + _z(cr_s) + _z(ocf_s)
+        return self.normalize(composite.fillna(0.0))
+
+
+# ---------------------------------------------------------------------------
+# 8. 股息率因子（W1-6）
+# ---------------------------------------------------------------------------
+
+class DividendYieldFactor(Factor):
+    """
+    股息率因子(价值/防御偏置)。
+
+    因子值 = percentile_rank(dividend_yield, lookback)
+    高股息率分位 → 股价相对估值低,资金有"现金回报"安全垫 → BUY
+
+    与 PEPercentileFactor 的关键差异:
+      - PE 百分位反映"市场估值低",可能伴随基本面恶化
+      - 股息率高百分位反映"分红能力强",更稳健的价值信号
+
+    数据来源:
+      Fundamentals.dividend_yield 字段 + Akshare DIVIDENDYIELD 列(W1-1)。
+
+    若数据源不提供 dividend_yield(常见),因子降级为零。
+
+    Parameters
+    ----------
+    financial_data : 含 dividend_yield 列的 DataFrame(可能由 quote 字段补充)
+    lookback_years : 百分位计算窗口(年,默认 3 年)
+    """
+
+    name = 'DividendYield'
+    category = FactorCategory.FUNDAMENTAL
+
+    def __init__(
+        self,
+        financial_data: Optional[pd.DataFrame] = None,
+        lookback_years: int = 3,
+        threshold: float = 1.0,
+        symbol: str = '',
+    ):
+        self.financial_data = financial_data
+        self.lookback_years = lookback_years
+        self.lookback_days = lookback_years * 252
+        self.threshold = threshold
+        self.symbol = symbol
+
+    def evaluate(self, data: pd.DataFrame) -> pd.Series:
+        dy = _align_financial(self.financial_data, data.index, 'dividend_yield')
+        if dy.isna().all():
+            return pd.Series(0.0, index=data.index)
+
+        # 滚动历史百分位:当前股息率在过去 N 天中的相对位置
+        def _pct_rank(arr: np.ndarray) -> float:
+            if len(arr) < 2 or np.isnan(arr[-1]):
+                return np.nan
+            valid = arr[~np.isnan(arr)]
+            if len(valid) < 2:
+                return np.nan
+            return float(np.sum(valid <= arr[-1]) / len(valid))
+
+        pct_rank = dy.rolling(
+            self.lookback_days, min_periods=max(10, self.lookback_days // 10),
+        ).apply(_pct_rank, raw=True)
+
+        # 高分位 → 高因子值(正向)
+        return self.normalize(pct_rank.fillna(0.0))
+
+
+# ---------------------------------------------------------------------------
+# 9. 资产增长率因子(W1-7,反向)
+# ---------------------------------------------------------------------------
+
+class AssetGrowthFactor(Factor):
+    """
+    资产扩张速度因子(反向)。
+
+    学术基础:Cooper / Gulen / Schill (2008) — Asset Growth Anomaly。
+    高总资产同比扩张往往伴随:
+      - 过度投资 / 大量并购消化不良
+      - 盈利稀释 / ROE 下滑
+      - 未来 1-3 年股价 underperform
+
+    因子值 = -z(asset_yoy)
+      asset_yoy 高 → 因子值为负(SELL 倾向)
+      asset_yoy 低 / 负 → 因子值为正(BUY,可能是收缩 / 聚焦主业)
+
+    数据来源:
+      Akshare TOTALASSETSGRRATE 或自算 TOTALASSETS YoY(W1-1)。
+
+    Parameters
+    ----------
+    financial_data : 含 asset_yoy 列的 DataFrame
+    rolling_window : 平滑窗口(默认 60 天)
+    """
+
+    name = 'AssetGrowth'
+    category = FactorCategory.FUNDAMENTAL
+
+    def __init__(
+        self,
+        financial_data: Optional[pd.DataFrame] = None,
+        rolling_window: int = 60,
+        threshold: float = 1.0,
+        symbol: str = '',
+    ):
+        self.financial_data = financial_data
+        self.rolling_window = rolling_window
+        self.threshold = threshold
+        self.symbol = symbol
+
+    def evaluate(self, data: pd.DataFrame) -> pd.Series:
+        ag = _align_financial(self.financial_data, data.index, 'asset_yoy')
+        if ag.isna().all():
+            return pd.Series(0.0, index=data.index)
+
+        # 截断极端值(>500% 视为重组 / 借壳,信号意义弱)
+        ag_clipped = ag.clip(-50.0, 500.0)
+        smoothed = ag_clipped.rolling(self.rolling_window, min_periods=1).mean()
+
+        # 反向:高扩张 → 低因子值
+        raw = -smoothed
+        return self.normalize(raw.fillna(0.0))

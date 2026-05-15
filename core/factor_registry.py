@@ -128,6 +128,7 @@ def _auto_register() -> None:
     from core.factors.fundamental import (
         PEPercentileFactor, ROEMomentumFactor, EarningsSurpriseFactor,
         RevenueGrowthFactor, CashFlowQualityFactor,
+        FinancialHealthFactor, DividendYieldFactor, AssetGrowthFactor,
     )
 
     # 原有价格动量因子
@@ -152,14 +153,24 @@ def _auto_register() -> None:
     registry.register(EarningsSurpriseFactor, default_params={'diff_days': 252})
     registry.register(RevenueGrowthFactor, default_params={'accel_window': 60})
     registry.register(CashFlowQualityFactor, default_params={'rolling_window': 60})
+    registry.register(FinancialHealthFactor, default_params={'rolling_window': 60})
+    registry.register(DividendYieldFactor, default_params={'lookback_years': 3})
+    registry.register(AssetGrowthFactor, default_params={'rolling_window': 60})
 
-    # 情绪因子（A-4）
+    # 情绪因子（A-4 + W2-2）
     from core.factors.sentiment import (
         MarginTradingFactor, NorthboundFlowFactor, ShortInterestFactor,
+        SouthboundFlowFactor,
     )
     registry.register(MarginTradingFactor, default_params={'short_window': 5, 'long_window': 20})
     registry.register(NorthboundFlowFactor, default_params={'window': 5})
     registry.register(ShortInterestFactor, default_params={'window': 10})
+    registry.register(SouthboundFlowFactor, default_params={'window': 5})
+
+    # 板块因子(W3-1 / W3-2)
+    from core.factors.sector import SectorFlowFactor, SectorBreadthFactor
+    registry.register(SectorFlowFactor, default_params={'window': 5})
+    registry.register(SectorBreadthFactor, default_params={'window': 5})
 
     # ML 预测因子（B-1）
     from core.ml.price_predictor import MLPredictionFactor

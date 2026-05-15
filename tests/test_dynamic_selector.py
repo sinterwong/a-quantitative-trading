@@ -97,3 +97,52 @@ class TestDynamicSelector:
         selector = DynamicStockSelector()
         score = selector.calc_tech_score_for_bk('nonexistent_bk')
         assert 0 <= score <= 100
+
+    # ── W3-4: 板块资金流动量评分 ──────────────────────────────────────────
+
+    def test_flow_momentum_score_no_history(self):
+        """无 SectorFlowStore 数据 → 返回 0。"""
+        selector = DynamicStockSelector()
+        score = selector.calc_flow_momentum_score(
+            'BK_NO_HIST', today_net_flow=5e9,
+        )
+        assert score == 0.0
+
+    def test_flow_momentum_score_high_inflow(self):
+        """今日流入显著高于历史均值 → 正值。"""
+        import pandas as pd
+        from unittest.mock import patch, MagicMock
+        from core.factors.sector import SectorFlowStore
+
+        hist = pd.Series([0.0, 1e8, 0.5e8, -0.5e8, 0.2e8],
+                         index=pd.bdate_range('2024-01-01', periods=5))
+        with patch.object(SectorFlowStore, 'series_for', return_value=hist):
+            selector = DynamicStockSelector()
+            score = selector.calc_flow_momentum_score('BK1', today_net_flow=1e10)
+        assert score > 0.5
+
+    def test_flow_momentum_score_high_outflow(self):
+        """今日流出显著高于历史均值 → 负值。"""
+        import pandas as pd
+        from unittest.mock import patch
+        from core.factors.sector import SectorFlowStore
+
+        hist = pd.Series([2e8, 1e8, 1.5e8, 1.2e8, 1.8e8],
+                         index=pd.bdate_range('2024-01-01', periods=5))
+        with patch.object(SectorFlowStore, 'series_for', return_value=hist):
+            selector = DynamicStockSelector()
+            score = selector.calc_flow_momentum_score('BK1', today_net_flow=-5e9)
+        assert score < -0.5
+
+    def test_flow_momentum_score_zero_std(self):
+        """历史无波动(std=0)→ 返回 0,不抛除零异常。"""
+        import pandas as pd
+        from unittest.mock import patch
+        from core.factors.sector import SectorFlowStore
+
+        hist = pd.Series([1e8] * 5,
+                         index=pd.bdate_range('2024-01-01', periods=5))
+        with patch.object(SectorFlowStore, 'series_for', return_value=hist):
+            selector = DynamicStockSelector()
+            score = selector.calc_flow_momentum_score('BK1', today_net_flow=5e9)
+        assert score == 0.0

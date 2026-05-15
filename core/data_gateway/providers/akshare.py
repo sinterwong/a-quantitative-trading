@@ -45,6 +45,9 @@ class AkshareProvider(Provider):
                 Capability.MACRO,
                 Capability.FUNDAMENTALS,
                 Capability.FUNDAMENTALS_HISTORY,
+                Capability.MARGIN_FLOW,
+                Capability.NEWS_HEADLINES,
+                Capability.NORTH_FLOW,
             }),
             markets=frozenset({Market.GLOBAL}),
             priority_hint=0.30,  # 实测不稳定,健康度低
@@ -489,6 +492,29 @@ class AkshareProvider(Provider):
             yoy = ((rev / rev_prev.replace(0, np.nan)) - 1) * 100
             result["revenue_yoy"] = yoy.replace([np.inf, -np.inf], np.nan)
 
+        # EPS YoY:优先用 AkShare 直接字段(EPSJBHBZC = 基本每股收益同比),fallback 自算
+        if "EPSJBHBZC" in df.columns:
+            result["eps_yoy"] = pd.to_numeric(df["EPSJBHBZC"], errors="coerce")
+        elif "EPSJB" in df.columns:
+            eps = pd.to_numeric(df["EPSJB"], errors="coerce")
+            eps_prev = eps.shift(1)
+            yoy = ((eps / eps_prev.replace(0, np.nan)) - 1) * 100
+            result["eps_yoy"] = yoy.replace([np.inf, -np.inf], np.nan)
+
+        # 总资产 YoY:优先用 TOTALASSETSGRRATE 直接字段,fallback 自算 TOTALASSETS
+        if "TOTALASSETSGRRATE" in df.columns:
+            result["asset_yoy"] = pd.to_numeric(df["TOTALASSETSGRRATE"], errors="coerce")
+        elif "TOTALASSETS" in df.columns:
+            ta = pd.to_numeric(df["TOTALASSETS"], errors="coerce")
+            ta_prev = ta.shift(1)
+            yoy = ((ta / ta_prev.replace(0, np.nan)) - 1) * 100
+            result["asset_yoy"] = yoy.replace([np.inf, -np.inf], np.nan)
+
+        # 股息率(%):indicator_em 偶尔提供 STDIVIDENDPS(每股股息);
+        # 历史比率口径无统一字段,因子层会优先消费此列,无值时由 Fundamentals 快照补充
+        if "DIVIDENDYIELD" in df.columns:
+            result["dividend_yield"] = pd.to_numeric(df["DIVIDENDYIELD"], errors="coerce")
+
         # 以下字段在此数据源中不可得：
         #   pe_ttm, pb, ocf_to_profit, holder_num
         # 其对应因子在 financial_data 缺失这些字段时返回零值，这是预期行为。
@@ -500,14 +526,203 @@ class AkshareProvider(Provider):
         quarterly = quarterly[~quarterly.index.duplicated(keep="last")]
 
         # 季频 → 日频（前向填充）
+        # 季末日期(如 03-31 / 06-30)常落在周末,直接 reindex 会丢值。
+        # 标准模式:先把季末日并入 daily_idx → ffill → 再裁切到 daily_idx。
         start_dt = pd.Timestamp(start) if start else quarterly.index.min()
         end_dt = pd.Timestamp(end) if end else pd.Timestamp.now()
         daily_idx = pd.bdate_range(start=start_dt, end=end_dt)  # 工作日
 
-        daily = quarterly.reindex(daily_idx)
-        daily = daily.ffill()
+        union_idx = quarterly.index.union(daily_idx).sort_values()
+        daily = quarterly.reindex(union_idx).ffill().reindex(daily_idx)
 
         return daily
+
+    # ─── MARGIN_FLOW ─────────────────────────────────────────────────────────
+
+    def fetch_margin_flow(
+        self, symbol: str, start: str | None = None, end: str | None = None,
+    ) -> pd.DataFrame:
+        """通过 AkShare stock_margin_detail 获取个股融资融券日序列。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex,列 margin_balance(融资余额,元) / short_balance(融券余额,元)。
+        """
+        try:
+            import akshare as ak
+        except ImportError:
+            logger.debug("akshare 未安装,跳过 margin_flow 请求")
+            return pd.DataFrame()
+
+        # 去掉常见后缀,akshare 接口接受 6 位代码
+        code = symbol.replace(".SH", "").replace(".SZ", "")
+        if code.lower().startswith(("sh", "sz")):
+            code = code[2:]
+
+        try:
+            raw = ak.stock_margin_detail(symbol=code)
+        except Exception as exc:
+            raise ProviderError(f"akshare.fetch_margin_flow({symbol}): {exc}") from exc
+
+        if raw is None or raw.empty:
+            return pd.DataFrame()
+
+        return self._normalize_margin(raw, start, end)
+
+    @staticmethod
+    def _normalize_margin(
+        raw: pd.DataFrame, start: str | None, end: str | None,
+    ) -> pd.DataFrame:
+        """归一 AkShare stock_margin_detail 列名 → margin_balance / short_balance。"""
+        df = raw.copy()
+        df.columns = [c.strip().lower() for c in df.columns]
+
+        col_map = {
+            "rz_ye": "margin_balance",
+            "rzye": "margin_balance",
+            "融资余额": "margin_balance",
+            "rq_ye": "short_balance",
+            "rqye": "short_balance",
+            "融券余额": "short_balance",
+            "信用交易日期": "date",
+            "trade_date": "date",
+        }
+        rename = {src.lower(): dst for src, dst in col_map.items() if src.lower() in df.columns}
+        df = df.rename(columns=rename)
+
+        # 找日期列
+        date_col = next(
+            (c for c in ("date", "信用交易日期", "trade_date") if c in df.columns),
+            df.columns[0],
+        )
+        df["date"] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=["date"]).set_index("date").sort_index()
+
+        out = pd.DataFrame(index=df.index)
+        if "margin_balance" in df.columns:
+            out["margin_balance"] = pd.to_numeric(df["margin_balance"], errors="coerce")
+        if "short_balance" in df.columns:
+            out["short_balance"] = pd.to_numeric(df["short_balance"], errors="coerce")
+
+        out = out.dropna(how="all")
+        if start:
+            out = out[out.index >= pd.Timestamp(start)]
+        if end:
+            out = out[out.index <= pd.Timestamp(end)]
+        return out
+
+    # ─── NORTH_FLOW history ──────────────────────────────────────────────────
+
+    def fetch_north_flow_history(self, days: int = 252) -> pd.DataFrame:
+        """通过 AkShare stock_hsgt_hist_em 获取北向 + 南向资金日频历史。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex,列 north_flow / south_flow (亿元/天)。
+            南向接口失败时仍返回北向单列,不影响主链路。
+        """
+        try:
+            import akshare as ak
+        except ImportError:
+            logger.debug("akshare 未安装,跳过 north_flow_history 请求")
+            return pd.DataFrame()
+
+        try:
+            raw_north = ak.stock_hsgt_hist_em(symbol="北向资金")
+        except Exception as exc:
+            raise ProviderError(f"akshare.fetch_north_flow_history: {exc}") from exc
+
+        if raw_north is None or raw_north.empty:
+            return pd.DataFrame()
+
+        north_df = self._normalize_north_history(raw_north, days, "north_flow")
+        if north_df.empty:
+            return pd.DataFrame()
+
+        # 南向是 best-effort,失败不阻塞主流程
+        try:
+            raw_south = ak.stock_hsgt_hist_em(symbol="南向资金")
+        except Exception as exc:
+            logger.debug("南向资金获取失败,跳过: %s", exc)
+            raw_south = None
+
+        if raw_south is not None and not raw_south.empty:
+            south_df = self._normalize_north_history(raw_south, days, "south_flow")
+            if not south_df.empty:
+                north_df = north_df.join(south_df, how="outer").sort_index()
+
+        return north_df.tail(days)
+
+    @staticmethod
+    def _normalize_north_history(
+        raw: pd.DataFrame, days: int, col_name: str = "north_flow",
+    ) -> pd.DataFrame:
+        """归一 AkShare stock_hsgt_hist_em 输出 → DataFrame(<col_name> 亿元/天)。"""
+        df = raw.copy()
+        df.columns = [c.strip() for c in df.columns]
+
+        # 日期列候选
+        date_col = next(
+            (c for c in ("日期", "date", "trade_date") if c in df.columns),
+            df.columns[0],
+        )
+        # 资金净流入候选(单位:亿元)
+        flow_col = None
+        for c in ("当日资金流入", "net_flow", "成交净买额", "买入成交净额"):
+            if c in df.columns:
+                flow_col = c
+                break
+        if flow_col is None:
+            return pd.DataFrame()
+
+        df["_dt"] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=["_dt"]).sort_values("_dt").set_index("_dt")
+        out = pd.DataFrame({
+            col_name: pd.to_numeric(df[flow_col], errors="coerce"),
+        })
+        return out.dropna().tail(days)
+
+    # ─── NEWS_HEADLINES ──────────────────────────────────────────────────────
+
+    def fetch_news_headlines(self, symbol: str, n: int = 20) -> list:
+        """通过 AkShare stock_news_em 获取个股新闻标题列表(最新在前)。
+
+        Returns
+        -------
+        List[str]
+            最多 n 条新闻标题。空列表表示无数据。
+        """
+        try:
+            import akshare as ak
+        except ImportError:
+            logger.debug("akshare 未安装,跳过 news_headlines 请求")
+            return []
+
+        # 去掉后缀,接口接受 6 位代码
+        code = symbol.split(".")[0]
+        if code.lower().startswith(("sh", "sz")):
+            code = code[2:]
+
+        try:
+            df = ak.stock_news_em(symbol=code)
+        except Exception as exc:
+            raise ProviderError(f"akshare.fetch_news_headlines({symbol}): {exc}") from exc
+
+        if df is None or df.empty:
+            return []
+
+        title_col = None
+        for col in ("标题", "title", "新闻标题", "news_title"):
+            if col in df.columns:
+                title_col = col
+                break
+        if title_col is None:
+            return []
+
+        headlines = df[title_col].dropna().tolist()[:n]
+        return [str(h).strip() for h in headlines if h]
 
 
 __all__ = ["AkshareProvider"]
