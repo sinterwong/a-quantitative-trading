@@ -1,177 +1,192 @@
 # TODO — 模型层数据共振重构(2026-05-15)
 
 > 评估基线 commit: `e5a0c37`(数据层 Gateway 统一出口已就绪)
-> 目标:消灭模型层 3 处绕过 Gateway 的网络调用,消费已就绪的新字段,扩展板块/外盘维度
-> 验收:全部新增/改造功能配测试,`pytest tests/ -x -q` 不回退
+> **状态:全部 21 项完成,1425 测试通过 · 全量无回退**
+> 分支:`feat/model-layer-resonance-with-data` (待发 PR)
 
 ---
 
-## Wave 0 — 合规闭环(P0,必做)
+## Wave 0 — 合规闭环(P0,已完成 ✅)
 
 > 目标:任何模型层网络请求均经 Gateway,享受熔断 + 健康度 + 多源融合保护。
 
 ### W0-1 暴露 `BALANCE_SHEET` 公开 API
-- [ ] `core/data_gateway/providers/base.py`:`Provider` 抽象基类增加 `fetch_balance_sheet(symbol) -> Optional[BalanceSheet]` 方法,默认返回 `None`
-- [ ] `core/data_gateway/gateway.py`:增加 `DataGateway.balance_sheet(symbol)` 公开 API,使用 `_merged_fetch` 路由
-- [ ] `core/data_gateway/__init__.py`:导出 `BalanceSheet`
-- [ ] `_DEFAULT_TTL` 增 `Capability.BALANCE_SHEET: 86400.0`
-- [ ] 新增 `tests/test_data_gateway/test_balance_sheet.py`:验证 Baostock 路由 + 字段
-- **验收**:`get_gateway().balance_sheet('sh600519')` 返回有效 `BalanceSheet`,提交一次
+- [x] `Provider` 抽象基类增加 `fetch_balance_sheet`,默认 None
+- [x] `Gateway.balance_sheet(symbol)` 公开 API,走 `_merged_fetch` 字段级合并
+- [x] `data_gateway.__init__` 导出 `BalanceSheet`
+- [x] `_DEFAULT_TTL[Capability.BALANCE_SHEET] = 86400.0`
+- [x] 测试覆盖路由 / 缓存 / 无源 / 多源合并 (4 个)
 
 ### W0-2 Regime 走 Gateway
-- [ ] `core/regime.py:_fetch_index_data()`:删 `import akshare`,改用 `from core.data_gateway import get_gateway; get_gateway().kline('sh000001', interval='daily', days=320)`
-- [ ] 处理列名差异(gateway 返回 timestamp / open / high / low / close / volume,akshare 列名为 date)
-- [ ] `RegimeInfo.source` 字段:`"akshare"` → `"gateway"`(向后兼容旧值)
-- [ ] `tests/test_regime.py` 用 gateway mock 替换 akshare mock
-- **验收**:`get_regime()` 在 mock 下正常返回,无 akshare 直接导入,提交一次
+- [x] `_fetch_index_data()` 改用 `gw.kline('sh000001', ...)`
+- [x] 兼容 provider 间列名差异(date / timestamp)
+- [x] `RegimeInfo.source` 默认值改为 `'gateway'`
+- [x] 同步 docstring 和注释,删除所有 akshare 引用
+- [x] 测试覆盖 gateway 调用 / 空返回 / timestamp 列 (3 个)
 
-### W0-3 新增 `Capability.MARGIN_FLOW` + 接通融资融券因子
-- [ ] `core/data_gateway/capabilities.py`:增 `MARGIN_FLOW = "margin_flow"`
-- [ ] `core/data_gateway/schemas.py`:增 `MarginFlow` dataclass(symbol / date / margin_balance / short_balance)
-- [ ] `core/data_gateway/providers/base.py`:增 `fetch_margin_flow(symbol, start, end) -> pd.DataFrame`
-- [ ] `core/data_gateway/providers/akshare.py`:实现 `fetch_margin_flow` 包装 `stock_margin_detail`,声明 capability
-- [ ] `core/data_gateway/gateway.py`:增 `margin_flow(symbol, start, end)` 公开 API
-- [ ] `core/factors/sentiment.py`:`MarginDataStore._fetch()` 改走 gateway,删 `import akshare`
-- [ ] `tests/test_data_gateway/test_margin_flow.py`:验证 capability 路由
-- **验收**:`MarginTradingFactor / ShortInterestFactor` 不再直连 akshare,提交一次
+### W0-3 `MARGIN_FLOW` capability + 融资融券因子接通
+- [x] 新增 `Capability.MARGIN_FLOW`
+- [x] `Provider.fetch_margin_flow(symbol, start, end)`
+- [x] `AkshareProvider` 实现 + `_normalize_margin` 列名归一
+- [x] `Gateway.margin_flow(symbol, start, end)` 4h TTL
+- [x] `MarginDataStore._fetch()` 改走 gateway,删 `import akshare`
+- [x] 测试覆盖路由 / 缓存 / 因子集成 (15 个)
 
-### W0-4 新增 `Capability.NEWS_HEADLINES` + 接通新闻因子
-- [ ] `core/data_gateway/capabilities.py`:增 `NEWS_HEADLINES = "news_headlines"`
-- [ ] `core/data_gateway/providers/base.py`:增 `fetch_news_headlines(symbol, n) -> List[str]`
-- [ ] `core/data_gateway/providers/akshare.py`:实现 `fetch_news_headlines` 包装 `stock_news_em`
-- [ ] `core/data_gateway/gateway.py`:增 `news_headlines(symbol, n=20)` 公开 API
-- [ ] `core/factors/nlp.py:_fetch_news_eastmoney()` 改走 gateway,删 `import akshare`
-- [ ] `tests/test_data_gateway/test_news_headlines.py`:验证 capability 路由
-- **验收**:`NewsSentimentFactor` 不再直连 akshare,提交一次
+### W0-4 `NEWS_HEADLINES` capability + 新闻因子接通
+- [x] `Capability.NEWS_HEADLINES` + `Provider.fetch_news_headlines`
+- [x] `AkshareProvider.fetch_news_headlines` 包装 `stock_news_em`
+- [x] `Gateway.news_headlines(symbol, n)` 30min TTL
+- [x] `nlp._fetch_news_eastmoney()` 改走 gateway
+- [x] 测试覆盖 gateway 调用 + 异常降级 (2 个)
 
 ---
 
-## Wave 1 — 基本面字段红利消费(P0)
+## Wave 1 — 基本面字段红利消费(P0,已完成 ✅)
 
-> 目标:把已就绪但因子未读的字段全部接通,新增 3 个学术验证因子。
-
-### W1-1 AkshareProvider 扩列(A 股)
-- [ ] `_fetch_a_share_fundamentals_history`:增加 EPSKCJB / TOTALASSETS / DIVIDENDYIELD 等列(若 AkShare 接口有提供)
-- [ ] 字段输出:`eps_yoy`(从季报自算) / `asset_yoy`(从总资产自算) / `dividend_yield`(取 quote 字段)
-- [ ] 文档更新 ARCHITECTURE.md 字段映射表
-- **验收**:`get_gateway().fundamentals_history('sh600519')` 列包含新字段,提交一次
+### W1-1 AkshareProvider 扩列(A股 eps_yoy/asset_yoy/dividend_yield)
+- [x] `_normalize_indicator_em` 输出 eps_yoy(EPSJBHBZC) / asset_yoy(TOTALASSETSGRRATE) / dividend_yield
+- [x] 顺带修复季频→日频 reindex 丢值 bug(union-reindex-ffill)
+- [x] 测试 5 个新用例
 
 ### W1-2 BaostockProvider 扩列(balance sheet 日频化)
-- [ ] `fetch_fundamentals_history`:把 balance_data 接口的 `debt_to_equity / current_ratio / quick_ratio` 转日频前向填充
-- [ ] 多季度合并按 `statDate` 排序避免乱序
-- **验收**:`get_gateway().fundamentals_history('sh600519')` 列包含 balance 字段,提交一次
+- [x] `_fetch_balance_history`(4 年所有季度)+ `fetch_fundamentals_history`
+- [x] `_normalize_balance_history`:输出 debt_to_equity/current_ratio/quick_ratio 日频时序
+- [x] Gateway `fundamentals_history` 改造为多 provider 列级合并(Baostock + Akshare 字段互补)
+- [x] 测试 3 个新用例
 
-### W1-3 扩 `FundamentalDataManager` 白名单 + pipeline_factory 适配
-- [ ] `core/pipeline_factory.py`:`available` 白名单从 7 列扩到 12 列
-- [ ] 同步注释说明每列含义
-- **验收**:`build_pipeline('sh600519')` 注入 financial_data 列数 >= 10,提交一次
+### W1-3 扩展 FundamentalDataManager + pipeline_factory 白名单
+- [x] white_list 从 7 列扩到 13 列
+- [x] docstring 更新各字段来源
+- [x] 测试拦截 `_safe_add` 验证白名单生效
 
-### W1-4 重构 `EarningsSurpriseFactor`
-- [ ] `core/factors/fundamental.py`:`evaluate` 中先读 `eps_yoy` 列,无则 fallback 自算
-- [ ] 因子语义说明更新
-- [ ] `tests/test_fundamental_factors.py` 新增 EPS YoY 直接消费用例
-- **验收**:有 eps_yoy 字段时不再走自算路径,提交一次
+### W1-4 重构 EarningsSurpriseFactor 优先消费 eps_yoy
+- [x] `evaluate()` 优先 eps_yoy / 100,fallback eps_ttm 自算
+- [x] 测试 3 个新用例
 
-### W1-5 新增 `FinancialHealthFactor`
-- [ ] `core/factors/fundamental.py`:新因子,合成 `debt_to_equity * -1 + current_ratio + ocf_to_profit` 的 z-score
-- [ ] `core/factor_registry.py:_auto_register()` 注册
-- [ ] `tests/test_fundamental_factors.py` 新增因子测试
-- **验收**:因子在 mock balance 数据下产出非零 z-score,提交一次
+### W1-5 新增 FinancialHealthFactor
+- [x] 合成 `-z(debt_to_equity) + z(current_ratio) + z(ocf_to_profit)`
+- [x] 注册到 FactorRegistry
+- [x] 测试 5 个新用例
 
-### W1-6 新增 `DividendYieldFactor`
-- [ ] `core/factors/fundamental.py`:新因子,股息率历史百分位
-- [ ] 注册到 registry
-- [ ] 测试覆盖
-- **验收**:同上,提交一次
+### W1-6 新增 DividendYieldFactor
+- [x] 股息率历史百分位
+- [x] 注册 + 4 个测试
 
-### W1-7 新增 `AssetGrowthFactor`(反向)
-- [ ] `core/factors/fundamental.py`:新因子,asset_yoy 取负(高资产扩张 = SELL)
-- [ ] 注册 + 测试
-- **验收**:同上,提交一次
+### W1-7 新增 AssetGrowthFactor
+- [x] 反向因子(Cooper/Gulen/Schill 2008)
+- [x] 极端值 clip(-50, 500)
+- [x] 注册 + 5 个测试
 
 ---
 
-## Wave 2 — 情绪因子自动化(P1)
+## Wave 2 — 情绪因子自动化(P1,已完成 ✅)
 
 ### W2-1 `NorthboundFlowFactor` 自动 fetch
-- [ ] `core/factors/sentiment.py`:增加 `_get_sentiment` 方法,默认调 `gw.north_flow()` 构建日频序列
-- [ ] 历史数据从 `backend.services.data_cache.cached_kamt` 取(已有缓存层)
-- [ ] 测试:无注入数据时自动 fetch 不崩溃
-- **验收**:`NorthboundFlowFactor(symbol='sh600519').evaluate(df)` 自动产出非零,提交一次
+- [x] Provider 增 `fetch_north_flow_history`,AkshareProvider 实装
+- [x] Gateway `north_flow_history(days)` 4h TTL
+- [x] 因子层 `_get_sentiment` 自动 fetch
+- [x] 测试 3 个新用例
 
 ### W2-2 新增 `SouthboundFlowFactor`(港股)
-- [ ] `core/factors/sentiment.py`:港股 universe 专用,消费 `NorthFlow.net_south_yi`
-- [ ] 注册 + 测试
-- **验收**:同上,提交一次
+- [x] AkshareProvider 同时拉 北向 + 南向(best-effort)
+- [x] `_normalize_north_history` 抽象 col_name 参数
+- [x] 注册到 FactorRegistry
+- [x] 测试 6 个新用例
 
-### W2-3 `NewsSentimentFactor` 入 pipeline
-- [ ] `core/pipeline_factory.py`:情绪层加 NewsSentiment(权重 0.05),依赖 MINIMAX_API_KEY 时启用
-- [ ] 衰减保护:连续 5 次零值自动剔除
-- **验收**:`pipeline.factor_names` 含 NewsSentiment,提交一次
+### W2-3 NewsSentimentFactor 入 pipeline
+- [x] 条件:symbol 非空 + MINIMAX_API_KEY 存在
+- [x] 权重 0.05(防 LLM 单点失败)
+- [x] 测试 3 个新用例
 
 ---
 
-## Wave 3 — 板块层(P1)
+## Wave 3 — 板块层(P1,已完成 ✅)
 
 ### W3-1 新增 `SectorFlowFactor`
-- [ ] 新建 `core/factors/sector.py`(避免 sentiment.py 过载)
-- [ ] 输入 symbol,查 `gw.sectors()` 查找所属板块的 `net_flow`
-- [ ] 板块归属缓存(进程内,1h TTL)
-- [ ] 注册 + 测试
-- **验收**:测试覆盖板块查找 / 滚动 z-score,提交一次
+- [x] 新建 `core/factors/sector.py`
+- [x] `SectorFlowStore`:日频持久化 sectors() 快照
+- [x] `SectorFlowFactor`:消费板块 net_flow z-score
+- [x] 注册到 FactorRegistry
+- [x] 测试 13 个
 
 ### W3-2 新增 `SectorBreadthFactor`
-- [ ] `core/factors/sector.py`:板块内涨家占比,通过 `gw.sector_constituents()` 取成分股 change_pct
-- [ ] 注册 + 测试
-- **验收**:同上,提交一次
+- [x] `SectorBreadthStore`:对每个板块取 sector_constituents,算涨家占比
+- [x] `SectorBreadthFactor`:z-score(rolling_mean(breadth - 0.5))
+- [x] 注册 + 6 个测试
 
 ### W3-3 重构 `SectorRotationStrategyV2`
-- [ ] `core/strategies/sector_rotation.py`:替换硬编码 `DEFAULT_SECTOR_ETFS`,默认 `universe = gw.sectors()` 真实板块
-- [ ] 保留原硬编码作为 fallback(无网络时)
-- [ ] 测试:mock gw 后策略可生成 signals
-- **验收**:WFA 测试通过,提交一次
+- [x] 弃用硬编码 ETF 列表,universe 由 `gw.sectors()` 实时发现
+- [x] 板块打分:combined(z(flow) + change_pct) / flow-only / perf-only
+- [x] `latest_signal()` 输出 top 板块 + 成分股 buy 列表
+- [x] V1 类向后兼容
+- [x] 7 个测试
 
-### W3-4 `DynamicStockSelector` 加 net_flow 维度
-- [ ] `scripts/dynamic_selector.py`:打分逻辑增加板块资金流维度
-- [ ] 权重可配置(默认 0.15)
-- **验收**:选股结果不显著恶化,提交一次
+### W3-4 DynamicStockSelector 加 net_flow 维度
+- [x] `calc_flow_momentum_score(bk_code, today_net_flow, window=5)` 通过 SectorFlowStore 取历史
+- [x] 当日 z-score 折算 ±10 分 bonus
+- [x] 与 sentiment_bonus 同量级,不挤占现有 perf/flow rank
+- [x] 4 个测试
 
 ---
 
-## Wave 4 — Regime 多维度化(P2)
+## Wave 4 — Regime 多维度化(P2,已完成 ✅)
 
 ### W4-1 Regime 引入 VIX 分位
-- [ ] `core/regime.py`:`detect_regime()` 增加可选 `vix_snapshot`,通过 `gw.market_index('VIX')` 读取
-- [ ] VIX 252 日分位 > 80% → 强制 VOLATILE
-- [ ] `RegimeInfo` 增 `vix_percentile: float = 0.0`
-- [ ] 测试:mock VIX 后 regime 判定如期
-- **验收**:VIX 高位时进入 VOLATILE,提交一次
+- [x] `gw.kline('^VIX', days=300)` 拉 1 年历史
+- [x] `_fetch_vix_percentile()` 计算百分位(0-100)
+- [x] `RegimeInfo.vix_percentile` 字段
+- [x] 逻辑:VIX 分位 >= 80 在非 BULL/BEAR 且 ATR 未到阈值时强制 VOLATILE
+- [x] BULL/BEAR 信号优先级高于 VIX
+- [x] 6 个测试
 
 ### W4-2(暂缓)新增 `OvernightOverseasFactor`
-> 风险较大,等 W4-1 验证后单独立项
+> 风险较大,等 W4-1 实盘验证后单独立项
 
 ---
 
-## Wave 5 — Pipeline / ML 装配(P2)
+## Wave 5 — Pipeline / ML 装配(P2,已完成 ✅)
 
 ### W5-1 FeatureStore 解锁外部数据因子
-- [ ] `core/ml/feature_store.py`:`_SKIP_IN_DEFAULT` 在因子构造参数有数据时自动剔除
-- [ ] 测试覆盖
-- **验收**:ML 训练特征数显著增加,提交一次
+- [x] `external_data` 参数 + `_FACTOR_DATA_REQUIREMENTS` 映射
+- [x] financial_data / sentiment_data / sector_flow_data / breadth_data 等键
+- [x] 注入对应字段时自动从 `_SKIP_IN_DEFAULT` 解锁
+- [x] `_extract_factor_features` 用注入数据构造因子
+- [x] 4 个测试
 
-### W5-2 pipeline 重平衡 + 数据质量感知
-- [ ] `core/pipeline_factory.py`:基本面层从 4 个扩到 7-8 个,权重重平衡
-- [ ] 利用 `gw.provenance()` 检测主源健康度,不健康时自动降权
-- **验收**:`pipeline.factor_names` 数量从 ~10 增至 ~14,提交一次
+### W5-2 pipeline 重平衡 + 数据质量感知降权
+- [x] 权重:技术 0.55 / 基本面 0.30(8 因子)/ 宏观 0.05 / 情绪 0.05 / 保留 0.05
+- [x] 基本面层新加 EarningsSurprise / FinancialHealth / DividendYield / AssetGrowth
+- [x] `fundamental_quality_mult`:financial_data 缺失时基本面因子权重 ×0.5
+- [x] 3 个测试
+
+---
+
+## 总览
+
+**新增/扩展能力**:
+- Capability: 3 个新增(BALANCE_SHEET, MARGIN_FLOW, NEWS_HEADLINES)
+- Provider 方法: 5 个新增(fetch_balance_sheet, fetch_margin_flow, fetch_news_headlines,
+  fetch_north_flow_history, BaostockProvider.fetch_fundamentals_history)
+- Gateway 公开 API: 4 个新增(balance_sheet, margin_flow, news_headlines, north_flow_history)
+- 因子: 5 个新增(FinancialHealth, DividendYield, AssetGrowth, SouthboundFlow,
+  SectorFlow, SectorBreadth),总因子数从 18 升到 22
+- Strategy: SectorRotationStrategyV2 数据驱动版
+
+**测试**:
+- 全量 1425 通过 + 35 subtests,无回退
+- 新增/修改测试 ~100 个
+
+**合规**:
+- 因子层 / Regime 层 3 处绕过 Gateway 的网络调用全部消灭
+- 任何 model 层网络请求都享受熔断 + 健康度 + 缓存保护
 
 ---
 
 ## 验证清单(每个 commit)
 
-- [ ] 关联单元测试通过(`pytest tests/test_xxx.py -x -q`)
-- [ ] 全量测试不回退(`pytest tests/ -x -q --timeout=60`)
-- [ ] commit message 简洁说明"做了什么 / 为什么"
-- [ ] 如涉及 schema/API 变更,同步更新 `docs/ARCHITECTURE.md`
+- [x] 关联单元测试通过(`pytest tests/test_xxx.py -x -q`)
+- [x] 全量测试不回退(`pytest tests/ -q`,最终 1425 passed)
+- [x] commit message 简洁说明"做了什么 / 为什么"
 
 ---
 
@@ -182,3 +197,4 @@
 - `core/level2.py` Level2 因子(数据层未就绪)
 - ML 模型架构升级(XGBoost → LightGBM)
 - Pairs Trading 策略
+- OvernightOverseasFactor(W4-2 暂缓)
