@@ -172,10 +172,13 @@ class EarningsSurpriseFactor(Factor):
     财报超预期因子（Earnings Surprise）。
 
     由于 A 股无统一分析师预期数据库（Bloomberg/Wind 收费），
-    此处用 EPS 自身动量代理：
+    此处用 EPS 自身动量代理。两种数据路径(W1-4 起):
 
-    因子值 = (EPS_ttm_t - EPS_ttm_{t-252}) / |EPS_ttm_{t-252}|
-           = EPS 同比增长率
+    优先(数据源直接提供 eps_yoy 时):
+      因子值 = eps_yoy / 100   (AkShare EPSJBHBZC 已是百分比)
+
+    Fallback(无 eps_yoy 时):
+      因子值 = (EPS_ttm_t - EPS_ttm_{t-252}) / |EPS_ttm_{t-252}|
 
     正值：EPS 同比增长（超预期方向）→ BUY
     负值：EPS 同比下滑（低于预期）→ SELL
@@ -183,7 +186,7 @@ class EarningsSurpriseFactor(Factor):
     Parameters
     ----------
     financial_data : FundamentalDataManager.get_fundamentals() 的返回值
-    diff_days      : 同比窗口（默认 252 天 ≈ 1 年）
+    diff_days      : 同比窗口（默认 252 天 ≈ 1 年，仅 fallback 路径使用）
     """
 
     name = 'EarningsSurprise'
@@ -202,6 +205,14 @@ class EarningsSurpriseFactor(Factor):
         self.symbol = symbol
 
     def evaluate(self, data: pd.DataFrame) -> pd.Series:
+        # 优先路径:直接消费数据源提供的 eps_yoy(%)
+        eps_yoy_direct = _align_financial(self.financial_data, data.index, 'eps_yoy')
+        if not eps_yoy_direct.isna().all():
+            # eps_yoy 是百分比(20.0 = 20%),除以 100 与 fallback 自算口径一致
+            yoy = (eps_yoy_direct / 100.0).clip(-1.0, 3.0)
+            return self.normalize(yoy.fillna(0.0))
+
+        # Fallback:从 eps_ttm 自算同比
         eps = _align_financial(self.financial_data, data.index, 'eps_ttm')
 
         if eps.isna().all():

@@ -237,6 +237,54 @@ class TestEarningsSurpriseFactor(unittest.TestCase):
         f = registry.create('EarningsSurprise')
         self.assertEqual(f.name, 'EarningsSurprise')
 
+    # ── W1-4: 优先消费 eps_yoy 直接字段 ────────────────────────────────────
+
+    def test_eps_yoy_direct_takes_priority(self):
+        """有 eps_yoy 列时,优先消费,不再走自算路径。"""
+        from core.factors.fundamental import EarningsSurpriseFactor
+        price = _make_price_df(300)
+        fin = _make_financial_df(300)
+        # eps_yoy 从低升至高 — 增长加速,因子应整体偏正(末段比头段大)
+        fin['eps_yoy'] = np.linspace(5.0, 50.0, 300)
+        # 同时把 eps_ttm 设成下降趋势(自算路径会得到负值)
+        fin['eps_ttm'] = np.linspace(3.0, 1.0, 300)
+
+        f = EarningsSurpriseFactor(financial_data=fin, diff_days=120)
+        result = f.evaluate(price)
+        # 直接路径下,末端 z-score 应显著大于前段
+        self.assertGreater(result.iloc[200:].mean(), result.iloc[:100].mean(),
+                           "应优先用 eps_yoy 直接字段,而非 eps_ttm 自算")
+        # 关键反向校验:若走 eps_ttm 自算,末端应为负;直接路径下末端为正
+        self.assertGreater(result.iloc[-30:].mean(), 0)
+
+    def test_eps_yoy_all_nan_falls_back_to_self_compute(self):
+        """eps_yoy 列存在但全 NaN 时应回退到 eps_ttm 自算。"""
+        from core.factors.fundamental import EarningsSurpriseFactor
+        price = _make_price_df(300)
+        fin = _make_financial_df(300)
+        fin['eps_yoy'] = np.nan
+        fin['eps_ttm'] = np.linspace(1.0, 3.0, 300)  # +200% growth
+
+        f = EarningsSurpriseFactor(financial_data=fin, diff_days=120)
+        result = f.evaluate(price)
+        # 走 fallback 时应为正
+        self.assertGreater(result.iloc[150:].mean(), 0)
+
+    def test_eps_yoy_negative_value(self):
+        """eps_yoy 持续下滑 → 末段因子值显著低于前段。"""
+        from core.factors.fundamental import EarningsSurpriseFactor
+        price = _make_price_df(300)
+        fin = _make_financial_df(300)
+        # 从正同比逐渐变到大幅负同比
+        fin['eps_yoy'] = np.linspace(20.0, -50.0, 300)
+        fin['eps_ttm'] = 1.0     # 自算路径下没信号(常数)
+
+        f = EarningsSurpriseFactor(financial_data=fin, diff_days=120)
+        result = f.evaluate(price)
+        self.assertLess(result.iloc[-30:].mean(), result.iloc[:50].mean())
+        # 末端应为负
+        self.assertLess(result.iloc[-30:].mean(), 0)
+
 
 # ---------------------------------------------------------------------------
 # RevenueGrowthFactor
