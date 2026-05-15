@@ -168,8 +168,9 @@ def _auto_register() -> None:
     registry.register(SouthboundFlowFactor, default_params={'window': 5})
 
     # 板块因子(W3-1 / W3-2)
-    from core.factors.sector import SectorFlowFactor
+    from core.factors.sector import SectorFlowFactor, SectorBreadthFactor
     registry.register(SectorFlowFactor, default_params={'window': 5})
+    registry.register(SectorBreadthFactor, default_params={'window': 5})
 
     # ML 预测因子（B-1）
     from core.ml.price_predictor import MLPredictionFactor

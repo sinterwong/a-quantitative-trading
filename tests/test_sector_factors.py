@@ -197,5 +197,88 @@ class TestSectorFlowStore(unittest.TestCase):
         self.assertTrue(ser.empty)
 
 
+class TestSectorBreadthFactor(unittest.TestCase):
+    """W3-2: SectorBreadthFactor 板块内涨家占比。"""
+
+    def setUp(self):
+        self.price = _make_price_df(60)
+
+    def test_no_data_returns_zero(self):
+        from core.factors.sector import SectorBreadthFactor
+        f = SectorBreadthFactor()
+        result = f.evaluate(self.price)
+        self.assertTrue((result == 0).all())
+
+    def test_high_breadth_positive(self):
+        """breadth 持续高(>0.7)→ 因子值末段偏正。"""
+        from core.factors.sector import SectorBreadthFactor
+        n = 60
+        bd = pd.DataFrame({
+            'breadth': np.linspace(0.3, 0.9, n),
+        }, index=self.price.index)
+        f = SectorBreadthFactor(breadth_data=bd, window=5)
+        result = f.evaluate(self.price)
+        self.assertGreater(result.iloc[-10:].mean(), result.iloc[:20].mean())
+
+    def test_low_breadth_negative(self):
+        from core.factors.sector import SectorBreadthFactor
+        n = 60
+        bd = pd.DataFrame({
+            'breadth': np.linspace(0.8, 0.1, n),
+        }, index=self.price.index)
+        f = SectorBreadthFactor(breadth_data=bd, window=5)
+        result = f.evaluate(self.price)
+        self.assertLess(result.iloc[-10:].mean(), result.iloc[:20].mean())
+
+    def test_registry_create(self):
+        from core.factor_registry import registry
+        f = registry.create('SectorBreadth')
+        self.assertEqual(f.name, 'SectorBreadth')
+
+
+class TestSectorBreadthStore(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpfile = tempfile.NamedTemporaryFile(
+            suffix='.parquet', delete=False,
+        ).name
+        os.unlink(self.tmpfile)
+
+    def tearDown(self):
+        if os.path.exists(self.tmpfile):
+            os.unlink(self.tmpfile)
+
+    def test_update_today_persists(self):
+        from core.factors.sector import SectorBreadthStore
+        from core.data_gateway.schemas import SectorConstituent
+
+        # 板块 BK0001 有 3 个成分股,2 个上涨 → breadth = 2/3
+        gw_mock = MagicMock()
+        gw_mock.sector_constituents.return_value = [
+            SectorConstituent(symbol='sh1', name='A', price=10, change_pct=1.5),
+            SectorConstituent(symbol='sh2', name='B', price=10, change_pct=-0.5),
+            SectorConstituent(symbol='sh3', name='C', price=10, change_pct=2.0),
+        ]
+
+        store = SectorBreadthStore(parquet_path=self.tmpfile)
+        with patch('core.data_gateway.get_gateway', return_value=gw_mock):
+            store.update_today(['BK0001'], constituent_limit=10)
+
+        df = store.read()
+        self.assertFalse(df.empty)
+        self.assertAlmostEqual(df['BK0001'].iloc[-1], 2/3, places=3)
+
+    def test_series_for(self):
+        from core.factors.sector import SectorBreadthStore
+        df_init = pd.DataFrame({'BK0001': [0.4, 0.5, 0.7]},
+                               index=pd.to_datetime(
+                                   ['2026-05-12', '2026-05-13', '2026-05-14']))
+        df_init.to_parquet(self.tmpfile)
+        store = SectorBreadthStore(parquet_path=self.tmpfile)
+        ser = store.series_for('BK0001')
+        self.assertEqual(len(ser), 3)
+        self.assertEqual(ser.iloc[-1], 0.7)
+
+
 if __name__ == '__main__':
     unittest.main()

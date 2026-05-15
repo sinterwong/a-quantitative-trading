@@ -197,4 +197,168 @@ class SectorFlowFactor(Factor):
         return []
 
 
-__all__ = ['SectorFlowStore', 'SectorFlowFactor']
+_SECTOR_BREADTH_PARQUET = os.path.join(_SECTOR_DIR, 'sector_breadth.parquet')
+
+
+class SectorBreadthStore:
+    """
+    板块内涨家占比日频持久化层(W3-2)。
+
+    每次 update() 对每个板块调用 gw.sector_constituents() 取成分股,
+    计算 change_pct > 0 的比例,作为板块 breadth 写入 Parquet。
+    """
+
+    def __init__(self, parquet_path: str = _SECTOR_BREADTH_PARQUET):
+        self._path = parquet_path
+
+    def read(self) -> pd.DataFrame:
+        if not os.path.exists(self._path):
+            return pd.DataFrame()
+        try:
+            return pd.read_parquet(self._path)
+        except Exception as exc:
+            logger.warning('SectorBreadthStore read failed: %s', exc)
+            return pd.DataFrame()
+
+    def update_today(self, sector_codes: List[str], constituent_limit: int = 50) -> None:
+        """对一组板块,取成分股 change_pct > 0 比例,写入今日快照。"""
+        try:
+            from core.data_gateway import get_gateway
+            gw = get_gateway()
+        except Exception as exc:
+            logger.warning('SectorBreadthStore update_today failed: %s', exc)
+            return
+
+        today = pd.Timestamp(datetime.now().date())
+        row: Dict[str, float] = {}
+        for code in sector_codes:
+            try:
+                consts = gw.sector_constituents(code, limit=constituent_limit)
+            except Exception as exc:
+                logger.debug('sector_constituents(%s) failed: %s', code, exc)
+                continue
+            if not consts:
+                continue
+            up_count = sum(1 for c in consts if c.change_pct > 0)
+            breadth = up_count / len(consts) if consts else 0.0
+            row[code] = float(breadth)
+
+        if not row:
+            return
+
+        new_row = pd.DataFrame(row, index=[today])
+        existing = self.read()
+        if existing.empty:
+            merged = new_row
+        else:
+            existing = existing[existing.index != today]
+            merged = pd.concat([existing, new_row]).sort_index()
+
+        try:
+            merged.to_parquet(self._path, engine='pyarrow', compression='snappy')
+        except Exception as exc:
+            logger.warning('SectorBreadthStore write failed: %s', exc)
+
+    def series_for(self, sector_code: str) -> pd.Series:
+        df = self.read()
+        if df.empty or sector_code not in df.columns:
+            return pd.Series(dtype=float)
+        return df[sector_code].dropna()
+
+
+class SectorBreadthFactor(Factor):
+    """
+    板块内涨家占比因子(W3-2)。
+
+    因子值 = z-score(rolling_mean(breadth, window)) - 中性偏置(0.5)
+    breadth ∈ [0, 1],>0.5 表示板块多数股上涨(广度强)。
+
+    解读:
+      - z > threshold:板块广度持续扩张 → 板块情绪强 → BUY
+      - z < -threshold:广度收缩 → 板块情绪弱 → SELL
+
+    Parameters
+    ----------
+    sector_code : 板块代码(从 SectorBreadthStore 读历史)
+    breadth_data : pd.DataFrame, optional
+        显式注入(DatetimeIndex,列 breadth,值 0~1)。
+    window : 平滑窗口(默认 5 天)
+    """
+
+    name = 'SectorBreadth'
+    category = FactorCategory.SENTIMENT
+
+    def __init__(
+        self,
+        sector_code: str = '',
+        breadth_data: Optional[pd.DataFrame] = None,
+        window: int = 5,
+        threshold: float = 1.0,
+        symbol: str = '',
+    ):
+        self.sector_code = sector_code
+        self.breadth_data = breadth_data
+        self.window = window
+        self.threshold = threshold
+        self.symbol = symbol
+
+    def _get_breadth_series(self) -> Optional[pd.Series]:
+        if self.breadth_data is not None and 'breadth' in self.breadth_data.columns:
+            return self.breadth_data['breadth']
+        if self.sector_code:
+            try:
+                return SectorBreadthStore().series_for(self.sector_code)
+            except Exception as e:
+                logger.warning('SectorBreadthFactor read store failed: %s', e)
+        return None
+
+    def evaluate(self, data: pd.DataFrame) -> pd.Series:
+        breadth = self._get_breadth_series()
+        if breadth is None or breadth.empty:
+            return pd.Series(0.0, index=data.index)
+
+        aligned = breadth.reindex(data.index, method='ffill')
+        if aligned.isna().all():
+            return pd.Series(0.0, index=data.index)
+
+        # 中心化到 0(0.5 = 中性)
+        centered = aligned.fillna(0.5) - 0.5
+        smoothed = centered.rolling(self.window, min_periods=1).mean()
+        return self.normalize(smoothed)
+
+    def signals(
+        self,
+        factor_values: pd.Series,
+        price: float,
+        threshold: float = 1.0,
+    ) -> List[Signal]:
+        latest = factor_values.iloc[-1]
+        if latest > threshold:
+            return [Signal(
+                timestamp=datetime.now(), symbol=self.symbol,
+                direction='BUY',
+                strength=min((latest - threshold) / threshold, 1.0),
+                factor_name=self.name, price=price,
+                metadata={
+                    'sector_code': self.sector_code,
+                    'breadth_zscore': round(float(latest), 3),
+                },
+            )]
+        if latest < -threshold:
+            return [Signal(
+                timestamp=datetime.now(), symbol=self.symbol,
+                direction='SELL',
+                strength=min((abs(latest) - threshold) / threshold, 1.0),
+                factor_name=self.name, price=price,
+                metadata={
+                    'sector_code': self.sector_code,
+                    'breadth_zscore': round(float(latest), 3),
+                },
+            )]
+        return []
+
+
+__all__ = [
+    'SectorFlowStore', 'SectorFlowFactor',
+    'SectorBreadthStore', 'SectorBreadthFactor',
+]
