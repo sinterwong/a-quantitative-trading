@@ -16,7 +16,7 @@ from core.data_gateway.gateway import DataGateway
 from core.data_gateway.health import HealthTracker
 from core.data_gateway.providers.base import Provider, ProviderError
 from core.data_gateway.schemas import (
-    Fundamentals, MarketIndexSnapshot, NorthFlow, Quote,
+    BalanceSheet, Fundamentals, MarketIndexSnapshot, NorthFlow, Quote,
     SectorConstituent, SectorRanking,
 )
 
@@ -43,6 +43,7 @@ class _FakeProvider(Provider):
         north_value: Optional[NorthFlow] = None,
         index_value: Optional[MarketIndexSnapshot] = None,
         macro_value: Optional[pd.DataFrame] = None,
+        balance_value: Optional[BalanceSheet] = None,
         raise_on: Optional[str] = None,
         field_authorities: Optional[Dict[Capability, Dict[str, float]]] = None,
     ):
@@ -59,6 +60,7 @@ class _FakeProvider(Provider):
         self._north = north_value
         self._index = index_value
         self._macro = macro_value if macro_value is not None else pd.DataFrame()
+        self._balance = balance_value
         self._raise_on = raise_on
         self._authority = field_authorities or {}
         self.call_log: List[str] = []
@@ -124,6 +126,11 @@ class _FakeProvider(Provider):
         self.call_log.append(f"fetch_macro:{indicator}")
         self._maybe_raise("fetch_macro")
         return self._macro
+
+    def fetch_balance_sheet(self, symbol):
+        self.call_log.append(f"fetch_balance_sheet:{symbol}")
+        self._maybe_raise("fetch_balance_sheet")
+        return self._balance
 
 
 @pytest.fixture
@@ -428,6 +435,64 @@ def test_fundamentals_merge(gw):
     f = gw.fundamentals("sh600519")
     assert f.pe_ttm == 20
     assert f.roe_ttm == 15
+
+
+# ── balance_sheet ───────────────────────────────────────────────────────────
+
+
+def test_balance_sheet_basic_route(gw):
+    """单 provider 提供 balance_sheet 即返回。"""
+    p = _FakeProvider(
+        "baostock_mock",
+        capabilities=(Capability.BALANCE_SHEET,),
+        markets=(Market.A,),
+        balance_value=BalanceSheet(
+            symbol="sh600519", debt_to_equity=35.2,
+            current_ratio=2.1, quick_ratio=1.8,
+        ),
+    )
+    gw.register_provider(p)
+    bs = gw.balance_sheet("sh600519")
+    assert bs is not None
+    assert bs.debt_to_equity == 35.2
+    assert bs.current_ratio == 2.1
+
+
+def test_balance_sheet_cache_hit_avoids_provider(gw):
+    p = _FakeProvider(
+        "p", capabilities=(Capability.BALANCE_SHEET,), markets=(Market.A,),
+        balance_value=BalanceSheet(symbol="sh600519", debt_to_equity=10),
+    )
+    gw.register_provider(p)
+    gw.balance_sheet("sh600519")
+    gw.balance_sheet("sh600519")  # 第二次命中缓存
+    assert len([c for c in p.call_log if "fetch_balance_sheet" in c]) == 1
+
+
+def test_balance_sheet_no_provider_returns_none(gw):
+    """无支持 BALANCE_SHEET 的 provider 时返回 None。"""
+    p = _FakeProvider("only_quote", capabilities=(Capability.QUOTE,))
+    gw.register_provider(p)
+    assert gw.balance_sheet("sh600519") is None
+
+
+def test_balance_sheet_merge_across_providers(gw):
+    """两家都给 balance_sheet 时,字段级合并。"""
+    a = _FakeProvider(
+        "A", capabilities=(Capability.BALANCE_SHEET,), markets=(Market.A,),
+        priority_hint=0.9,
+        balance_value=BalanceSheet(symbol="x", debt_to_equity=30, current_ratio=0),
+    )
+    b = _FakeProvider(
+        "B", capabilities=(Capability.BALANCE_SHEET,), markets=(Market.A,),
+        priority_hint=0.9,
+        balance_value=BalanceSheet(symbol="x", debt_to_equity=0, current_ratio=2.5),
+    )
+    gw.register_provider(a)
+    gw.register_provider(b)
+    bs = gw.balance_sheet("sh600519")
+    assert bs.debt_to_equity == 30
+    assert bs.current_ratio == 2.5
 
 
 # ── 全局 singleton ──────────────────────────────────────────────────────────

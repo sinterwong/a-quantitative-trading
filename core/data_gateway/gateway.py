@@ -38,7 +38,7 @@ from .health import HealthTracker, get_health_tracker
 from .merge import Candidate, merge_field_level
 from .providers.base import Provider, ProviderError
 from .schemas import (
-    Fundamentals, MarketIndexSnapshot, NorthFlow,
+    BalanceSheet, Fundamentals, MarketIndexSnapshot, NorthFlow,
     Quote, SectorConstituent, SectorRanking,
 )
 from .symbols import detect_market
@@ -52,6 +52,7 @@ _DEFAULT_TTL = {
     Capability.QUOTE: 30.0,
     Capability.FUNDAMENTALS: 60.0,
     Capability.FUNDAMENTALS_HISTORY: 86400.0,  # 季度数据，24h 缓存足够
+    Capability.BALANCE_SHEET: 86400.0,         # 季报数据，24h 缓存足够
     Capability.SECTOR_RANKING: 3600.0,
     Capability.SECTOR_CONSTITUENTS: 60.0,
     Capability.NORTH_FLOW: 60.0,
@@ -478,6 +479,28 @@ class DataGateway:
         if not df.empty:
             self._cache.set(cache_key, df, _DEFAULT_TTL[Capability.MACRO])
         return df
+
+    def balance_sheet(self, symbol: str) -> Optional[BalanceSheet]:
+        """资产负债表快照(字段级合并多源)。
+
+        通过 DataGateway 统一路由，享受熔断 + 健康度 + 缓存保护。
+        当前实现源:BaostockProvider(A股)。
+        """
+        cache_key = f"balance_sheet:{symbol}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        market = detect_market(symbol)
+        merged, prov = self._merged_fetch(
+            Capability.BALANCE_SHEET, market, "fetch_balance_sheet",
+            ("symbol",),
+            symbol,
+        )
+        if merged is not None:
+            self._cache.set(cache_key, merged, _DEFAULT_TTL[Capability.BALANCE_SHEET])
+            self._last_provenance[cache_key] = prov
+        return merged
 
     def fundamentals_history(
         self, symbol: str, start: str | None = None, end: str | None = None,

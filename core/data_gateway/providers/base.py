@@ -18,6 +18,7 @@ import pandas as pd
 
 from ..capabilities import Capability, MacroIndicator, Market, ProviderCapability
 from ..schemas import (
+    BalanceSheet,
     Fundamentals,
     MarketIndexSnapshot,
     NorthFlow,
@@ -142,6 +143,17 @@ class Provider(ABC):
             ocf_to_profit 等。若无数据返回空 DataFrame。
         """
         return pd.DataFrame()
+
+    def fetch_balance_sheet(self, symbol: str) -> Optional[BalanceSheet]:
+        """资产负债表快照（最新一期）。
+
+        Returns
+        -------
+        BalanceSheet | None
+            含 debt_to_equity / current_ratio / quick_ratio 等。
+            None 表示本源不支持或无数据。
+        """
+        return None
 
 
 __all__ = ["Provider", "ProviderError"]
