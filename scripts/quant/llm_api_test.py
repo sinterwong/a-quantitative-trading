@@ -28,7 +28,7 @@ from backend.services.llm import LLMService
 from backend.services.llm.providers import MiniMaxProvider
 
 
-def test_provider_init():
+def _provider_init():
     print("[1] Provider 初始化...")
     prov = MiniMaxProvider()
     print(f"  model={prov.model}")
@@ -38,7 +38,7 @@ def test_provider_init():
     return prov
 
 
-def test_llm_service(prov):
+def _llm_service(prov):
     print("\n[2] LLMService 初始化...")
     llm = LLMService(prov, cache_dir=".llm_cache")
     print(f"  provider={llm.provider.name}")
@@ -48,7 +48,7 @@ def test_llm_service(prov):
     return llm
 
 
-def test_news_sentiment(llm):
+def _news_sentiment(llm):
     print("\n[3] 新闻情感分析（同步）...")
     result = llm.analyze_news(
         "央行宣布下调存款准备金率0.5个百分点，释放长期资金约1万亿元",
@@ -65,7 +65,7 @@ def test_news_sentiment(llm):
     return result
 
 
-def test_cache(llm):
+def _cache(llm):
     print("\n[4] 缓存测试...")
     text = "证监会发布《上市公司信息披露管理办法》"
     r1 = llm.analyze_news(text, timeout=15)
@@ -76,7 +76,7 @@ def test_cache(llm):
     print("  OK")
 
 
-def test_policy_analysis(llm):
+def _policy_analysis(llm):
     print("\n[5] 政策解读...")
     result = llm.analyze_policy(
         "国务院办公厅发布《关于进一步优化营商环境的意见》，"
@@ -93,7 +93,7 @@ def test_policy_analysis(llm):
     print("  OK")
 
 
-def test_batch_news(llm):
+def _batch_news(llm):
     print("\n[6] 批量新闻分析...")
     news_list = [
         {"title": "宁德时代发布一季度财报，净利润同比增长超200%"},
@@ -113,12 +113,12 @@ def main():
     print("=" * 60)
 
     try:
-        prov = test_provider_init()
-        llm = test_llm_service(prov)
-        test_news_sentiment(llm)
-        test_cache(llm)
-        test_policy_analysis(llm)
-        test_batch_news(llm)
+        prov = _provider_init()
+        llm = _llm_service(prov)
+        _news_sentiment(llm)
+        _cache(llm)
+        _policy_analysis(llm)
+        _batch_news(llm)
 
         print("\n" + "=" * 60)
         print("  All tests passed!")

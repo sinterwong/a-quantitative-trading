@@ -130,12 +130,12 @@ def test_data_models():
     print("  OK NewsSentiment dataclass OK")
 
     pa = PolicyAnalysis(
-        sentiment="bullish",
+        market_sentiment="bullish",
         policy_type="产业政策",
         affected_sectors=["新能源"],
         implementation_timeline="3个月内",
-        market_impact_score=0.75,
-        key_signal="新能源补贴延续",
+        confidence=0.75,
+        key_takeaway="新能源补贴延续",
     )
     assert pa.policy_type == "产业政策"
     print("  OK PolicyAnalysis dataclass OK")
