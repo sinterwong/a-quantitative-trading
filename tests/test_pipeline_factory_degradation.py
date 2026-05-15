@@ -121,5 +121,54 @@ class TestPipelineDegradation(unittest.TestCase):
         self.assertEqual(len(ok), 2)
 
 
+class TestFundamentalWhitelistExpansion(unittest.TestCase):
+    """W1-3: pipeline_factory 基本面白名单扩展到 12 列。"""
+
+    def test_whitelist_includes_new_fields(self):
+        """build_pipeline 应把 eps_yoy/asset_yoy/debt_to_equity 等新字段传给因子。"""
+        from core.pipeline_factory import build_pipeline
+        from unittest.mock import patch, MagicMock
+
+        # mock FundamentalDataManager 返回包含所有新字段的 DataFrame
+        full_cols = [
+            'roe_ttm', 'eps_ttm', 'revenue_yoy', 'profit_yoy',
+            'eps_yoy', 'asset_yoy', 'ocf_to_profit',
+            'pe_ttm', 'pb', 'dividend_yield',
+            'debt_to_equity', 'current_ratio', 'quick_ratio',
+            'unrelated_column',  # 不在白名单
+        ]
+        idx = pd.bdate_range('2024-01-01', periods=30)
+        fake_fin = pd.DataFrame({c: [1.0] * len(idx) for c in full_cols}, index=idx)
+
+        captured: dict = {}
+        original_safe_add = None
+
+        # 拦截 _safe_add 看 params 传了什么
+        import core.pipeline_factory as pf
+        original_safe_add = pf._safe_add
+
+        def spying_safe_add(pipeline, factor_cls, *, weight, params=None, label=''):
+            if params and 'financial_data' in params:
+                captured.setdefault('fin_cols', set()).update(
+                    params['financial_data'].columns
+                )
+            return original_safe_add(
+                pipeline, factor_cls, weight=weight, params=params, label=label,
+            )
+
+        with patch.object(pf, '_safe_add', side_effect=spying_safe_add):
+            with patch('core.fundamental_data.FundamentalDataManager.get_fundamentals',
+                       return_value=fake_fin):
+                build_pipeline(symbol='000001.SZ', strict=False)
+
+        fin_cols = captured.get('fin_cols', set())
+        # 关键字段应在
+        for c in ('eps_yoy', 'asset_yoy', 'debt_to_equity',
+                  'current_ratio', 'quick_ratio', 'dividend_yield'):
+            self.assertIn(c, fin_cols, f"{c} 未被白名单纳入")
+        # 非白名单字段应被过滤
+        self.assertNotIn('unrelated_column', fin_cols)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -113,8 +113,19 @@ def build_pipeline(symbol: str = '', strict: bool = True):
                 fin_df = mgr.get_fundamentals(symbol, start='2023-01-01')
                 if fin_df is not None and not fin_df.empty:
                     # 截取所需列（FundamentalDataManager 已完成 ffill 日频化）
-                    available = ['roe_ttm', 'eps_ttm', 'revenue_yoy', 'profit_yoy',
-                                 'ocf_to_profit', 'pe_ttm', 'pb']
+                    # 12 列白名单:
+                    #   利润表 - roe_ttm/eps_ttm/revenue_yoy/profit_yoy
+                    #   成长   - eps_yoy/asset_yoy (W1-1)
+                    #   现金流 - ocf_to_profit
+                    #   估值   - pe_ttm/pb/dividend_yield
+                    #   资产负债 - debt_to_equity/current_ratio/quick_ratio (W1-2)
+                    available = [
+                        'roe_ttm', 'eps_ttm', 'revenue_yoy', 'profit_yoy',
+                        'eps_yoy', 'asset_yoy',
+                        'ocf_to_profit',
+                        'pe_ttm', 'pb', 'dividend_yield',
+                        'debt_to_equity', 'current_ratio', 'quick_ratio',
+                    ]
                     financial_data = fin_df[[c for c in available if c in fin_df.columns]]
             except Exception as exc:
                 logger.warning('FundamentalDataManager 获取 %s 失败: %s', symbol, exc)
