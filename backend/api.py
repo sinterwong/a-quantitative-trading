@@ -1250,57 +1250,11 @@ def monitor_status():
 
 @app.route('/risk/status', methods=['GET'])
 def risk_status():
-    """
-    GET /risk/status — 风控状态查询。
-    返回：组合敞口、板块集中度、ATR 止损触发状态、回撤水平。
-    """
-    svc = get_svc()
+    """GET /risk/status — 风控快照（组合敞口、板块集中度、回撤、Kelly）。"""
+    from core.use_cases.risk_snapshot import get_risk_snapshot
     from main import get_monitor
-    monitor = get_monitor()
-
-    positions = svc.get_positions()
-    summary = svc.get_portfolio_summary(refresh_prices_now=True)
-
-    # 板块集中度
-    sector_exposure = {}
-    total_market_value = 0
-    for p in positions:
-        mv = p.get('shares', 0) * p.get('current_price', 0)
-        total_market_value += mv
-        sector = p.get('sector', 'unknown')
-        sector_exposure[sector] = sector_exposure.get(sector, 0) + mv
-    if total_market_value > 0:
-        sector_exposure = {k: round(v / total_market_value, 4)
-                           for k, v in sector_exposure.items()}
-
-    # 回撤水平
-    dd_warn = 0.0
-    dd_stop = 0.0
-    peak_equity = 0.0
-    current_equity = summary.get('total_equity', 0)
-    if monitor:
-        peak_equity = monitor._peak_equity
-        dd_warn = monitor._dd_warn
-        dd_stop = monitor._dd_stop
-        if peak_equity > 0:
-            current_dd = 1 - (current_equity / peak_equity)
-        else:
-            current_dd = 0.0
-    else:
-        current_dd = 0.0
-
-    return ok(
-        total_equity=round(current_equity, 2),
-        peak_equity=round(peak_equity, 2),
-        current_drawdown=round(current_dd, 4),
-        dd_warn_threshold=dd_warn,
-        dd_stop_threshold=dd_stop,
-        risk_warn_fired=monitor._risk_warn_fired if monitor else False,
-        risk_stop_fired=monitor._risk_stop_fired if monitor else False,
-        kelly_pct=round(monitor._kelly_pct, 4) if monitor else None,
-        position_count=len(positions),
-        sector_exposure=sector_exposure,
-    )
+    snap = get_risk_snapshot(get_svc(), monitor=get_monitor())
+    return ok(**snap.to_dict())
 
 
 # ============================================================
@@ -1309,56 +1263,12 @@ def risk_status():
 
 @app.route('/metrics', methods=['GET'])
 def metrics_endpoint():
-    """
-    暴露 Prometheus 格式监控指标。
-
-    指标包含：
-      trading_net_value         — 组合净值
-      trading_total_pnl_yuan    — 累计浮动盈亏
-      trading_n_positions       — 持仓数量
-      trading_cash_yuan         — 可用现金
-      trading_health_status     — 策略健康状态（0=OK,1=WARN,2=CRITICAL）
-      trading_api_requests_total — API 请求计数
-      trading_api_errors_total  — API 错误计数
-      trading_factor_ic         — 各因子最新 IC 值
-
-    Prometheus 配置示例（prometheus.yml）：
-      scrape_configs:
-        - job_name: 'trading'
-          static_configs:
-            - targets: ['localhost:5555']
-          metrics_path: /metrics
-    """
+    """GET /metrics — Prometheus 格式监控指标（in-process 刷新，无自调 HTTP）。"""
     try:
         from core.metrics import get_registry
         reg = get_registry()
-
-        # 从本地 portfolio 数据刷新指标
-        try:
-            positions = _svc.get_positions()
-            cash = _svc.get_cash()
-            total_pnl = sum(
-                p.get('unrealized_pnl', 0.0)
-                for p in (positions if isinstance(positions, list) else [])
-            )
-            n_pos = len([p for p in (positions if isinstance(positions, list) else [])
-                         if p.get('shares', 0) > 0])
-            total_val = cash + sum(
-                float(p.get('shares', 0)) * float(p.get('current_price', 0.0))
-                for p in (positions if isinstance(positions, list) else [])
-            )
-            net_val = total_val / max(_svc.get_initial_capital() if hasattr(_svc, 'get_initial_capital') else total_val, 1.0)
-            reg.update_from_portfolio(
-                net_value=net_val,
-                total_pnl=float(total_pnl),
-                n_positions=n_pos,
-                cash=float(cash),
-            )
-        except Exception:
-            pass   # 静默降级，仍返回已有指标
-
-        output = reg.generate()
-        return output, 200, {'Content-Type': reg.content_type}
+        reg.refresh_from_service(get_svc())
+        return reg.generate(), 200, {'Content-Type': reg.content_type}
     except Exception as e:
         return f'# metrics error: {e}\n', 500, {'Content-Type': 'text/plain'}
 
@@ -1413,55 +1323,16 @@ def northbound_flow():
 
 @app.route('/performance/summary', methods=['GET'])
 def performance_summary():
-    """
-    GET /performance/summary?year=2026&month=4&include_chart=1
-
-    聚合三大绩效函数，统一返回账户表现。
-    """
-    year  = request.args.get('year', type=int) or date.today().year
-    month = request.args.get('month', type=int) or date.today().month
-    incl_chart = request.args.get('include_chart', '1') == '1'
-
-    from services.performance import (
-        generate_monthly_report,
-        compute_trade_stats,
-        compute_max_drawdown,
+    """GET /performance/summary?year=2026&month=4&include_chart=1 — 月度绩效聚合。"""
+    from core.use_cases.performance_summary import (
+        PerformanceSummaryRequest, compute_performance_summary,
     )
-    from services.portfolio import PortfolioService
-
-    # 聚合三个计算函数的结果
-    report = generate_monthly_report(year=year, month=month, include_chart=incl_chart)
-
-    svc = get_svc()
-    trades = svc.get_orders(status='filled', limit=500)
-
-    # 只取当月交易
-    month_str = f"{year}-{month:02d}"
-    month_trades = [t for t in trades if (t.get('filled_at') or '').startswith(month_str)]
-
-    trade_stats = compute_trade_stats(trades)         # 全量
-    trade_stats_month = compute_trade_stats(month_trades)  # 当月
-
-    equity_series = report.get('equity_series', [])
-    max_dd = compute_max_drawdown(equity_series) if equity_series else {
-        'max_drawdown_pct': 0.0, 'peak_equity': 0,
-        'trough_equity': 0, 'peak_date': '', 'trough_date': '',
-    }
-
-    return ok(
-        period=f"{year}年{month}月",
-        year=year,
-        month=month,
-        returns=report.get('returns', {}),
-        summary=report.get('summary', {}),
-        trade_stats=trade_stats,
-        trade_stats_month=trade_stats_month,
-        max_drawdown=max_dd,
-        equity_curve=equity_series[-30:],
-        benchmark_curve=report.get('benchmark_curve', [])[-30:],
-        chart_base64=report.get('chart_base64') if incl_chart else None,
-        generated_at=report.get('generated_at'),
+    req = PerformanceSummaryRequest(
+        year=request.args.get('year', type=int) or 0,
+        month=request.args.get('month', type=int) or 0,
+        include_chart=request.args.get('include_chart', '1') == '1',
     )
+    return ok(**compute_performance_summary(req, get_svc()).to_dict())
 
 
 # ============================================================
@@ -1524,45 +1395,28 @@ def get_fundamentals(symbol):
 
 @app.route('/market/status', methods=['GET'])
 def market_status():
-    """
-    GET /market/status
-
-    返回当前市场是否开盘、交易时段、下次开/收时间。
-    """
+    """GET /market/status — 当前 A 股是否开盘、当前时段、下次切换时间。"""
     from services.intraday_monitor import is_market_open
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, time as dtime, date as ddate
 
     now = datetime.now()
     open_now = is_market_open(now)
-
-    # 判断当前时段
-    from datetime import time as dtime
     t = now.time()
-    if open_now:
-        if dtime(9, 30) <= t < dtime(11, 30):
-            session = 'morning'
-            next_change = now.replace(hour=11, minute=30, second=0, microsecond=0)
-        elif dtime(13, 0) <= t < dtime(15, 0):
-            session = 'afternoon'
-            next_change = now.replace(hour=15, minute=0, second=0, microsecond=0)
-        else:
-            session = 'closed'  # 盘后
-            next_change = None
+
+    if open_now and dtime(9, 30) <= t < dtime(11, 30):
+        session, next_change = 'morning', now.replace(hour=11, minute=30, second=0, microsecond=0)
+    elif open_now and dtime(13, 0) <= t < dtime(15, 0):
+        session, next_change = 'afternoon', now.replace(hour=15, minute=0, second=0, microsecond=0)
+    elif open_now:
+        session, next_change = 'closed', None
     else:
         session = 'closed'
-        # 下一个工作日 9:15（集合竞价）
         days_ahead = 1 if t >= dtime(15, 0) else 0
-        from datetime import date as ddate
-        next_open = (datetime.combine(ddate.today(), dtime(9, 15))
-                     + timedelta(days=days_ahead))
-        next_change = next_open.isoformat()
+        next_change = (datetime.combine(ddate.today(), dtime(9, 15))
+                       + timedelta(days=days_ahead)).isoformat()
 
-    return ok(
-        is_open=open_now,
-        session=session,
-        next_change=next_change,
-        server_time=now.isoformat(),
-    )
+    return ok(is_open=open_now, session=session, next_change=next_change,
+              server_time=now.isoformat())
 
 
 # ============================================================
@@ -1573,44 +1427,33 @@ def market_status():
 # P2: LLM Signal Review (独立信号审核)
 # ============================================================
 
-@app.route('/llm/analyze', methods=['POST'])
-@rate_limit(max_per_window=10, window_seconds=60)
-def llm_analyze():
-    """
-    POST /llm/analyze — LLM 独立信号审核
-
-    Body (required):
-        symbol, direction, signal, price, alert_reason
-    Body (optional):
-        entry_price, position_shares, position_pnl,
-        rsi_value, atr_ratio, market_regime, north_flow_yi,
-        cash, equity, other_positions, recent_trades, news_sentiment
-
-    返回: {approved, decision, reason, confidence, size_rec}
-    """
-    if (e := require_json()):
-        return e
-    body = request.json
-    required = ['symbol', 'direction', 'signal', 'price', 'alert_reason']
-    for f in required:
-        if f not in body:
-            return err(f'missing required field: {f}', 422)
-
-    # 尝试初始化 LLM provider
-    provider = None
+def _probe_llm_provider():
+    """尝试初始化 LLM provider；不可用返回 None。"""
     try:
         from services.llm.providers import MiniMaxProvider
         provider = MiniMaxProvider()
         provider.chat([{"role": "user", "content": "hi"}], max_tokens=5)
+        return provider
     except Exception:
-        pass
+        return None
 
+
+@app.route('/llm/analyze', methods=['POST'])
+@rate_limit(max_per_window=10, window_seconds=60)
+def llm_analyze():
+    """POST /llm/analyze — LLM 独立信号审核 (services.llm.service.signal_review 入口)。"""
+    if (e := require_json()):
+        return e
+    body = request.json
+    for f in ('symbol', 'direction', 'signal', 'price', 'alert_reason'):
+        if f not in body:
+            return err(f'missing required field: {f}', 422)
+
+    provider = _probe_llm_provider()
     from services.llm.service import signal_review
     result = signal_review(
-        symbol=body['symbol'],
-        direction=body['direction'],
-        signal=body['signal'],
-        price=float(body['price']),
+        symbol=body['symbol'], direction=body['direction'],
+        signal=body['signal'], price=float(body['price']),
         alert_reason=body['alert_reason'],
         entry_price=body.get('entry_price'),
         position_shares=int(body.get('position_shares', 0)),
@@ -1627,12 +1470,9 @@ def llm_analyze():
         provider=provider,
     )
     return ok(
-        approved=result.approved,
-        decision=result.decision,
-        reason=result.reason,
-        confidence=result.confidence,
-        size_rec=result.size_rec,
-        llm_available=(provider is not None),
+        approved=result.approved, decision=result.decision,
+        reason=result.reason, confidence=result.confidence,
+        size_rec=result.size_rec, llm_available=(provider is not None),
     )
 
 
