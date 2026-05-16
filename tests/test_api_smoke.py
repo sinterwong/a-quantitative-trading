@@ -391,3 +391,71 @@ def test_wfa_summary_get_missing_symbol(client):
     r = client.get('/wfa/summary')
     # symbol 缺失走输入校验分支 → 422
     assert r.status_code == 422, r.status_code
+
+
+# ────────────────────────────────────────────────────────
+# Backtest / Portfolio compose
+# ────────────────────────────────────────────────────────
+
+def test_backtest_run_missing_symbol(client):
+    r = client.post('/backtest/run', json={})
+    assert r.status_code == 422, r.status_code
+
+
+def test_backtest_run_no_strategy_returns_422(client):
+    r = client.post('/backtest/run', json={'symbol': 'sh600519'})
+    assert r.status_code == 422, r.status_code
+
+
+def test_backtest_run_happy_path(client):
+    """patch use case 后必须 200,响应字段 = BacktestResponse.to_dict()。"""
+    from core.use_cases.backtest import BacktestResponse
+    fake = BacktestResponse(
+        symbol='sh600519', n_bars=120, n_trades=5,
+        total_return=0.1, annual_return=0.2, sharpe=1.2,
+        max_drawdown_pct=0.05, win_rate=0.6, profit_factor=1.5,
+        factor_ic=0.02, factor_ir=0.5, summary_text='ok',
+    )
+    with patch('core.use_cases.backtest.run_backtest', return_value=fake):
+        r = client.post('/backtest/run', json={
+            'symbol': 'sh600519',
+            'strategies': [{'factor_name': 'RSI'}],
+        })
+    assert r.status_code == 200, r.status_code
+    body = r.get_json()
+    assert body['sharpe'] == 1.2
+    assert body['symbol'] == 'sh600519'
+
+
+def test_portfolio_compose_too_few_assets_returns_422(client):
+    r = client.post('/portfolio/compose', json={'universe': ['600519.SH']})
+    assert r.status_code == 422, r.status_code
+
+
+def test_portfolio_compose_invalid_method_returns_422(client):
+    r = client.post(
+        '/portfolio/compose',
+        json={'universe': ['A.SH', 'B.SZ'], 'method': 'bogus'},
+    )
+    assert r.status_code == 422, r.status_code
+
+
+def test_portfolio_compose_happy_path(client):
+    """patch use case 后必须 200,响应 = PortfolioAdvice.to_dict()。"""
+    from core.use_cases.compose_portfolio import PortfolioAdvice
+    fake = PortfolioAdvice(
+        method='min_variance', weights={'A.SH': 0.5, 'B.SZ': 0.5},
+        n_assets=2, expected_return=0.08, expected_vol=0.12, sharpe=0.5,
+    )
+    with patch(
+        'core.use_cases.compose_portfolio.compose_portfolio',
+        return_value=fake,
+    ):
+        r = client.post(
+            '/portfolio/compose',
+            json={'universe': ['A.SH', 'B.SZ'], 'method': 'min_variance'},
+        )
+    assert r.status_code == 200, r.status_code
+    body = r.get_json()
+    assert body['method'] == 'min_variance'
+    assert body['weights'] == {'A.SH': 0.5, 'B.SZ': 0.5}

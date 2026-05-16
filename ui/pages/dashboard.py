@@ -1,123 +1,143 @@
+"""ui/pages/dashboard.py — 总览(每天第一眼)。
+
+只读页:
+- KPI strip:总权益 / 持仓市值 / 可用现金 / 当日收益 %
+- 90 天权益曲线 + 回撤副图
+- 风控快照 + 市场状态
+- 未处理告警条
+- 最近 8 条信号
 """
-ui/pages/dashboard.py — 📊 仪表盘 (P4-1 阶段二)
-
-operator 主视图:账户摘要 + 净值曲线 + Regime + Top 信号 + 系统告警。
-
-完全契合产品定位"准生产实盘 + 监控":
-  - 数据全部来自 backend(load_portfolio_summary / load_daily_equity / load_signals)
-  - core.regime / core.alerting 直连仅用于读运行时状态(下一周期可走 backend)
-"""
-
 from __future__ import annotations
 
-import pandas as pd
-import plotly.express as px
 import streamlit as st
 
-from ui.data import (
-    load_portfolio_summary, load_positions, load_signals,
-    load_daily_equity, load_daily_stats,
+from ui.api_client import (
+    BackendError, get_portfolio_summary, get_daily, get_risk_status,
+    get_market_status, get_alerts, get_signals,
 )
-from ui.components import regime_badge, regime_zh
+from ui.format import fmt_money, fmt_pct, fmt_num
+from ui.widgets.layout import (
+    section_header, kpi_row, error_banner, refresh_button, empty_state,
+)
+from ui.widgets.status import header_status_bar
+from ui.widgets.charts import equity_curve, drawdown_curve
+from ui.widgets.tables import signals_table
 
 
-def render_page() -> None:
-    st.title('📊 仪表盘')
+def _pick(d: dict, *keys, default=None):
+    for k in keys:
+        if k in d and d[k] is not None:
+            return d[k]
+    return default
 
-    # ── 账户摘要 ──
-    portfolio = load_portfolio_summary()
-    cash    = float(portfolio.get('cash', 0) or 0)
-    equity  = float(portfolio.get('total_equity', cash) or cash)
-    pos_val = float(portfolio.get('position_value', 0) or 0)
-    unreal  = float(portfolio.get('unrealized_pnl', 0) or 0)
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric('总权益', f'¥{equity:,.0f}', delta=f'{unreal:+,.0f}' if unreal else None)
-    c2.metric('持仓市值', f'¥{pos_val:,.0f}')
-    c3.metric('可用现金', f'¥{cash:,.0f}')
-    c4.metric('持仓比例', f'{pos_val/equity*100:.1f}%' if equity > 0 else '—')
+header_status_bar()
+section_header('总览', '组合健康一眼看完')
 
-    st.markdown('---')
-    col_left, col_right = st.columns([2, 1])
+cols = st.columns([8, 1])
+with cols[1]:
+    refresh_button()
 
-    # ── 净值曲线 ──
-    with col_left:
-        st.subheader('净值曲线')
-        daily = load_daily_equity(90)
-        if daily:
-            df_eq = pd.DataFrame(daily)
-            date_col = next((c for c in df_eq.columns if 'date' in c.lower()), None)
-            eq_col   = next((c for c in df_eq.columns if 'equity' in c.lower()), None)
-            if date_col and eq_col:
-                df_eq[date_col] = pd.to_datetime(df_eq[date_col])
-                fig = px.area(
-                    df_eq, x=date_col, y=eq_col,
-                    labels={date_col: '', eq_col: '净值 (¥)'},
-                    color_discrete_sequence=['#4c78a8'],
-                )
-                fig.update_layout(margin=dict(t=10, b=20), height=260)
-                st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info('暂无净值记录')
+# ── 顶部 KPI ─────────────────────────────────────────────
+try:
+    summary = get_portfolio_summary()
+except BackendError as exc:
+    error_banner(exc)
+    st.stop()
 
-    # ── 市场 Regime + 快速指标 ──
-    with col_right:
-        st.subheader('市场状态')
-        try:
-            from core.regime import get_regime
-            regime_info = get_regime()
-            regime = regime_info.regime if hasattr(regime_info, 'regime') else str(regime_info)
-        except Exception:
-            regime = 'UNKNOWN'
-        regime_badge(regime)
-        st.caption('基于 MA20/MA60 + ATR ratio 识别')
+equity = _pick(summary, 'total_equity', 'equity', 'nav', 'value', default=0)
+market_value = _pick(summary, 'market_value', 'positions_value', 'holding_value', default=0)
+cash = _pick(summary, 'cash', 'available_cash', default=0)
+daily_return = _pick(summary, 'daily_return', 'daily_return_pct',
+                     'today_return', 'pnl_pct', default=None)
+daily_pnl = _pick(summary, 'daily_pnl', 'today_pnl', default=None)
 
-        st.markdown('---')
-        positions = load_positions()
-        active = [p for p in positions if p.get('shares', 0) > 0]
-        signals = load_signals(20)
-        buy_sigs  = [s for s in signals if s.get('direction') == 'BUY']
-        sell_sigs = [s for s in signals if s.get('direction') == 'SELL']
+kpi_row([
+    {'label': '总权益', 'value': fmt_money(equity)},
+    {'label': '持仓市值', 'value': fmt_money(market_value),
+     'help': f'占比 {fmt_pct(market_value / equity) if equity else "—"}'},
+    {'label': '可用现金', 'value': fmt_money(cash)},
+    {'label': '当日收益', 'value': fmt_pct(daily_return, signed=True),
+     'delta': fmt_money(daily_pnl) if daily_pnl is not None else None,
+     'delta_color': 'normal'},
+])
 
-        st.metric('持仓标的数', len(active))
-        st.metric('今日 BUY 信号', len(buy_sigs))
-        st.metric('今日 SELL 信号', len(sell_sigs))
+st.markdown('')
 
-    st.markdown('---')
+# ── 权益曲线 ────────────────────────────────────────────
+col_curve, col_side = st.columns([3, 1])
 
-    # ── Top 信号 + 近期告警 ──
-    col_sig, col_alert = st.columns(2)
+with col_curve:
+    st.markdown('#### 权益曲线 · 近 90 天')
+    try:
+        daily = get_daily(limit=90)
+    except BackendError as exc:
+        error_banner(exc)
+        daily = []
+    if daily:
+        st.plotly_chart(equity_curve(daily), use_container_width=True)
+        with st.expander('回撤副图'):
+            st.plotly_chart(drawdown_curve(daily), use_container_width=True)
+    else:
+        empty_state('暂无每日权益记录',
+                    'scheduler 跑过一次 daily_ops_report 之后就会有数据。')
 
-    with col_sig:
-        st.subheader('最新交易信号(近 10 条)')
-        if signals:
-            rows = []
-            for s in signals[:10]:
-                d = s.get('direction', '')
-                rows.append({
-                    '时间': str(s.get('timestamp', s.get('created_at', '')))[:16],
-                    '标的': s.get('symbol', ''),
-                    '方向': f"🟢 {d}" if d == 'BUY' else f"🔴 {d}" if d == 'SELL' else d,
-                    '强度': f"{float(s.get('strength', 0)):.2f}",
-                    '因子': s.get('factor', s.get('signal_type', '')),
-                })
-            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-        else:
-            st.info('暂无信号记录')
+with col_side:
+    st.markdown('#### 市场')
+    try:
+        m = get_market_status()
+        st.write(f"**今日交易日**: {'✅' if m.get('is_trading_day') or m.get('trading_day') else '❌'}")
+        st.write(f"**开盘中**: {'✅' if m.get('is_open') or m.get('market_open') else '❌'}")
+        nxt = _pick(m, 'next_open', 'next_open_time', 'next_trading_day', default=None)
+        if nxt:
+            st.caption(f'下一次开盘: {nxt}')
+    except BackendError as exc:
+        error_banner(exc)
 
-    with col_alert:
-        st.subheader('近期系统告警')
-        try:
-            from core.alerting import get_alert_manager
-            am = get_alert_manager()
-            history = am.get_history(last_n=8)
-            if history:
-                for rec in reversed(history):
-                    icon = {'CRITICAL': '🔴', 'WARNING': '🟡', 'INFO': '🔵'}.get(rec.level, '⚪')
-                    st.markdown(f"{icon} **[{rec.level}]** {rec.message[:80]}")
-                    st.caption(f"  {rec.timestamp[:16]} · {rec.channel}")
+    st.markdown('#### 风控')
+    try:
+        risk = get_risk_status()
+        for k, label in [
+            ('cvar_95', 'CVaR(95%)'),
+            ('cvar', 'CVaR'),
+            ('max_drawdown_pct', '最大回撤'),
+            ('exposure', '净敞口'),
+            ('sector_concentration', '行业集中度'),
+        ]:
+            v = risk.get(k)
+            if v is not None:
+                st.write(f'{label}: **{fmt_num(v, decimals=4)}**')
+    except BackendError as exc:
+        error_banner(exc)
+
+st.markdown('---')
+
+# ── 告警条 ──────────────────────────────────────────────
+st.markdown('#### 未处理告警')
+try:
+    alerts = get_alerts(limit=10)
+    unack = [a for a in alerts if not (a.get('acknowledged') or a.get('ack'))]
+    if not unack:
+        st.success('🟢 当前没有未处理告警')
+    else:
+        for a in unack[:5]:
+            level = (a.get('level') or a.get('severity') or 'info').lower()
+            msg = a.get('message') or a.get('text') or str(a)
+            ts = a.get('ts') or a.get('timestamp') or ''
+            if level in ('error', 'critical'):
+                st.error(f'[{ts}] {msg}')
+            elif level in ('warn', 'warning'):
+                st.warning(f'[{ts}] {msg}')
             else:
-                st.success('无未处理告警')
-        except Exception:
-            load_daily_stats(1)
-            st.info('AlertManager 未初始化(将在策略运行后生效)')
+                st.info(f'[{ts}] {msg}')
+        if len(unack) > 5:
+            st.caption(f'另有 {len(unack) - 5} 条 — 见「系统与风控」页。')
+except BackendError as exc:
+    error_banner(exc)
+
+# ── 最近信号 ────────────────────────────────────────────
+st.markdown('#### 最近信号(Top 8)')
+try:
+    signals_table(get_signals(limit=8))
+except BackendError as exc:
+    error_banner(exc)

@@ -27,7 +27,17 @@ python backend/main.py --mode worker
 
 # Streamlit UI(默认连本机 5555 端口的 backend)
 streamlit run streamlit_app.py --server.port 8501
+# 或用便捷启动器(同样起在 8501,可加 streamlit 原生参数):
+./start_streamlit.sh
 ```
+
+UI 相关 env(全部可选):
+
+| 变量 | 默认 | 用途 |
+|---|---|---|
+| `QUANT_UI_BACKEND_URL` | `http://127.0.0.1:5555` | UI 调用的 backend base URL |
+| `TRADING_API_KEY` | 空 | 后端开启鉴权时,UI 会自动带 `X-API-Key` |
+| `QUANT_UI_TIMEOUT` | `8` | UI 单请求超时秒 |
 
 Backward-compat 别名:`--mode both` → `all`、`--mode scheduler` → `worker`。
 
@@ -115,10 +125,16 @@ quant_app/
   serve_api.py       HTTP server 启动器
   run_worker.py      Scheduler + IntradayMonitor 装配
 
+streamlit_app.py     UI 入口,只装 st.navigation
+start_streamlit.sh   启动器(set env + exec streamlit run)
 ui/
-  pages/             Streamlit 页面(dashboard / signals / backtest / monitoring / ...)
-  data.py            UI 数据加载(全部走 backend API)
-  components/        公共渲染组件
+  config.py          env bootstrap + page_config
+  api_client.py      后端唯一 HTTP 客户端(@st.cache_data + BackendError)
+  format.py          金额/百分比/数字格式化(纯函数)
+  widgets/           跨页面组件(layout / status / tables / charts / forms)
+  pages/             12 页:dashboard / portfolio / signals / watchlist /
+                     daily_pick / stock_deep / sector_pairs / backtest /
+                     composer / wfa / market / system
 
 scripts/             运维 + 研究脚本(详见 scripts/README.md)
 config/              YAML 配置(trading.yaml + trading.yaml.example)
