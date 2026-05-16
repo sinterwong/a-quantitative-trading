@@ -1,71 +1,83 @@
-# scripts/ 目录
+# scripts
 
-运营脚本和调试工具目录，单元测试统一在 `tests/`。
+运维 / 研究脚本。单元测试在 `tests/`。
 
----
+## scripts/ 顶层
 
-## 运营脚本
-
-### 定时任务
+### 定时任务(由 Scheduler 触发,见 backend/README.md)
 
 | 文件 | 说明 |
-|------|------|
-| `morning_runner.py` | 每日盘前流程：获取信号 + 生成报告 |
+|---|---|
+| `morning_runner.py` | 09:30 盘前流程入口(选股 + 信号 + 早报) |
 | `morning_report.py` | 盘前市场分析报告 |
-| `afternoon_report.py` | 盘后绩效归因报告 |
-| `run_morning_report.py` | 盘前报告 CLI 入口 |
+| `afternoon_report.py` | 15:00 收盘晚报(持仓快照 + 收益) |
+| `daily_risk_report.py` | 15:30 CVaR + 蒙特卡洛压力测试 |
+| `daily_tca.py` | 15:45 TCA 反馈闭环 |
 | `walkforward_job.py` | Walk-Forward 参数验证定时任务 |
 | `regime_wfa.py` | Regime 感知的 WFA 分析 |
-| `ipo_scanner.py` | 港股打新扫描（feature/ipo-stars 分支） |
+| `nlp_batch_score.py` | 新闻情感批量打分 |
+| `ml_train_all.py` | 全量 ML 模型训练 |
+| `sensitivity_job.py` | 敏感性分析定时任务 |
 
-### 研究与调试
+### 研究 / 工具
 
 | 文件 | 说明 |
-|------|------|
-| `dynamic_selector.py` | 动态标的筛选器 |
-| `stock_data_only.py` | 仅获取行情数据 |
+|---|---|
+| `dynamic_selector.py` | 动态选股器(`DynamicStockSelector`,日终 15:10 跑) |
 | `bayesian_optimize.py` | 贝叶斯参数优化 |
+| `run_morning_report.py` | 盘前报告手动入口 |
+| `generate_openapi.py` | 从 `backend/api.py` 生成 `backend/openapi.json`,支持 `--check` |
 
----
+## scripts/quant/
 
-## quant/ 子目录
+回测 / 信号 / 因子研究脚本。部分文件是早期实现,已被 `core/` 替代但
+保留兼容性,新代码不要往这里加。
 
-量化研究脚本。
+### 仍在使用
 
-| 文件/目录 | 说明 |
-|-----------|------|
-| `backtest.py` / `backtest_cli.py` | 回测 CLI 工具 |
-| `daily_engine.py` | 日内实时信号引擎 |
-| `daily_reporter.py` / `daily_journal.py` | 每日报告生成 |
-| `data_loader.py` / `data_provider.py` | 数据获取适配器 |
-| `walkforward.py` | Walk-Forward 验证（早期版本） |
-| `regime_detector.py` / `regime_selector.py` | 市场状态检测研究 |
-| `monte_carlo.py` | 蒙特卡洛模拟 |
-| `strategies/` | 早期策略实现（已迁移至 `core/strategies/`） |
-| `atr_wfa_scan.py` | ATR 因子 WFA 扫描 |
+| 文件 | 用途 |
+|---|---|
+| `backtest_cli.py` | 主回测 CLI,接 `core/use_cases/backtest.py` |
+| `backtest.py` | 提供 `RSISignalFunc / MACDSignalFunc` 给 `intraday_signals.py` |
+| `walkforward.py` | 早期 WFA,被 `walkforward_job.py` 与 `regime_wfa.py` 依赖 |
+| `signal_generator.py` | 老信号层,被 WFA 和测试依赖 |
+| `data_loader.py` | 回测专用 OHLCV 加载 |
+| `benchmark.py` | `quick_benchmark` 基准对比 |
+| `monte_carlo.py` | `MonteCarloSimulator` |
+| `position_sizer.py` | `compute_kelly_from_trades`,被 IntradayMonitor 引用 |
+| `news_quality.py` / `news_scorer.py` | 新闻打分,被 `dynamic_selector.py` 引用 |
+| `regime_detector.py` | 提供 `get_cached_regime / get_params_for_regime` |
+| `config_stock_pool.py` | 标的池配置 |
+| `atr_sweep.py` / `atr_threshold_scan.py` / `atr_wfa_scan.py` | ATR 因子扫描 |
+| `llm_connect_test.py` | LLM 连通性烟测 |
 
----
+### 已 deprecated(代码保留,下个清理周期删)
 
-## 运行方式
+`combo_signal.py` / `daily_journal.py` / `daily_reporter.py` /
+`data_provider.py` / `institutional_live.py` / `intraday_signals.py` /
+`performance_report.py` / `regime_selector.py` / `regime_signal.py` /
+`selection_pool.py` / `trend_confirmed_rotation.py`
+
+`scripts/quant/strategies/` 下的 `institutional.py` / `mean_reversion.py` /
+`momentum.py` / `sector_rotation.py` 同样已被 `core/strategies/` 替代。
+
+## 调用示例
 
 ```bash
-# 盘前报告
+# 手动盘前报告
 python scripts/run_morning_report.py
 
-# Walk-Forward 验证
+# Walk-Forward 全周期回测
 python scripts/walkforward_job.py --start 20200101 --end 20251231
 
 # 贝叶斯参数优化
 python scripts/bayesian_optimize.py --n-trials 100
 
-# 港股打新扫描（feature/ipo-stars 分支）
-python -m scheduler.ipo_scanner
+# 主回测 CLI
+python scripts/quant/backtest_cli.py --symbol 600519.SH --start 20240101
 ```
 
----
+## 备注
 
-## 注意
-
-- 单元测试统一在 `tests/`
-- `scripts/quant/` 中的部分脚本依赖较早接口，功能已被 `core/` 模块替代
-- 调试脚本需要网络连接，不作为 CI 测试
+- 调试脚本依赖外网,不进 CI
+- `scripts/quant/__init__.py` 让本目录是包,统一用 `from scripts.quant.xxx` import
