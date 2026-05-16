@@ -1605,9 +1605,14 @@ def llm_analyze():
     if (e := require_json()):
         return e
     body = request.json
-    for f in ('symbol', 'direction', 'signal', 'price', 'alert_reason'):
-        if f not in body:
-            return err(f'missing required field: {f}', 422)
+    if 'symbol' not in body:
+        return err('missing required field: symbol', 422)
+    if 'price' not in body:
+        return err('missing required field: price', 422)
+    # Provide sensible defaults for optional fields the UI may not fill
+    body.setdefault('direction', 'UNKNOWN')
+    body.setdefault('signal', 'NEUTRAL')
+    body.setdefault('alert_reason', '')
 
     provider = _probe_llm_provider()
     from services.llm.service import signal_review
