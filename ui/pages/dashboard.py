@@ -52,6 +52,12 @@ daily_return = _pick(summary, 'daily_return', 'daily_return_pct',
                      'today_return', 'pnl_pct', default=None)
 daily_pnl = _pick(summary, 'daily_pnl', 'today_pnl', default=None)
 
+# 防御：后端有时返回字符串 'None' 而不是 Python None
+if isinstance(daily_return, str) and daily_return.lower() in ('none', 'null', ''):
+    daily_return = None
+if isinstance(daily_pnl, str) and daily_pnl.lower() in ('none', 'null', ''):
+    daily_pnl = None
+
 kpi_row([
     {'label': '总权益', 'value': fmt_money(equity)},
     {'label': '持仓市值', 'value': fmt_money(market_value),

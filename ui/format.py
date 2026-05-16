@@ -11,6 +11,10 @@ def fmt_money(value: Any, *, currency: str = '¥', decimals: int = 2) -> str:
     """格式化金额: ¥12,345.67;None/NaN → '—'。"""
     if value is None:
         return '—'
+    if isinstance(value, str):
+        value = value.strip()
+        if value.lower() in ('', 'none', 'null', 'nan'):
+            return '—'
     try:
         v = float(value)
     except (TypeError, ValueError):
@@ -24,11 +28,16 @@ def fmt_pct(value: Any, *, decimals: int = 2, signed: bool = False) -> str:
     """value 假设是小数(0.1234 → 12.34%);None/NaN → '—'。"""
     if value is None:
         return '—'
+    # 防御：处理字符串 'None' / 'none' / '' 等
+    if isinstance(value, str):
+        value = value.strip()
+        if value.lower() in ('', 'none', 'null', 'nan'):
+            return '—'
     try:
         v = float(value)
     except (TypeError, ValueError):
         return str(value)
-    if v != v:
+    if v != v:  # NaN
         return '—'
     sign = '+' if (signed and v > 0) else ''
     return f'{sign}{v * 100:.{decimals}f}%'
@@ -37,6 +46,10 @@ def fmt_pct(value: Any, *, decimals: int = 2, signed: bool = False) -> str:
 def fmt_num(value: Any, *, decimals: int = 2) -> str:
     if value is None:
         return '—'
+    if isinstance(value, str):
+        value = value.strip()
+        if value.lower() in ('', 'none', 'null', 'nan'):
+            return '—'
     try:
         v = float(value)
     except (TypeError, ValueError):

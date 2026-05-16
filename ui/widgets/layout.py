@@ -6,6 +6,7 @@ from typing import Iterable, Optional, Sequence
 import streamlit as st
 
 from ui.api_client import BackendError
+from ui.format import fmt_money
 
 
 def global_css() -> None:
@@ -45,16 +46,83 @@ def section_header(title: str, subtitle: Optional[str] = None) -> None:
 
 
 def kpi_row(items: Sequence[dict]) -> None:
-    """items: [{'label': '总权益', 'value': '¥12,345', 'delta': '+1.2%'}]。"""
+    """5 等宽 KPI 卡片行，HTML 渲染以支持鼠标悬停 tooltip。
+
+    items: [{'label': '可用现金', 'value': '¥12,345', 'delta': '+1.2%',
+             'raw': '12345.67'}]。raw 用于 tooltip，若不提供则用 value。
+    """
+    if not items:
+        return
+
     cols = st.columns(len(items))
     for col, it in zip(cols, items):
-        col.metric(
-            label=it.get('label', ''),
-            value=it.get('value', '—'),
-            delta=it.get('delta'),
-            delta_color=it.get('delta_color', 'normal'),
-            help=it.get('help'),
+        label = it.get('label', '')
+        value = it.get('value', '—')
+        raw = it.get('raw')
+        tooltip = str(raw) if raw is not None else str(value)
+        delta = it.get('delta', '')
+        # 涨红跌绿（A 股惯例）；'—' 不是有效 delta，等同于无 delta
+        if delta and delta not in ('—',):
+            dc = it.get('delta_color', 'normal')
+            if dc == 'normal':
+                if delta.startswith('+'):
+                    dc = '#d9534f'
+                elif delta.startswith('-'):
+                    dc = '#5cb85c'
+                else:
+                    dc = '#6c757d'
+            delta = f'<span style="color:{dc};font-size:0.8rem;margin-left:6px;">{delta}</span>'
+        else:
+            delta = ''
+
+        col.markdown(
+            f'''<div style="
+                background:#ffffff;
+                border:1px solid #e1e4e8;
+                border-radius:8px;
+                padding:12px 16px;
+                display:flex;
+                flex-direction:column;
+                gap:4px;
+                min-width:0;
+            " title="{tooltip}">
+                <span style="color:#57606a;font-size:0.8rem;font-weight:500;">{label}</span>
+                <span style="color:#1f2328;font-size:1.15rem;font-weight:600;
+                            letter-spacing:-0.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                    {value}{delta}
+                </span>
+            </div>''',
+            unsafe_allow_html=True,
         )
+
+
+def cash_display(cash: float) -> None:
+    """单独渲染现金，用 HTML 避免 st.metric 截断长数字。
+
+    用法:
+        cash_display(get_cash())   # 独占一行，字体够大看不截断
+    """
+    cash_str = fmt_money(cash)
+    st.markdown(
+        f"""
+        <div style="
+            background: #ffffff;
+            border: 1px solid #e1e4e8;
+            border-radius: 8px;
+            padding: 14px 18px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        " title="{cash_str}">
+            <span style="color: #57606a; font-size: 0.85rem; font-weight: 500;">可用现金</span>
+            <span style="color: #1f2328; font-size: 1.1rem; font-weight: 600; letter-spacing: -0.02em;">
+                {cash_str}
+            </span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def error_banner(exc: BaseException) -> None:

@@ -23,27 +23,36 @@ from ui.widgets.tables import positions_table
 
 
 header_status_bar()
-section_header('持仓与现金', '只读 + 两个 mutation form(都走双段确认)')
+section_header('持仓与现金', '双段确认 mutation form（现金 + 持仓录入）')
 
 cols = st.columns([8, 1])
 with cols[1]:
     refresh_button()
 
-# ── KPI ─────────────────────────────────────────────────
+# ── KPI（含现金，5 等宽卡片，鼠标悬停看完整值）──
 try:
     cash = get_cash()
+except BackendError as exc:
+    error_banner(exc)
+    cash = 0.0
+
+try:
     perf = get_performance_summary()
 except BackendError as exc:
     error_banner(exc)
-    perf, cash = {}, 0.0
+    perf = {}
 
 kpi_row([
-    {'label': '可用现金', 'value': fmt_money(cash)},
-    {'label': '累计收益', 'value': fmt_pct(perf.get('total_return'), signed=True)},
-    {'label': '年化收益', 'value': fmt_pct(perf.get('annual_return'), signed=True)},
-    {'label': '夏普', 'value': fmt_num(perf.get('sharpe'), decimals=2)},
+    {'label': '可用现金', 'value': fmt_money(cash), 'raw': fmt_money(cash)},
+    {'label': '累计收益', 'value': fmt_pct(perf.get('total_return_pct'), signed=True),
+     'raw': f"{perf.get('total_return_pct') * 100:.4f}%" if perf.get('total_return_pct') is not None else '—'},
+    {'label': '年化收益', 'value': fmt_pct(perf.get('annual_return'), signed=True),
+     'raw': f"{perf.get('annual_return') * 100:.4f}%" if perf.get('annual_return') is not None else '—'},
+    {'label': '夏普', 'value': fmt_num(perf.get('sharpe'), decimals=2),
+     'raw': f"{perf.get('sharpe'):.4f}" if perf.get('sharpe') is not None else '—'},
     {'label': '最大回撤',
-     'value': fmt_pct(perf.get('max_drawdown_pct') or perf.get('max_drawdown'))},
+     'value': fmt_pct(perf.get('max_drawdown_pct')),
+     'raw': f"{perf.get('max_drawdown_pct') * 100:.4f}%" if perf.get('max_drawdown_pct') is not None else '—'},
 ])
 
 st.markdown('')

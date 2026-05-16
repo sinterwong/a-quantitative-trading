@@ -41,19 +41,33 @@ class PerformanceSummaryResponse:
     generated_at: Optional[str] = None
 
     def to_dict(self) -> dict:
+        returns = self.returns or {}
+        trade_stats = self.trade_stats or {}
+        # Flatten nested structures into top-level keys for UI convenience.
+        # annual_return / sharpe are calculated here; if missing from trade_stats
+        # the field is simply absent (UI falls back to "—").
         return {
             'period': self.period,
             'year': self.year,
             'month': self.month,
-            'returns': self.returns,
+            # flatten returns
+            'total_return_pct': returns.get('total_return_pct'),
+            'annual_return': returns.get('annual_return'),
+            'initial_capital': returns.get('initial_capital'),
+            'total_equity': returns.get('total_equity'),
+            # pass-through
             'summary': self.summary,
             'trade_stats': self.trade_stats,
             'trade_stats_month': self.trade_stats_month,
             'max_drawdown': self.max_drawdown,
+            'returns': self.returns,   # 保留原始嵌套结构（测试依赖）
             'equity_curve': self.equity_curve,
             'benchmark_curve': self.benchmark_curve,
             'chart_base64': self.chart_base64,
             'generated_at': self.generated_at,
+            # flatten trade-stats scalars the UI expects
+            'sharpe': trade_stats.get('sharpe'),
+            'max_drawdown_pct': (self.max_drawdown or {}).get('max_drawdown_pct'),
         }
 
 
