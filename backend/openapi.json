@@ -882,6 +882,73 @@
         }
       }
     },
+    "/backtest/run": {
+      "post": {
+        "summary": "POST /backtest/run",
+        "operationId": "post_backtest_run",
+        "responses": {
+          "200": {
+            "description": "Success (ok envelope)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok"
+                      ]
+                    },
+                    "timestamp": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Client error (error envelope)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "error",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "error"
+                      ]
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
     "/cash": {
       "get": {
         "summary": "GET /cash — available cash.",
@@ -2505,6 +2572,73 @@
       "post": {
         "summary": "POST /portfolio/cash — set cash amount.",
         "operationId": "post_set_cash",
+        "responses": {
+          "200": {
+            "description": "Success (ok envelope)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok"
+                      ]
+                    },
+                    "timestamp": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Client error (error envelope)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "error",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "error"
+                      ]
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/portfolio/compose": {
+      "post": {
+        "summary": "POST /portfolio/compose",
+        "operationId": "post_portfolio_compose",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",

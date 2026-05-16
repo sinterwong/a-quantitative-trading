@@ -940,6 +940,131 @@ def monthly_history():
 
 
 # ============================================================
+# 回测
+# ============================================================
+
+@app.route('/backtest/run', methods=['POST'])
+def backtest_run():
+    """
+    POST /backtest/run
+
+    单标的回测,返回绩效 KPI(不含 equity curve 序列)。
+
+    Body (JSON):
+        {
+          "symbol": "sh600519",
+          "start": "2024-01-01",            // 可选
+          "end":   "2024-12-31",            // 可选
+          "days":  252,                      // start/end 缺省时用
+          "initial_equity":  100000,
+          "commission_rate": 0.0003,
+          "slippage_bps":    5.0,
+          "strategies": [
+            {"factor_name": "RSI", "threshold": 1.0, "params": {"window": 14}}
+          ]
+        }
+
+    Returns:
+        {
+          "symbol": "sh600519", "n_bars": 120, "n_trades": 8,
+          "total_return": 0.12, "annual_return": 0.25, "sharpe": 1.4,
+          "max_drawdown_pct": 0.08, "win_rate": 0.62, "profit_factor": 1.7,
+          "factor_ic": 0.03, "factor_ir": 0.6, "summary": "..."
+        }
+    """
+    from core.use_cases.backtest import (
+        BacktestRequest, StrategySpec, run_backtest,
+    )
+    from core.use_cases import UseCaseError
+    body = request.get_json(silent=True) or {}
+    try:
+        symbol = body.get('symbol')
+        if not symbol:
+            return err('symbol is required', 422)
+        req = BacktestRequest(
+            symbol=str(symbol),
+            start=body.get('start'),
+            end=body.get('end'),
+            days=int(body.get('days', 252)),
+            initial_equity=float(body.get('initial_equity', 100_000)),
+            commission_rate=float(body.get('commission_rate', 0.0003)),
+            slippage_bps=float(body.get('slippage_bps', 5.0)),
+            strategies=[
+                StrategySpec(
+                    factor_name=str(s['factor_name']),
+                    threshold=float(s.get('threshold', 1.0)),
+                    params=dict(s.get('params', {})),
+                )
+                for s in body.get('strategies', [])
+            ],
+        )
+    except (KeyError, ValueError, TypeError) as exc:
+        return err(f'invalid request: {exc}', 422)
+    try:
+        response = run_backtest(req)
+    except UseCaseError as exc:
+        return err(exc.message, 503 if exc.code == 'DATA_UNAVAILABLE' else 422)
+    return ok(**response.to_dict())
+
+
+# ============================================================
+# 组合优化
+# ============================================================
+
+@app.route('/portfolio/compose', methods=['POST'])
+def portfolio_compose():
+    """
+    POST /portfolio/compose
+
+    基于 universe 的历史日 K 收益,产出建议权重(不下单)。
+
+    Body (JSON):
+        {
+          "universe":     ["600519.SH", "000858.SZ", "601318.SH"],
+          "method":       "min_variance",  // min_variance | max_sharpe |
+                                           // risk_parity | max_diversification |
+                                           // equal_weight
+          "history_days": 252,
+          "max_weight":   0.25,
+          "min_weight":   0.0,
+          "cov_method":   "ledoit_wolf",
+          "rf_annual":    0.02
+        }
+
+    Returns:
+        {
+          "method": "min_variance",
+          "weights": {"600519.SH": 0.40, ...},
+          "n_assets": 3,
+          "expected_return": 0.08, "expected_vol": 0.18, "sharpe": 0.33,
+          "diagnostics": {"cov_method": "ledoit_wolf", "history_bars": "250", ...}
+        }
+    """
+    from core.use_cases.compose_portfolio import (
+        ComposePortfolioRequest, compose_portfolio,
+    )
+    from core.use_cases import UseCaseError
+    body = request.get_json(silent=True) or {}
+    try:
+        req = ComposePortfolioRequest(
+            universe=list(body.get('universe', [])),
+            method=str(body.get('method', 'min_variance')),
+            history_days=int(body.get('history_days', 252)),
+            max_weight=float(body.get('max_weight', 0.25)),
+            min_weight=float(body.get('min_weight', 0.0)),
+            cov_method=str(body.get('cov_method', 'ledoit_wolf')),
+            rf_annual=float(body.get('rf_annual', 0.02)),
+        )
+    except (ValueError, TypeError) as exc:
+        return err(f'invalid request: {exc}', 422)
+    try:
+        advice = compose_portfolio(req)
+    except UseCaseError as exc:
+        return err(exc.message, 503 if exc.code == 'DATA_UNAVAILABLE' else 422)
+    return ok(**advice.to_dict())
+
+
+# ============================================================
 # Watchlist endpoints
 # ============================================================
 
