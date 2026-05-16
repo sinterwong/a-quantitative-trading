@@ -22,7 +22,10 @@ from ui.config import BACKEND_URL, API_KEY, REQUEST_TIMEOUT
 
 
 class BackendError(RuntimeError):
-    """非 2xx 响应 / 后端 status=error 时抛出。"""
+    """非 2xx / 后端 status=error / transport 故障统一抛出。
+
+    status=0 表示 transport 层(超时 / 连接拒绝 / DNS 等),非 HTTP 状态码。
+    """
 
     def __init__(self, status: int, message: str):
         super().__init__(f'[{status}] {message}')
@@ -57,29 +60,40 @@ def _unwrap(r: requests.Response) -> dict:
     return body if isinstance(body, dict) else {'data': body}
 
 
-def _get(path: str, params: Optional[dict] = None, timeout: Optional[float] = None) -> dict:
-    r = _session().get(f'{BACKEND_URL}{path}', params=params, timeout=timeout or REQUEST_TIMEOUT)
+def _request(method: str, path: str, *, params: Optional[dict] = None,
+             json: Optional[dict] = None, timeout: Optional[float] = None) -> dict:
+    """统一 transport 入口:requests 异常 → BackendError(0, ...)。"""
+    url = f'{BACKEND_URL}{path}'
+    try:
+        r = _session().request(method, url, params=params, json=json,
+                               timeout=timeout or REQUEST_TIMEOUT)
+    except requests.exceptions.Timeout:
+        raise BackendError(0, f'后端 {method} {path} 超时(>{timeout or REQUEST_TIMEOUT}s)')
+    except requests.exceptions.ConnectionError as exc:
+        raise BackendError(0, f'后端不可达({BACKEND_URL}): {exc.__class__.__name__}')
+    except requests.exceptions.RequestException as exc:
+        raise BackendError(0, f'请求失败: {exc!r}')
     return _unwrap(r)
+
+
+def _get(path: str, params: Optional[dict] = None, timeout: Optional[float] = None) -> dict:
+    return _request('GET', path, params=params, timeout=timeout)
 
 
 def _post(path: str, json: Optional[dict] = None, timeout: Optional[float] = None) -> dict:
-    r = _session().post(f'{BACKEND_URL}{path}', json=json, timeout=timeout or REQUEST_TIMEOUT)
-    return _unwrap(r)
+    return _request('POST', path, json=json, timeout=timeout)
 
 
 def _patch(path: str, json: Optional[dict] = None, timeout: Optional[float] = None) -> dict:
-    r = _session().patch(f'{BACKEND_URL}{path}', json=json, timeout=timeout or REQUEST_TIMEOUT)
-    return _unwrap(r)
+    return _request('PATCH', path, json=json, timeout=timeout)
 
 
 def _put(path: str, json: Optional[dict] = None, timeout: Optional[float] = None) -> dict:
-    r = _session().put(f'{BACKEND_URL}{path}', json=json, timeout=timeout or REQUEST_TIMEOUT)
-    return _unwrap(r)
+    return _request('PUT', path, json=json, timeout=timeout)
 
 
 def _delete(path: str, timeout: Optional[float] = None) -> dict:
-    r = _session().delete(f'{BACKEND_URL}{path}', timeout=timeout or REQUEST_TIMEOUT)
-    return _unwrap(r)
+    return _request('DELETE', path, timeout=timeout)
 
 
 def clear_cache() -> None:
@@ -324,10 +338,6 @@ def sector_compare(payload: dict) -> dict:
     return _post('/analysis/sector/compare', payload, timeout=30)
 
 
-def llm_analyze(payload: dict) -> dict:
-    return _post('/llm/analyze', payload, timeout=120)
-
-
 # ── 新加的研究端点 ──────────────────────────────────────────
 def run_backtest(payload: dict) -> dict:
     return _post('/backtest/run', payload, timeout=120)
@@ -344,7 +354,7 @@ def get_wfa_history(symbol: Optional[str] = None, limit: int = 50) -> list:
     if symbol:
         params['symbol'] = symbol
     body = _get('/wfa/history', params=params)
-    return body.get('history') or body.get('data') or []
+    return body.get('records') or body.get('history') or body.get('data') or []
 
 
 @st.cache_data(ttl=300)

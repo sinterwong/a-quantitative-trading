@@ -9,14 +9,21 @@ from ui.api_client import BackendError
 
 
 def global_css() -> None:
+    # 卡片 + 文字色显式钉死(白底 → 深字),不再让 Streamlit 主题反差掉
     st.markdown(
         """
         <style>
         .block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
         section[data-testid="stSidebar"] .stRadio > label {font-weight: 600;}
-        [data-testid="stMetric"] {background: #ffffff; padding: 12px 16px;
-            border: 1px solid #e1e4e8; border-radius: 8px;}
-        [data-testid="stMetricLabel"] {color: #6a737d;}
+        [data-testid="stMetric"] {
+            background: #ffffff; padding: 12px 16px;
+            border: 1px solid #e1e4e8; border-radius: 8px;
+            color: #24292e;
+        }
+        [data-testid="stMetric"] * {color: #24292e !important;}
+        [data-testid="stMetricLabel"] * {color: #57606a !important; font-weight: 500;}
+        [data-testid="stMetricValue"] * {color: #1f2328 !important; font-weight: 600;}
+        [data-testid="stMetricDelta"] svg {fill: currentColor;}
         .small-muted {color: #6a737d; font-size: 0.85rem;}
         .badge {display: inline-block; padding: 2px 8px; border-radius: 10px;
             font-size: 0.78rem; font-weight: 600;}
