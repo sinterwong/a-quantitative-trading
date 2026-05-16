@@ -5,7 +5,7 @@ import streamlit as st
 
 from ui.api_client import (
     BackendError, analyze_a_stock, analyze_hk_stock, get_fundamentals,
-    get_news, llm_analyze, get_daily_kline,
+    get_news, get_daily_kline,
 )
 from ui.widgets.layout import section_header, error_banner
 from ui.widgets.status import header_status_bar
@@ -83,24 +83,36 @@ with tab_news:
 
 # ── LLM ───────────────────────────────────────────────
 with tab_llm:
+    # 走 /analysis/stock/{a,hk} 的 include_llm=True 走 LLM 综合解读
+    # (不是 /llm/analyze —— 那是 signal_review 入口,需要 direction/price/alert_reason)
     st.warning('调用 LLM 会产生费用,确认后点按钮。')
-    if st.button('🤖 调用 LLM 分析', key='llm_call_btn'):
+    if st.button('🤖 调用 LLM 解读', key='llm_call_btn'):
         with st.spinner('LLM 思考中(最多 120 秒)...'):
             try:
-                out = llm_analyze({'symbol': sym, 'market': market})
+                payload = {'symbol': sym, 'include_llm': True}
+                if market == 'a':
+                    out = analyze_a_stock(payload)
+                else:
+                    out = analyze_hk_stock(payload)
                 st.session_state['_llm_out'] = out
             except BackendError as exc:
                 error_banner(exc)
     out = st.session_state.get('_llm_out')
-    if out:
-        if isinstance(out, dict):
-            text = out.get('text') or out.get('summary') or out.get('answer')
-            if text:
-                st.markdown(text)
-            else:
-                st.json(out)
-        else:
-            st.write(out)
+    if out and isinstance(out, dict):
+        llm_text = (
+            out.get('llm_summary') or out.get('llm_advice')
+            or out.get('llm') or out.get('llm_text')
+        )
+        if isinstance(llm_text, dict):
+            llm_text = llm_text.get('text') or llm_text.get('summary')
+        if llm_text:
+            st.markdown('#### LLM 解读')
+            st.markdown(str(llm_text))
+        warnings = out.get('warnings') or []
+        if any('llm' in str(w).lower() for w in warnings):
+            st.info('后端反馈:LLM 未启用或未配置(看 warnings)')
+        with st.expander('完整分析响应'):
+            st.json(out)
 
 # ── K 线 ──────────────────────────────────────────────
 with tab_kl:
