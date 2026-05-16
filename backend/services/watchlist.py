@@ -19,7 +19,11 @@ from contextlib import contextmanager
 logger = logging.getLogger('watchlist')
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(THIS_DIR, 'portfolio.db')  # 共用 portfolio.db
+try:
+    from core.state_db import state_db_path as _state_db_path
+    DB_PATH = _state_db_path()  # P3-4: 共用统一状态库
+except Exception:
+    DB_PATH = os.path.join(THIS_DIR, 'portfolio.db')
 
 
 @contextmanager
@@ -133,6 +137,22 @@ def set_alert_threshold(symbol: str, alert_pct: float) -> bool:
         return True
     except Exception as e:
         logger.error('Watchlist threshold update failed: %s', e)
+        return False
+
+
+def set_watchlist_enabled(symbol: str, enabled: int) -> bool:
+    """切换自选股启用状态。enabled=1 → 启用,enabled=0 → 禁用(等价软删)。"""
+    symbol = symbol.upper().strip()
+    try:
+        with _conn() as conn:
+            conn.execute(
+                "UPDATE watchlist SET enabled=? WHERE symbol=?",
+                (1 if enabled else 0, symbol),
+            )
+        logger.info('Watchlist: %s enabled=%d', symbol, 1 if enabled else 0)
+        return True
+    except Exception as e:
+        logger.error('Watchlist enabled update failed: %s', e)
         return False
 
 

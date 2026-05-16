@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(ROOT, 'backend'))
 class TestIsTradingDay(unittest.TestCase):
 
     def test_uses_calendar_when_available(self):
-        import backend.main as bm
+        import quant_app.run_worker as bm
         # 重置缓存，避免被前置测试污染
         bm._trade_calendar = set()
         bm._trade_calendar_date = ''
@@ -38,7 +38,7 @@ class TestIsTradingDay(unittest.TestCase):
             self.assertTrue(bm.is_trading_day())
 
     def test_returns_false_for_known_holiday(self):
-        import backend.main as bm
+        import quant_app.run_worker as bm
         bm._trade_calendar = set()
         bm._trade_calendar_date = ''
         # 日历存在但不含今天
@@ -47,7 +47,7 @@ class TestIsTradingDay(unittest.TestCase):
             self.assertFalse(bm.is_trading_day())
 
     def test_falls_back_to_weekday_when_calendar_unavailable(self):
-        import backend.main as bm
+        import quant_app.run_worker as bm
         bm._trade_calendar = set()
         bm._trade_calendar_date = ''
         with patch.object(bm, '_build_trade_calendar', return_value=set()):
@@ -59,7 +59,7 @@ class TestIsTradingDay(unittest.TestCase):
 class TestSecondsUntilNextCheck(unittest.TestCase):
 
     def test_returns_seconds_to_tomorrow_0825(self):
-        from backend.main import Scheduler
+        from quant_app.run_worker import Scheduler
         # 模拟周一 14:00
         now = datetime(2026, 5, 4, 14, 0, 0)   # Mon
         s = Scheduler._seconds_until_next_check(now)
@@ -67,7 +67,7 @@ class TestSecondsUntilNextCheck(unittest.TestCase):
         self.assertAlmostEqual(s, 18 * 3600 + 25 * 60, delta=2)
 
     def test_minimum_60s(self):
-        from backend.main import Scheduler
+        from quant_app.run_worker import Scheduler
         # 模拟 08:24:30 — 距次日 08:25 还有 23h59m30s 但若已超过则返回 60s
         now = datetime(2026, 5, 4, 8, 24, 0)
         s = Scheduler._seconds_until_next_check(now)

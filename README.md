@@ -1,109 +1,173 @@
-# A 股量化交易系统
+# a-quantitative-trading
 
-A 股 + 港股量化研究与全自动模拟交易平台。
+A 股 + 港股量化研究和模拟交易,虚拟券商,单 OS 单进程。
 
----
-
-## 系统能力
-
-| 功能 | 说明 |
-|------|------|
-| 多因子策略 | 10+ 因子（技术/基本面/宏观），DynamicWeightPipeline IC 动态加权 |
-| 动态选股 | 每日 15:10 基于板块行情+资金流向+新闻情绪自动选股 |
-| 回测引擎 | 事件驱动 Walk-Forward 回测 |
-| 盘中监控 | 5 分钟轮询，RSI 二次确认、止盈止损、飞书推送 |
-| 风控体系 | PreTrade / InTrade / PostTrade 三层，含 CVaR + Monte Carlo |
-| 早晚报 | 盘前选股 + 盘后持仓快照，每日 09:30 / 16:00 飞书推送 |
-
----
-
-## 快速启动
+## 安装
 
 ```bash
-# 安装
 conda create -n quant-trading python=3.11
 conda activate quant-trading
 pip install -r requirements.txt
 
-# 启动（API + Scheduler + 盘中监控全开）
-cd backend
-python main.py --mode both --port 5555
-
-# 或用 systemd 守护进程
-systemctl --user enable quant-trading-backend.service
-systemctl --user start quant-trading-backend.service
-
-# 手动触发选股分析
-curl -X POST http://127.0.0.1:5555/analysis/run
-
-# 查看 API 文档
-http://127.0.0.1:5555/docs
+cp .env.example .env                          # 填 API key
+cp config/trading.yaml.example config/trading.yaml
 ```
 
----
+## 运行
+
+```bash
+# 一次进程跑全部:API + Scheduler + IntradayMonitor + StrategyRunner
+python backend/main.py --mode all
+
+# 只起 HTTP API
+python backend/main.py --mode api --port 5555
+
+# 只起 Scheduler / Monitor / Runner
+python backend/main.py --mode worker
+
+# Streamlit UI(默认连本机 5555 端口的 backend)
+streamlit run streamlit_app.py --server.port 8501
+```
+
+Backward-compat 别名:`--mode both` → `all`、`--mode scheduler` → `worker`。
+
+systemd 守护进程:
+
+```bash
+systemctl --user enable quant-trading-backend.service
+systemctl --user start quant-trading-backend.service
+journalctl --user -u quant-trading-backend.service -f
+```
+
+## 配置
+
+| 来源 | 路径 | 用途 |
+|---|---|---|
+| YAML 主配置 | `config/trading.yaml` | 业务参数 |
+| Secrets | `.env` | API key / 飞书 credentials |
+| 环境变量 | shell | 临时覆盖,优先级最高 |
+
+优先级:env > YAML > 默认值。
+
+状态库路径解析(`core/state_db.state_db_path()`):
+`QUANT_STATE_DB` env > `data/state.db` > legacy `backend/services/portfolio.db`。
+
+## 鉴权
+
+| 环境变量 | 默认 | 含义 |
+|---|---|---|
+| `TRADING_API_KEY` | 空 | 设置后非公共端点必须带 `X-API-Key` |
+| `TRADING_API_REQUIRE_LOCALHOST` | `0` | `1` 时取消本机回环豁免 |
+| `TRADING_API_RATE_LIMIT_PER_MIN` | `0` | per-IP 每分钟上限,0=关闭 |
+
+公共端点(无需鉴权):`/health` / `/docs` / `/metrics` / `OPTIONS`。
+
+生产部署务必两项都拉上:
+
+```bash
+TRADING_API_KEY=$(openssl rand -hex 32)
+TRADING_API_REQUIRE_LOCALHOST=1
+```
+
+否则同机进程可绕过鉴权。
+
+## OpenAPI
+
+```bash
+# 浏览器看
+http://127.0.0.1:5555/docs
+
+# 修改路由后重新生成 spec(committed at backend/openapi.json)
+python scripts/generate_openapi.py
+
+# CI 守门:本地忘了重生成会红
+python scripts/generate_openapi.py --check
+```
 
 ## 项目结构
 
 ```
-├── core/                          # 核心业务逻辑
-│   ├── data_gateway/              # 统一数据网关（多 provider 路由 + 缓存）
-│   │   ├── gateway.py             # DataGateway 主入口
-│   │   ├── health.py              # 健康度跟踪器
-│   │   ├── cache.py               # 内存缓存
-│   │   ├── merge.py               # 字段级多源合并
-│   │   ├── schemas.py             # 数据类型定义
-│   │   └── providers/              # provider 实现
-│   │       ├── tencent.py         # 腾讯行情（主选）
-│   │       ├── sina.py            # 新浪行情
-│   │       ├── eastmoney.py       # 东方财富（板块/资金流）
-│   │       ├── akshare.py         # AkShare（最终备灾）
-│   │       └── yfinance.py        # YFinance（美股/港股指数）
-│   ├── data_layer.py             # 数据层外观（转发到 DataGateway）
-│   ├── pipeline_factory.py        # 因子流水线
-│   ├── strategy_runner.py         # 策略运行器
-│   ├── event_bus.py               # 事件总线
-│   ├── regime.py                  # 市场状态检测
-│   ├── risk_engine.py             # 风控引擎
-│   ├── factors/                   # 因子实现
-│   └── brokers/                   # 券商适配层
-├── backend/
-│   ├── main.py                    # 服务入口（Scheduler 在此）
-│   ├── api.py                     # HTTP API
-│   └── services/                  # 持久化服务
-├── docs/
-│   ├── ARCHITECTURE.md            # 系统架构（详细）
-│   ├── CHANGELOG.md               # 变更日志
-│   └── EVALUATION.md              # 系统评估
-└── params.json                    # 策略参数
+core/
+  data_gateway/      对外网数据唯一出口,多 provider 路由 + 字段级合并 + 熔断
+  use_cases/         业务用例,UI/API/CLI/Scheduler 共享同一组函数
+  factors/           因子实现
+  strategies/        策略实现
+  brokers/           虚拟券商(PaperBroker / SimulatedBroker)
+  regime.py          市场状态检测(CALM/BULL/BEAR/VOLATILE)
+  risk_engine.py     三层风控
+  llm_provider.py    LLM 服务定位器(use case 调用 LLM 的出口)
+  state_db.py        统一状态库路径解析
+  single_instance.py OS 级单实例锁
+  ...
+
+backend/
+  api.py             Flask HTTP API
+  main.py            shim,转发 quant_app
+  services/
+    intraday/        IntradayMonitor 5 Mixin(data/signaling/risk/execution/alerts)
+    intraday_monitor.py  Mixin 编排入口
+    llm/             MiniMax / DeepSeek / Kimi provider
+    ...
+  openapi.json       自动生成的 OpenAPI spec
+
+quant_app/
+  main.py            按 --mode 装配进程
+  serve_api.py       HTTP server 启动器
+  run_worker.py      Scheduler + IntradayMonitor 装配
+
+ui/
+  pages/             Streamlit 页面(dashboard / signals / backtest / monitoring / ...)
+  data.py            UI 数据加载(全部走 backend API)
+  components/        公共渲染组件
+
+scripts/             运维 + 研究脚本(详见 scripts/README.md)
+config/              YAML 配置(trading.yaml + trading.yaml.example)
+data/                state.db + parquet 时序
+docs/                文档(架构 / 券商 / 贡献 / changelog)
+tests/               pytest
 ```
 
----
+## 系统能力
 
-## 数据网关
+| 功能 | 入口 |
+|---|---|
+| 多因子流水线 | `core/pipeline_factory.build_pipeline()` |
+| 动态选股 | `scripts/dynamic_selector.py` |
+| 回测 | `core/use_cases/backtest.py` + `scripts/quant/backtest_cli.py` |
+| 盘中监控 | `backend/services/intraday_monitor.py`(Scheduler 09:31 自启) |
+| 组合优化 | `core/use_cases/compose_portfolio.py`(min_variance / max_sharpe / risk_parity) |
+| 行业轮动 | `core/use_cases/sector_rotation_signal.py` |
+| 配对交易 | `core/use_cases/pairs_trading_signal.py` |
+| 风控 | `core/risk_engine.py`(PreTrade / InTrade / PostTrade + CVaR + 蒙特卡洛) |
+| 早晚报 | Scheduler 09:30 / 16:00 → 飞书 |
 
-全系统对外网数据的唯一出口，按 (provider × capability) 路由：
+## 每日时间线
 
-- **可合并数据**（实时行情、基本面）：并发问 top-K provider，字段级互补合并
-- **不可合并数据**（K 线、板块、北向等）：按健康度降序逐个尝试
-- **熔断器**：失败累计触发硬开关，保护系统不被单一源拖垮
-- **缓存**：按数据类型设 TTL（30s ~ 24h），避免重复请求
+详见 `docs/ARCHITECTURE.md`。要点:
 
----
+- 09:30 morning_runner、09:31 IntradayMonitor 启动
+- 15:00 afternoon_report、15:10 /analysis/run、15:30 风控报告
+- 15:45 TCA、16:00 daily_ops_report
+- 非交易日全部跳过
 
-## 每日运行流程
+## 常用运维
 
-```
-09:30  — 选股 → watchlist → RSI 信号扫描 → 模拟下单 → 飞书早报
-09:31  — 盘中监控启动，每 5 分钟扫 RSI 金叉/死叉
-15:00  — 收盘晚报（持仓快照 + 收益）
-15:10  — 日终 DynamicStockSelector 选股分析
-15:30  — CVaR + 蒙特卡洛压力测试
-15:45  — TCA 反馈闭环
-16:00  — 每日运营报告 → 飞书
-```
+| 操作 | 命令 |
+|---|---|
+| 查日志 | `tail -F backend/backend.log` 或 `journalctl --user -u quant-trading-backend -f` |
+| 重生成 OpenAPI | `python scripts/generate_openapi.py` |
+| 备份状态库 | `cp data/state.db data/state.db.$(date +%F).bak` |
+| 重置 PID 锁 | `rm backend/.quant-backend.pid`(确认无实例后) |
+| 全量回归 | `pytest tests/ -q` |
 
----
+## 文档
 
-## 免责声明
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 分层 / Use Case / DataGateway / 时间线
+- [docs/BROKERS.md](docs/BROKERS.md) — 虚拟券商策略 + deprecated 清单
+- [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) — 开发流程
+- [backend/README.md](backend/README.md) — backend 服务说明 + 端点摘要
+- [scripts/README.md](scripts/README.md) — 运维/研究脚本
 
-本系统仅供研究与模拟交易验证，不构成投资建议。
+## 免责
+
+仅供研究与模拟交易,不接入真实券商,不构成投资建议。

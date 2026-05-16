@@ -388,6 +388,47 @@ def _deep_merge(base: Dict, override: Dict) -> Dict:
 # Legacy migration helpers
 # ---------------------------------------------------------------------------
 
+_LEGACY_CONFIG_FILES = (
+    # path → 用途说明
+    ('params.json', '历史 RSI 策略参数;请迁移到 config/trading.yaml strategies 节点'),
+    ('backend/services/live_params.json', 'WFA 输出参数;请迁移到 trading.yaml live_symbols / 由 walkforward_job 自动写入'),
+    ('backend/trading_mode.json', '运行时交易模式;P3-3 后由 trading.yaml broker.mode 控制(运行时切换暂保留 JSON 写入)'),
+)
+
+
+def warn_legacy_configs(logger=None) -> List[str]:
+    """启动时扫描遗留 JSON 配置,记录 deprecation 警告。
+
+    返回找到的遗留文件相对路径列表(供测试 / 集成检查)。
+    本函数 best-effort:任何 IO 错误静默,不影响启动。
+    """
+    import logging
+    log = logger or logging.getLogger('core.config')
+    proj_dir = Path(__file__).parent.parent
+    found: List[str] = []
+    for rel_path, note in _LEGACY_CONFIG_FILES:
+        full = proj_dir / rel_path
+        if not full.exists():
+            continue
+        try:
+            size = full.stat().st_size
+        except OSError:
+            continue
+        if size <= 2:  # 空 JSON {}/[]
+            continue
+        found.append(rel_path)
+        log.warning(
+            '[config] 遗留配置文件 %s (%d bytes) 仍在使用 — %s',
+            rel_path, size, note,
+        )
+    if found:
+        log.warning(
+            '[config] 推荐迁移到 config/trading.yaml(参考 config/trading.yaml.example);'
+            '迁移完成后可清空旧 JSON。'
+        )
+    return found
+
+
 def load_from_json(
     params_path: str,
     live_params_path: Optional[str] = None,

@@ -202,26 +202,35 @@ def get_regime_params() -> dict:
 def log_opening_state(candidates: list,
                       positions: list, cash: float, equity: float,
                       regime_info: dict):
-    """记录完整开盘状态到 backend（作为 daily_meta notes）。"""
+    """记录完整开盘状态到 backend（作为 daily_meta notes）。
+
+    P2-4: notes 文本由 use case 装配,本函数仅负责 HTTP 调用 backend。
+    """
     try:
-        today = date.today().isoformat()
-        notes = (
-            f"[MorningRunner] regime={regime_info['regime']} "
-            f"ATR={regime_info['atr_ratio']:.2f} "
-            f"candidates:{len(candidates)} "
-            f"positions:{len(positions)} "
-            f"equity={equity:.0f} cash={cash:.0f}"
+        # 添加项目根目录到 sys.path 以便导入 core.use_cases
+        _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _repo_root not in sys.path:
+            sys.path.insert(0, _repo_root)
+        from core.use_cases.morning_workflow import (
+            MorningWorkflowRequest, assemble_morning_report,
         )
 
+        report = assemble_morning_report(MorningWorkflowRequest(
+            candidates=candidates,
+            regime_info=regime_info,
+            positions=positions,
+            cash=cash, equity=equity,
+        ))
+
         api_post('/portfolio/daily', {
-            'date':        today,
+            'date':        report.date,
             'nav':         1.0,
             'equity':      equity,
             'cash':        cash,
             'market_value': equity - cash,
-            'notes':       notes,
+            'notes':       report.notes_for_daily_meta,
         })
-        _log.info('Opening state logged: %s', notes[:200])
+        _log.info('Opening state logged: %s', report.notes_for_daily_meta[:200])
     except Exception as e:
         _log.warning('log_opening_state failed: %s', e)
 
@@ -256,23 +265,19 @@ def build_and_push_morning_report(candidates: list,
         _log.error('morning_report.build_report failed: %s', e)
         report = None
 
-    # 降级兜底
+    # 降级兜底:文本由 use case 生成(P2-4)
     if not report:
-        lines = [
-            f"【早报降级版】{date.today().isoformat()}",
-            f"",
-            f"市场环境: [{regime_info['regime']}] {regime_info.get('regime_reason', '')}",
-            f"ATR ratio: {regime_info['atr_ratio']:.3f}",
-            f"开盘权益: {equity:.0f}  现金: {cash:.0f}",
-            f"",
-            f"今日候选 ({len(candidates)}只)：",
-        ]
-        for c in candidates[:5]:
-            lines.append(f"  {c.get('symbol', c.get('code', '?'))} {c.get('name', '')} "
-                         f"score={c.get('score', 0):.0f}")
-        lines.append("")
-        lines.append("（开仓决策由盘中 IntradayMonitor 处理）")
-        report = '\n'.join(lines)
+        _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _repo_root not in sys.path:
+            sys.path.insert(0, _repo_root)
+        from core.use_cases.morning_workflow import (
+            MorningWorkflowRequest, build_fallback_report_text,
+        )
+        report = build_fallback_report_text(MorningWorkflowRequest(
+            candidates=candidates,
+            regime_info=regime_info,
+            cash=cash, equity=equity,
+        ))
 
     # 飞书推送
     try:

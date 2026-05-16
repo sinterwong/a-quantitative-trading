@@ -1,5 +1,14 @@
 """
-core/brokers/futu.py — 富途证券适配器（完整实现）
+core/brokers/futu.py — 富途证券适配器(**DEPRECATED**)
+
+⚠️ 产品定位:本系统不接入真实券商,所有"下单"均为虚拟模拟盘记账。
+   本文件保留历史代码雏形,不再维护,导入时打 DeprecationWarning。
+   生产路径请用:
+     - core.brokers.PaperBroker (事件驱动)
+     - core.brokers.simulated.SimulatedBroker (同步)
+     - backend.services.broker (生产链路直写 PortfolioService)
+
+---
 
 接入富途 OpenD 本地进程，支持纸交易（TrdEnv.SIMULATE）和实盘（TrdEnv.REAL）。
 
@@ -15,21 +24,19 @@ core/brokers/futu.py — 富途证券适配器（完整实现）
   - 所有方法均有超时保护
 
 富途 API 文档：https://openapi.futunn.com/futu-api-doc/
-
-用法：
-    from core.brokers.futu import FutuBroker
-
-    broker = FutuBroker(host='127.0.0.1', port=11111, trade_env='SIMULATE')
-    ok = broker.connect()
-    if ok:
-        account = broker.get_account()
-        print(account.total_assets)
-    broker.disconnect()
 """
 
 from __future__ import annotations
 
 import logging
+import warnings
+
+warnings.warn(
+    "core.brokers.futu is deprecated: 本系统不接入真实券商,请用 PaperBroker / "
+    "SimulatedBroker。本文件仅保留代码雏形,后续可能移除。",
+    DeprecationWarning,
+    stacklevel=2,
+)
 from datetime import datetime
 from typing import List, Optional, Set
 

@@ -997,3 +997,87 @@ def load_symbol_params(symbol: str) -> dict:
             pass
 
     return result
+
+
+PARAM_FIELDS_ALLOWED = {
+    'rsi_period', 'rsi_buy', 'rsi_sell',
+    'stop_loss', 'take_profit', 'min_hold_days',
+    'atr_threshold', 'atr_period', 'atr_multiplier',
+}
+
+
+def _params_json_path() -> str:
+    proj = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(proj, 'params.json')
+
+
+def _live_params_json_path() -> str:
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(backend_dir, 'services', 'live_params.json')
+
+
+def update_symbol_params(symbol: str, updates: dict) -> dict:
+    """
+    更新 params.json 中指定 symbol 的策略参数,返回更新后的 params 字典。
+
+    - 仅接受 PARAM_FIELDS_ALLOWED 内的字段(调用方应先过滤,但兜底再校验一次)
+    - 找不到现有策略条目时新建 'Custom_{symbol}'
+    - 更新 params_all['updated'] 为当日日期
+    """
+    updates = {k: v for k, v in updates.items() if k in PARAM_FIELDS_ALLOWED}
+    if not updates:
+        return {}
+
+    params_file = _params_json_path()
+    params_all: dict = {}
+    if os.path.exists(params_file):
+        with open(params_file, 'r', encoding='utf-8') as f:
+            params_all = json.load(f)
+
+    strategies = params_all.setdefault('strategies', {})
+    target_key = next(
+        (name for name, conf in strategies.items()
+         if conf.get('symbol', '').upper() == symbol.upper()),
+        None,
+    )
+    if target_key is None:
+        target_key = f'Custom_{symbol}'
+        strategies[target_key] = {'symbol': symbol.upper(), 'params': {}}
+
+    p = strategies[target_key].setdefault('params', {})
+    p.update(updates)
+    params_all['updated'] = datetime.now().strftime('%Y-%m-%d')
+
+    with open(params_file, 'w', encoding='utf-8') as f:
+        json.dump(params_all, f, ensure_ascii=False, indent=4)
+    return p
+
+
+def list_symbols_with_params() -> list[str]:
+    """汇总 params.json + live_params.json 中出现过的 symbol（去重 + 升序）。"""
+    symbols: set[str] = set()
+
+    params_file = _params_json_path()
+    if os.path.exists(params_file):
+        try:
+            with open(params_file, 'r', encoding='utf-8') as f:
+                params_all = json.load(f)
+            for conf in params_all.get('strategies', {}).values():
+                sym = conf.get('symbol')
+                if sym:
+                    symbols.add(sym.upper())
+        except Exception:
+            pass
+
+    live_file = _live_params_json_path()
+    if os.path.exists(live_file):
+        try:
+            with open(live_file, 'r', encoding='utf-8') as f:
+                live = json.load(f)
+            for k in live:
+                if '_' in k:
+                    symbols.add(k.rsplit('_', 1)[0])
+        except Exception:
+            pass
+
+    return sorted(symbols)

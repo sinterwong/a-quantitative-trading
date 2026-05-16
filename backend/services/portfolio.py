@@ -31,7 +31,15 @@ from contextlib import contextmanager
 logger = logging.getLogger('portfolio')
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(THIS_DIR, 'portfolio.db')
+
+# P3-4: 统一通过 core.state_db.state_db_path() 解析。新部署用 data/state.db,
+# 既有 backend/services/portfolio.db 仍可作为 fallback,平滑过渡。
+try:
+    from core.state_db import state_db_path as _state_db_path
+    DB_PATH = _state_db_path()
+except Exception:
+    # core 不可导入(极端环境)退化到旧路径
+    DB_PATH = os.path.join(THIS_DIR, 'portfolio.db')
 
 
 # ============================================================

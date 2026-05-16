@@ -223,6 +223,33 @@ class MetricsRegistry:
         except Exception as e:
             logger.warning('metrics update_from_portfolio failed: %s', e)
 
+    def refresh_from_service(self, svc) -> None:
+        """从 PortfolioService 实例直接刷新指标（in-process，避免 HTTP 自调）。
+
+        失败时静默降级，仍允许 caller 继续 generate()。
+        """
+        if not self._available:
+            return
+        try:
+            positions = svc.get_positions() or []
+            cash = svc.get_cash()
+            total_pnl = sum(float(p.get('unrealized_pnl', 0.0) or 0.0) for p in positions)
+            n_pos = sum(1 for p in positions if p.get('shares', 0) > 0)
+            total_val = float(cash) + sum(
+                float(p.get('shares', 0)) * float(p.get('current_price', 0.0) or 0.0)
+                for p in positions
+            )
+            initial = svc.get_initial_capital() if hasattr(svc, 'get_initial_capital') else total_val
+            net_val = total_val / max(initial, 1.0)
+            self.update_from_portfolio(
+                net_value=net_val,
+                total_pnl=float(total_pnl),
+                n_positions=n_pos,
+                cash=float(cash),
+            )
+        except Exception as e:
+            logger.warning('metrics refresh_from_service failed: %s', e)
+
     def update_from_api(self, api_port: int = 5555, timeout: int = 5) -> None:
         """从本地 backend API 拉取组合数据并刷新指标。"""
         if not self._available:

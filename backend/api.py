@@ -404,27 +404,17 @@ def portfolio_daily():
 def record_portfolio_daily():
     """
     POST /portfolio/daily - record daily meta.
-    Body: {date, equity, cash, market_value, nav, notes}
+    Body: {equity, cash, n_signals, n_trades, notes}
     """
-    try:
-        svc = get_svc()
-        body = request.get_json() or {}
-        equity     = float(body.get('equity', 0))
-        cash       = float(body.get('cash', 0))
-        market_val = float(body.get('market_value', 0))
-        nav        = float(body.get('nav', 1.0))
-        notes      = str(body.get('notes', ''))
-        n_signals  = int(body.get('n_signals', 0))
-        n_trades   = int(body.get('n_trades', 0))
-        svc.record_daily_meta(
-            equity=equity, cash=cash,
-            n_signals=n_signals, n_trades=n_trades,
-            note=notes
-        )
-        return ok(message='daily meta recorded')
-    except Exception as e:
-        import traceback
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+    body = request.get_json() or {}
+    get_svc().record_daily_meta(
+        equity=float(body.get('equity', 0)),
+        cash=float(body.get('cash', 0)),
+        n_signals=int(body.get('n_signals', 0)),
+        n_trades=int(body.get('n_trades', 0)),
+        note=str(body.get('notes', '')),
+    )
+    return ok(message='daily meta recorded')
 
 
 # ============================================================
@@ -432,53 +422,50 @@ def record_portfolio_daily():
 # Phase 2: will call broker service
 # ============================================================
 
+def _get_or_build_broker():
+    """复用 main.get_broker() 的共享实例；测试/无 monitor 场景回退到新建 PaperBroker。"""
+    try:
+        from main import get_broker
+        b = get_broker()
+        if b is not None:
+            return b
+    except Exception:
+        pass
+    from services.broker import PaperBroker
+    b = PaperBroker(portfolio_service=get_svc())
+    b.connect()
+    return b
+
+
 @app.route('/orders/submit', methods=['POST'])
 @rate_limit(max_per_window=10, window_seconds=60)
 def submit_order():
-    """
-    POST /orders/submit — submit an order → PaperBroker executes it.
-    Phase 1: PaperBroker simulates fill and updates portfolio.
-    """
+    """POST /orders/submit — 通过共享 broker 提交订单(simulation 模式下 PaperBroker 即时撮合)。"""
     if (e := require_json()):
         return e
     body = request.json
-    required = ['symbol', 'direction', 'shares']
-    for field in required:
+    for field in ('symbol', 'direction', 'shares'):
         if field not in body:
             return err(f"missing required field: {field}")
 
     direction = body['direction'].upper()
     if direction not in ('BUY', 'SELL'):
         return err("direction must be BUY or SELL")
-
     shares = int(body['shares'])
     if shares <= 0:
         return err("shares must be positive")
 
-    symbol = body['symbol']
-    price = float(body.get('price', 0))
-    price_type = body.get('price_type', 'market')
-
-    # Execute via PaperBroker
-    from services.broker import PaperBroker
-    svc = get_svc()
-    broker = PaperBroker(portfolio_service=svc)
-    broker.connect()
-    result = broker.submit_order(symbol=symbol, direction=direction,
-                                  shares=shares, price=price,
-                                  price_type=price_type)
-
+    result = _get_or_build_broker().submit_order(
+        symbol=body['symbol'], direction=direction, shares=shares,
+        price=float(body.get('price', 0)),
+        price_type=body.get('price_type', 'market'),
+    )
     return ok(
-        order_id=result.order_id,
-        status=result.status,
-        symbol=symbol,
-        direction=direction,
-        shares=shares,
-        filled_shares=result.filled_shares,
-        avg_price=result.avg_price,
+        order_id=result.order_id, status=result.status,
+        symbol=body['symbol'], direction=direction, shares=shares,
+        filled_shares=result.filled_shares, avg_price=result.avg_price,
         reason=result.reason,
-        submitted_at=result.submitted_at,
-        filled_at=result.filled_at,
+        submitted_at=result.submitted_at, filled_at=result.filled_at,
     )
 
 
@@ -560,80 +547,22 @@ def update_symbol_params(symbol):
     """
     PATCH /params/<symbol> — 更新单股参数（写入 params.json）。
     Body: {"rsi_buy": 30, "stop_loss": 0.06, ...}
-    支持字段: rsi_period, rsi_buy, rsi_sell, stop_loss, take_profit,
-              min_hold_days, atr_threshold, atr_period, atr_multiplier
+    支持字段见 services.signals.PARAM_FIELDS_ALLOWED。
     """
     if (e := require_json()):
         return e
-    import json as _json
-    body = request.json
-    allowed = {'rsi_period', 'rsi_buy', 'rsi_sell', 'stop_loss', 'take_profit',
-               'min_hold_days', 'atr_threshold', 'atr_period', 'atr_multiplier'}
-    updates = {k: v for k, v in body.items() if k in allowed}
-    if not updates:
-        return err(f'No valid fields. Allowed: {sorted(allowed)}', 422)
-
-    proj = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    params_file = os.path.join(proj, 'params.json')
-    params_all = {}
-    if os.path.exists(params_file):
-        with open(params_file, 'r', encoding='utf-8') as f:
-            params_all = _json.load(f)
-
-    # 查找或创建对应 symbol 的策略条目
-    strategies = params_all.setdefault('strategies', {})
-    target_key = None
-    for name, conf in strategies.items():
-        if conf.get('symbol', '').upper() == symbol.upper():
-            target_key = name
-            break
-    if target_key is None:
-        target_key = f'Custom_{symbol}'
-        strategies[target_key] = {'symbol': symbol.upper(), 'params': {}}
-
-    p = strategies[target_key].setdefault('params', {})
-    for k, v in updates.items():
-        p[k] = v
-    params_all['updated'] = datetime.now().strftime('%Y-%m-%d')
-
-    with open(params_file, 'w', encoding='utf-8') as f:
-        _json.dump(params_all, f, ensure_ascii=False, indent=4)
-
-    return ok(symbol=symbol, updated=updates, params=p)
+    from services.signals import update_symbol_params as _update, PARAM_FIELDS_ALLOWED
+    updated = _update(symbol, request.json or {})
+    if not updated:
+        return err(f'No valid fields. Allowed: {sorted(PARAM_FIELDS_ALLOWED)}', 422)
+    return ok(symbol=symbol, params=updated)
 
 
 @app.route('/params', methods=['GET'])
 def list_all_params():
-    """
-    GET /params — 全量参数列表（params.json + live_params.json 合并视图）。
-    """
-    import json as _json
-    from services.signals import load_symbol_params
-
-    proj = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    params_file = os.path.join(proj, 'params.json')
-    all_symbols = set()
-    if os.path.exists(params_file):
-        with open(params_file, 'r', encoding='utf-8') as f:
-            params_all = _json.load(f)
-        for conf in params_all.get('strategies', {}).values():
-            sym = conf.get('symbol')
-            if sym:
-                all_symbols.add(sym.upper())
-
-    # 也包含 live_params.json 中的 key
-    live_file = os.path.join(proj, 'backend', 'services', 'live_params.json')
-    if os.path.exists(live_file):
-        with open(live_file, 'r', encoding='utf-8') as f:
-            live = _json.load(f)
-        for k in live:
-            if '_' in k:
-                all_symbols.add(k.rsplit('_', 1)[0])
-
-    result = {}
-    for sym in sorted(all_symbols):
-        result[sym] = load_symbol_params(sym)
-
+    """GET /params — 全量参数列表（params.json + live_params.json 合并视图）。"""
+    from services.signals import list_symbols_with_params, load_symbol_params
+    result = {sym: load_symbol_params(sym) for sym in list_symbols_with_params()}
     return ok(params=result, count=len(result))
 
 
@@ -643,139 +572,24 @@ def list_all_params():
 
 @app.route('/analysis/run', methods=['POST'])
 def run_analysis():
-    """
-    POST /analysis/run — trigger daily analysis.
-
-    运行 DynamicStockSelector 选股 + 记录信号，并将完整结果持久化到
-    outputs/analysis/analysis_{date}.json，供 /analysis/health 和
-    DailyOpsReporter 读取。
-    """
-    # Import the dynamic selector to run analysis
-    try:
-        sys.path.insert(0, os.path.join(PROJ_DIR, 'scripts'))
-        from dynamic_selector import DynamicStockSelector
-
-        selector = DynamicStockSelector()
-        selector.fetch_market_news(20)
-        selector.calc_all_scores()
-        top_bks = selector.get_top_bk_sectors(5)
-        news = selector.get_news_summary(10)
-        stocks = selector.get_stock_with_context(5)
-        sources = {
-            'news': selector._last_news_source,
-            'sectors': selector._last_source,
-        }
-
-        # Record signals
-        svc = get_svc()
-        for bk, info in top_bks:
-            svc.record_signal(
-                bk, 'BUY', info.get('total', 0) / 100.0,
-                f"板块:{info.get('name','')} 涨幅:{info.get('change_pct',0):.2f}%"
-            )
-
-        result = {
-            'sources': sources,
-            'top_sectors': [
-                {'bk': bk, 'name': info.get('name'), 'total': info.get('total'),
-                 'change_pct': info.get('change_pct')}
-                for bk, info in top_bks
-            ],
-            'news_summary': news,
-            'selected_stocks': stocks,
-        }
-
-        # ── 持久化到 outputs/analysis/ ──────────────────────────────
-        try:
-            out_dir = os.path.join(BACKEND_DIR, 'outputs', 'analysis')
-            os.makedirs(out_dir, exist_ok=True)
-            today_str = datetime.now().strftime('%Y-%m-%d')
-            out_path = os.path.join(out_dir, f'analysis_{today_str}.json')
-            with open(out_path, 'w', encoding='utf-8') as f:
-                json.dump({
-                    'timestamp': datetime.now().isoformat(),
-                    **result,
-                }, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass  # 持久化失败不影响 API 响应
-
-        # ── 记录 daily_meta（供 StrategyHealthMonitor 读取）─────────
-        try:
-            summary = svc.get_portfolio_summary()
-            trades_today = svc.get_trades(limit=200)
-            today_str_iso = datetime.now().strftime('%Y-%m-%d')
-            n_trades = sum(1 for t in trades_today
-                          if str(t.get('timestamp', ''))[:10] == today_str_iso)
-            svc.record_daily_meta(
-                equity=float(summary.get('total_equity', 0) or 0),
-                cash=float(summary.get('cash', 0) or 0),
-                n_signals=len(top_bks),
-                n_trades=n_trades,
-            )
-        except Exception:
-            pass
-
-        return ok(**result)
-    except Exception as e:
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+    """POST /analysis/run — 触发每日分析 (use case: daily_analysis)。"""
+    from core.use_cases.daily_analysis import DailyAnalysisRequest, run_daily_analysis
+    response = run_daily_analysis(
+        DailyAnalysisRequest(output_dir=os.path.join(BACKEND_DIR, 'outputs', 'analysis')),
+        portfolio_svc=get_svc(),
+    )
+    return ok(**response.to_dict())
 
 
 @app.route('/analysis/health', methods=['GET'])
 def analysis_health():
-    """GET /analysis/health — 系统健康状态汇总。
-
-    综合持仓、最近分析、信号等数据，返回 OK / WARN / CRITICAL 健康等级。
-    """
-    try:
-        svc = get_svc()
-        summary = svc.get_portfolio_summary()
-        positions = svc.get_positions()
-        n_positions = len(positions)
-        total_pnl = sum(float(p.get('unrealized_pnl', 0) or 0) for p in positions)
-        cash = float(summary.get('cash', 0) or 0)
-        equity = float(summary.get('total_equity', 0) or 0)
-
-        # 简单健康规则
-        level = 'OK'
-        reasons = []
-
-        # 1. 现金占比过低 → WARN
-        if equity > 0 and cash / equity < 0.05:
-            level = 'WARN'
-            reasons.append(f'现金占比仅 {cash/equity*100:.1f}%，低于 5%')
-
-        # 2. 未实现亏损超过总权益 5% → WARN
-        if equity > 0 and total_pnl < -0.05 * equity:
-            level = 'WARN'
-            reasons.append(f'未实现亏损 {total_pnl:.0f} 超过总权益 5%')
-
-        # 3. 未实现亏损超过总权益 10% → CRITICAL
-        if equity > 0 and total_pnl < -0.10 * equity:
-            level = 'CRITICAL'
-            reasons.append(f'未实现亏损 {total_pnl:.0f} 超过总权益 10%')
-
-        # 4. 最近分析时间检查
-        latest_analysis = None
-        try:
-            analysis_dir = os.path.join(BACKEND_DIR, 'outputs', 'analysis')
-            if os.path.isdir(analysis_dir):
-                files = sorted(os.listdir(analysis_dir), reverse=True)
-                if files:
-                    latest_analysis = files[0]
-        except Exception:
-            pass
-
-        return ok(
-            level=level,
-            reasons=reasons,
-            n_positions=n_positions,
-            total_unrealized_pnl=round(total_pnl, 2),
-            cash=round(cash, 2),
-            equity=round(equity, 2),
-            latest_analysis=latest_analysis,
-        )
-    except Exception as e:
-        return err(str(e), 500)
+    """GET /analysis/health — 系统健康状态 (use case: system_health)。"""
+    from core.use_cases.system_health import compute_system_health
+    report = compute_system_health(
+        get_svc(),
+        analysis_dir=os.path.join(BACKEND_DIR, 'outputs', 'analysis'),
+    )
+    return ok(**report.to_dict())
 
 
 @app.route('/analysis/status', methods=['GET'])
@@ -828,53 +642,23 @@ def sector_rotation_signal():
           "avg_turnover_pct": 0.33
         }
     """
+    from core.use_cases.sector_rotation_signal import (
+        SectorRotationRequest, run_sector_rotation,
+    )
+    from core.use_cases import UseCaseError
+    body = request.get_json(silent=True) or {}
+    req = SectorRotationRequest(
+        top_n=int(body.get('top_n', 3)),
+        lookback_days=int(body.get('lookback_days', 60)),
+        rebalance_days=int(body.get('rebalance_days', 21)),
+        momentum_method=str(body.get('momentum_method', 'return')),
+        current_holdings=list(body.get('current_holdings', [])),
+    )
     try:
-        body = request.get_json(silent=True) or {}
-        top_n            = int(body.get('top_n', 3))
-        lookback_days    = int(body.get('lookback_days', 60))
-        rebalance_days   = int(body.get('rebalance_days', 21))
-        momentum_method  = str(body.get('momentum_method', 'return'))
-        current_holdings = list(body.get('current_holdings', []))
-
-        from core.strategies.sector_rotation import SectorRotationStrategy, DEFAULT_SECTOR_ETFS
-        from core.data_layer import get_data_layer
-
-        strategy = SectorRotationStrategy(
-            top_n=top_n,
-            lookback_days=lookback_days,
-            rebalance_days=rebalance_days,
-            momentum_method=momentum_method,
-        )
-
-        dl = get_data_layer()
-        price_data = {}
-        for sym in DEFAULT_SECTOR_ETFS:
-            df = dl.get_bars(sym, days=max(lookback_days + 20, 90))
-            if df is not None and not df.empty:
-                price_data[sym] = df
-
-        if not price_data:
-            return err('无法获取行业 ETF 行情数据', 503)
-
-        signal = strategy.latest_signal(price_data, current_holdings=current_holdings)
-
-        # 记录到 signals 表（SECTOR_FLOW 类型告警）
-        svc = get_svc()
-        for sym in signal.buy:
-            svc.record_signal(sym, 'BUY', signal.scores.get(sym, 0),
-                              f'行业轮动买入: 动量分 {signal.scores.get(sym, 0):.4f}')
-
-        return ok(
-            rebalance_date=signal.rebalance_date,
-            buy=signal.buy,
-            sell=signal.sell,
-            hold=signal.hold,
-            scores=signal.scores,
-            top_n=signal.top_n,
-            universe_size=len(price_data),
-        )
-    except Exception as e:
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+        response = run_sector_rotation(req, portfolio_svc=get_svc())
+    except UseCaseError as exc:
+        return err(exc.message, 503 if exc.code == 'DATA_UNAVAILABLE' else 422)
+    return ok(**response.to_dict())
 
 
 # ============================================================
@@ -910,64 +694,25 @@ def pairs_trading_signal():
           "n_pairs_found": 1
         }
     """
+    from core.use_cases.pairs_trading_signal import (
+        PairsTradingRequest, find_pairs_signals,
+    )
+    from core.use_cases import UseCaseError
+    body = request.get_json(silent=True) or {}
+    req = PairsTradingRequest(
+        symbols=list(body.get('symbols', [])),
+        entry_z=float(body.get('entry_z', 2.0)),
+        exit_z=float(body.get('exit_z', 0.5)),
+        stop_z=float(body.get('stop_z', 4.0)),
+        lookback_days=int(body.get('lookback_days', 60)),
+        screen_days=int(body.get('screen_days', 252)),
+    )
     try:
-        body = request.get_json(silent=True) or {}
-        symbols      = list(body.get('symbols', []))
-        entry_z      = float(body.get('entry_z', 2.0))
-        exit_z       = float(body.get('exit_z',  0.5))
-        stop_z       = float(body.get('stop_z',  4.0))
-        lookback_days= int(body.get('lookback_days', 60))
-        screen_days  = int(body.get('screen_days', 252))
-
-        if len(symbols) < 2:
-            return err('至少提供 2 个标的用于配对筛选', 400)
-
-        from core.strategies.pairs_trading import find_cointegrated_pairs, PairsTradingStrategy
-        from core.data_layer import get_data_layer
-
-        dl = get_data_layer()
-        # 加载价格矩阵（close 列）
-        price_dict = {}
-        for sym in symbols:
-            df = dl.get_bars(sym, days=screen_days + 30)
-            if df is not None and not df.empty and 'close' in df.columns:
-                price_dict[sym] = df['close']
-
-        if len(price_dict) < 2:
-            return err('有效行情数据不足 2 个标的', 503)
-
-        price_df = pd.DataFrame(price_dict).dropna()
-
-        # 筛选协整配对
-        pairs = find_cointegrated_pairs(price_df, lookback_days=screen_days)
-
-        results = []
-        for sym_a, sym_b in pairs[:5]:   # 最多返回 5 对
-            try:
-                strat = PairsTradingStrategy(
-                    symbol_a=sym_a, symbol_b=sym_b,
-                    entry_z=entry_z, exit_z=exit_z, stop_z=stop_z,
-                    lookback_days=lookback_days,
-                )
-                signal = strat.latest_signal(price_df)
-                if signal:
-                    results.append({
-                        'symbol_a': sym_a,
-                        'symbol_b': sym_b,
-                        'signal': {
-                            'date':          signal.date,
-                            'spread_zscore': round(signal.spread_zscore, 4),
-                            'action_a':      signal.action_a,
-                            'action_b':      signal.action_b,
-                            'spread':        round(signal.spread, 6),
-                        }
-                    })
-            except Exception:
-                continue
-
-        return ok(pairs=results, n_pairs_found=len(pairs))
-    except Exception as e:
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+        response = find_pairs_signals(req)
+    except UseCaseError as exc:
+        code = 503 if exc.code == 'DATA_UNAVAILABLE' else 400
+        return err(exc.message, code)
+    return ok(**response.to_dict())
 
 
 # ============================================================
@@ -1002,28 +747,19 @@ def analyze_a_stock_endpoint():
       与 services.single_stock_analysis.AnalysisReport 的 to_dict() 一致，
       详见模块 docstring。失败字段以 warnings + 字段为 None 表达。
     """
+    from services.single_stock_analysis import (
+        AnalysisRequest, analyze_a_share, detect_market,
+    )
     try:
-        from services.single_stock_analysis import (
-            AnalysisRequest, analyze_a_share, detect_market,
+        req = AnalysisRequest.from_body(request.get_json(silent=True) or {})
+    except ValueError as exc:
+        return err(str(exc), 422)
+    if detect_market(req.symbol) != 'A':
+        return err(
+            f'symbol {req.symbol!r} 不是 A 股代码（应为 NNNNNN.SH/SZ）；港股请用 /analysis/stock/hk',
+            422,
         )
-        body = request.get_json(silent=True) or {}
-        try:
-            req = AnalysisRequest.from_body(body)
-        except ValueError as exc:
-            return err(str(exc), 422)
-
-        market = detect_market(req.symbol)
-        if market != 'A':
-            return err(
-                f'symbol {req.symbol!r} 不是 A 股代码（应为 NNNNNN.SH/SZ）；'
-                f'港股请用 /analysis/stock/hk',
-                422,
-            )
-
-        report = analyze_a_share(req)
-        return ok(**report.to_dict())
-    except Exception as e:
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+    return ok(**analyze_a_share(req).to_dict())
 
 
 @app.route('/analysis/stock/hk', methods=['POST'])
@@ -1050,28 +786,19 @@ def analyze_hk_stock_endpoint():
     Returns:
       AnalysisReport.to_dict() 结构，market='HK'，缺失能力以 warnings 列出。
     """
+    from services.single_stock_analysis import (
+        AnalysisRequest, analyze_hk_share, detect_market,
+    )
     try:
-        from services.single_stock_analysis import (
-            AnalysisRequest, analyze_hk_share, detect_market,
+        req = AnalysisRequest.from_body(request.get_json(silent=True) or {})
+    except ValueError as exc:
+        return err(str(exc), 422)
+    if detect_market(req.symbol) != 'HK':
+        return err(
+            f'symbol {req.symbol!r} 不是港股代码（应为 HK:NNNNN / NNNNN.HK / hkNNNNN）；A 股请用 /analysis/stock/a',
+            422,
         )
-        body = request.get_json(silent=True) or {}
-        try:
-            req = AnalysisRequest.from_body(body)
-        except ValueError as exc:
-            return err(str(exc), 422)
-
-        market = detect_market(req.symbol)
-        if market != 'HK':
-            return err(
-                f'symbol {req.symbol!r} 不是港股代码（应为 HK:NNNNN / NNNNN.HK / hkNNNNN）；'
-                f'A 股请用 /analysis/stock/a',
-                422,
-            )
-
-        report = analyze_hk_share(req)
-        return ok(**report.to_dict())
-    except Exception as e:
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+    return ok(**analyze_hk_share(req).to_dict())
 
 
 # ============================================================
@@ -1121,29 +848,23 @@ def sector_compare():
         "warnings": []
       }
     """
+    from services.sector_comparison import compare_sector, compare_symbols
+    body = request.get_json(silent=True) or {}
+    sector = body.get('sector')
+    symbols = body.get('symbols')
+    sector_name = body.get('sector_name', sector or '自定义')
+    base_symbol = body.get('base_symbol')
+
     try:
-        from services.sector_comparison import compare_sector, compare_symbols
-        body = request.get_json(silent=True) or {}
-
-        sector = body.get('sector')
-        symbols = body.get('symbols')
-        sector_name = body.get('sector_name', sector or '自定义')
-        base_symbol = body.get('base_symbol')
-
         if symbols:
-            # 自定义模式
             result = compare_symbols(symbols, sector_name, base_symbol)
         elif sector:
-            # 行业模式
             result = compare_sector(sector, base_symbol)
         else:
             return err('body 必须包含 sector 或 symbols 字段', 422)
-
-        return ok(**result.to_dict())
     except ValueError as exc:
         return err(str(exc), 422)
-    except Exception as e:
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+    return ok(**result.to_dict())
 
 
 # ============================================================
@@ -1174,8 +895,8 @@ def monthly_performance():
                                          include_chart=include_chart)
         return ok(**report)
     except Exception as e:
-        import traceback
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+        app.logger.exception('monthly_report failed')
+        return err(f'月度报告生成失败: {e}', 500)
 
 
 
@@ -1198,8 +919,8 @@ def record_monthly_snapshot():
         record_monthly_snapshot(year, month)
         return ok(message=f'{year}年{month}月快照已记录')
     except Exception as e:
-        import traceback
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+        app.logger.exception('record_monthly_snapshot failed')
+        return err(f'月度快照记录失败: {e}', 500)
 
 
 @app.route('/analysis/monthly/history', methods=['GET'])
@@ -1214,8 +935,8 @@ def monthly_history():
         snapshots = get_monthly_snapshots(limit=limit)
         return ok(snapshots=snapshots, count=len(snapshots))
     except Exception as e:
-        import traceback
-        return err(str(e) + '\n' + traceback.format_exc(), 500)
+        app.logger.exception('monthly_history failed')
+        return err(f'月度历史查询失败: {e}', 500)
 
 
 # ============================================================
@@ -1330,6 +1051,20 @@ def clear_alerts():
 # Data fetch endpoints (多源兜底路由)
 # ============================================================
 
+_DATA_NOT_FOUND_MARKERS = (
+    '所有数据源均失败',   # FetcherManager 所有 fetcher 都失败
+    '未获取到数据',
+    '空数据',
+    'no data',
+)
+
+
+def _is_symbol_not_found(err_msg: str) -> bool:
+    """根据 fetcher 错误消息判断是否属于"无此 symbol",而非内部异常。"""
+    s = str(err_msg)
+    return any(m in s for m in _DATA_NOT_FOUND_MARKERS)
+
+
 @app.route('/data/daily/<code>', methods=['GET'])
 def data_daily(code):
     """
@@ -1338,11 +1073,15 @@ def data_daily(code):
         days     — int, number of trading days (default 30, max 2000)
         start    — str, start date YYYY-MM-DD (optional)
         end      — str, end date YYYY-MM-DD (optional)
-    
+
     Returns:
         Standardized OHLCV daily data with MA5/MA10/MA20/volume_ratio.
-        Uses multi-source failover: Tencent → Sina → AkShare.
-        Circuit breaker protects each source.
+        Multi-source failover: Tencent → Sina → AkShare(熔断器保护)。
+
+    Status:
+        200 - 数据正常返回
+        404 - 全部 fetcher 都报"无该 symbol 数据",视为标的不存在
+        500 - 内部错误(网络全断 / fetcher_manager 加载失败 / 等)
     """
     try:
         from services.fetcher_manager import get_fetcher_manager
@@ -1353,28 +1092,29 @@ def data_daily(code):
 
         fm = get_fetcher_manager()
         df = fm.get_daily_data(code, start_date=start, end_date=end, days=days)
+    except Exception as exc:
+        app.logger.exception('data_daily(%s) failed', code)
+        if _is_symbol_not_found(exc):
+            return err(f'无该标的的行情数据: {code}', 404)
+        return err(f'数据获取失败: {exc}', 500)
 
-        # Convert to dict records (ISO date string)
-        records = []
-        for _, row in df.iterrows():
-            rec = {}
-            for col, val in row.items():
-                if col == 'date':
-                    rec[col] = str(val)[:10] if val else None
-                elif val is not None:
-                    rec[col] = round(float(val), 4) if isinstance(val, (int, float)) else val
-            records.append(rec)
+    records = []
+    for _, row in df.iterrows():
+        rec = {}
+        for col, val in row.items():
+            if col == 'date':
+                rec[col] = str(val)[:10] if val else None
+            elif val is not None:
+                rec[col] = round(float(val), 4) if isinstance(val, (int, float)) else val
+        records.append(rec)
 
-        return ok(
-            code=code,
-            rows=len(records),
-            columns=list(df.columns),
-            data=records,
-            fetcher_status=fm.get_fetcher_status(),
-        )
-    except Exception as e:
-        import traceback
-        return err(f'数据获取失败: {e}\n{traceback.format_exc()}', 500)
+    return ok(
+        code=code,
+        rows=len(records),
+        columns=list(df.columns),
+        data=records,
+        fetcher_status=fm.get_fetcher_status(),
+    )
 
 
 @app.route('/data/status', methods=['GET'])
@@ -1445,8 +1185,8 @@ def data_fund_flow():
     except ImportError:
         return err('FundFlowService not available (AkShare missing)', 500)
     except Exception as e:
-        import traceback
-        return err(f'资金流获取失败: {e}\n{traceback.format_exc()}', 500)
+        app.logger.exception('fund_flow failed')
+        return err(f'资金流获取失败: {e}', 500)
 
 
 @app.route('/data/realtime/<symbol>', methods=['GET'])
@@ -1529,57 +1269,11 @@ def monitor_status():
 
 @app.route('/risk/status', methods=['GET'])
 def risk_status():
-    """
-    GET /risk/status — 风控状态查询。
-    返回：组合敞口、板块集中度、ATR 止损触发状态、回撤水平。
-    """
-    svc = get_svc()
+    """GET /risk/status — 风控快照（组合敞口、板块集中度、回撤、Kelly）。"""
+    from core.use_cases.risk_snapshot import get_risk_snapshot
     from main import get_monitor
-    monitor = get_monitor()
-
-    positions = svc.get_positions()
-    summary = svc.get_portfolio_summary(refresh_prices_now=True)
-
-    # 板块集中度
-    sector_exposure = {}
-    total_market_value = 0
-    for p in positions:
-        mv = p.get('shares', 0) * p.get('current_price', 0)
-        total_market_value += mv
-        sector = p.get('sector', 'unknown')
-        sector_exposure[sector] = sector_exposure.get(sector, 0) + mv
-    if total_market_value > 0:
-        sector_exposure = {k: round(v / total_market_value, 4)
-                           for k, v in sector_exposure.items()}
-
-    # 回撤水平
-    dd_warn = 0.0
-    dd_stop = 0.0
-    peak_equity = 0.0
-    current_equity = summary.get('total_equity', 0)
-    if monitor:
-        peak_equity = monitor._peak_equity
-        dd_warn = monitor._dd_warn
-        dd_stop = monitor._dd_stop
-        if peak_equity > 0:
-            current_dd = 1 - (current_equity / peak_equity)
-        else:
-            current_dd = 0.0
-    else:
-        current_dd = 0.0
-
-    return ok(
-        total_equity=round(current_equity, 2),
-        peak_equity=round(peak_equity, 2),
-        current_drawdown=round(current_dd, 4),
-        dd_warn_threshold=dd_warn,
-        dd_stop_threshold=dd_stop,
-        risk_warn_fired=monitor._risk_warn_fired if monitor else False,
-        risk_stop_fired=monitor._risk_stop_fired if monitor else False,
-        kelly_pct=round(monitor._kelly_pct, 4) if monitor else None,
-        position_count=len(positions),
-        sector_exposure=sector_exposure,
-    )
+    snap = get_risk_snapshot(get_svc(), monitor=get_monitor())
+    return ok(**snap.to_dict())
 
 
 # ============================================================
@@ -1588,56 +1282,12 @@ def risk_status():
 
 @app.route('/metrics', methods=['GET'])
 def metrics_endpoint():
-    """
-    暴露 Prometheus 格式监控指标。
-
-    指标包含：
-      trading_net_value         — 组合净值
-      trading_total_pnl_yuan    — 累计浮动盈亏
-      trading_n_positions       — 持仓数量
-      trading_cash_yuan         — 可用现金
-      trading_health_status     — 策略健康状态（0=OK,1=WARN,2=CRITICAL）
-      trading_api_requests_total — API 请求计数
-      trading_api_errors_total  — API 错误计数
-      trading_factor_ic         — 各因子最新 IC 值
-
-    Prometheus 配置示例（prometheus.yml）：
-      scrape_configs:
-        - job_name: 'trading'
-          static_configs:
-            - targets: ['localhost:5555']
-          metrics_path: /metrics
-    """
+    """GET /metrics — Prometheus 格式监控指标（in-process 刷新，无自调 HTTP）。"""
     try:
         from core.metrics import get_registry
         reg = get_registry()
-
-        # 从本地 portfolio 数据刷新指标
-        try:
-            positions = _svc.get_positions()
-            cash = _svc.get_cash()
-            total_pnl = sum(
-                p.get('unrealized_pnl', 0.0)
-                for p in (positions if isinstance(positions, list) else [])
-            )
-            n_pos = len([p for p in (positions if isinstance(positions, list) else [])
-                         if p.get('shares', 0) > 0])
-            total_val = cash + sum(
-                float(p.get('shares', 0)) * float(p.get('current_price', 0.0))
-                for p in (positions if isinstance(positions, list) else [])
-            )
-            net_val = total_val / max(_svc.get_initial_capital() if hasattr(_svc, 'get_initial_capital') else total_val, 1.0)
-            reg.update_from_portfolio(
-                net_value=net_val,
-                total_pnl=float(total_pnl),
-                n_positions=n_pos,
-                cash=float(cash),
-            )
-        except Exception:
-            pass   # 静默降级，仍返回已有指标
-
-        output = reg.generate()
-        return output, 200, {'Content-Type': reg.content_type}
+        reg.refresh_from_service(get_svc())
+        return reg.generate(), 200, {'Content-Type': reg.content_type}
     except Exception as e:
         return f'# metrics error: {e}\n', 500, {'Content-Type': 'text/plain'}
 
@@ -1692,55 +1342,16 @@ def northbound_flow():
 
 @app.route('/performance/summary', methods=['GET'])
 def performance_summary():
-    """
-    GET /performance/summary?year=2026&month=4&include_chart=1
-
-    聚合三大绩效函数，统一返回账户表现。
-    """
-    year  = request.args.get('year', type=int) or date.today().year
-    month = request.args.get('month', type=int) or date.today().month
-    incl_chart = request.args.get('include_chart', '1') == '1'
-
-    from services.performance import (
-        generate_monthly_report,
-        compute_trade_stats,
-        compute_max_drawdown,
+    """GET /performance/summary?year=2026&month=4&include_chart=1 — 月度绩效聚合。"""
+    from core.use_cases.performance_summary import (
+        PerformanceSummaryRequest, compute_performance_summary,
     )
-    from services.portfolio import PortfolioService
-
-    # 聚合三个计算函数的结果
-    report = generate_monthly_report(year=year, month=month, include_chart=incl_chart)
-
-    svc = get_svc()
-    trades = svc.get_orders(status='filled', limit=500)
-
-    # 只取当月交易
-    month_str = f"{year}-{month:02d}"
-    month_trades = [t for t in trades if (t.get('filled_at') or '').startswith(month_str)]
-
-    trade_stats = compute_trade_stats(trades)         # 全量
-    trade_stats_month = compute_trade_stats(month_trades)  # 当月
-
-    equity_series = report.get('equity_series', [])
-    max_dd = compute_max_drawdown(equity_series) if equity_series else {
-        'max_drawdown_pct': 0.0, 'peak_equity': 0,
-        'trough_equity': 0, 'peak_date': '', 'trough_date': '',
-    }
-
-    return ok(
-        period=f"{year}年{month}月",
-        year=year,
-        month=month,
-        returns=report.get('returns', {}),
-        summary=report.get('summary', {}),
-        trade_stats=trade_stats,
-        trade_stats_month=trade_stats_month,
-        max_drawdown=max_dd,
-        equity_curve=equity_series[-30:],
-        benchmark_curve=report.get('benchmark_curve', [])[-30:],
-        chart_base64=report.get('chart_base64') if incl_chart else None,
-        generated_at=report.get('generated_at'),
+    req = PerformanceSummaryRequest(
+        year=request.args.get('year', type=int) or 0,
+        month=request.args.get('month', type=int) or 0,
+        include_chart=request.args.get('include_chart', '1') == '1',
     )
+    return ok(**compute_performance_summary(req, get_svc()).to_dict())
 
 
 # ============================================================
@@ -1803,45 +1414,28 @@ def get_fundamentals(symbol):
 
 @app.route('/market/status', methods=['GET'])
 def market_status():
-    """
-    GET /market/status
-
-    返回当前市场是否开盘、交易时段、下次开/收时间。
-    """
+    """GET /market/status — 当前 A 股是否开盘、当前时段、下次切换时间。"""
     from services.intraday_monitor import is_market_open
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, time as dtime, date as ddate
 
     now = datetime.now()
     open_now = is_market_open(now)
-
-    # 判断当前时段
-    from datetime import time as dtime
     t = now.time()
-    if open_now:
-        if dtime(9, 30) <= t < dtime(11, 30):
-            session = 'morning'
-            next_change = now.replace(hour=11, minute=30, second=0, microsecond=0)
-        elif dtime(13, 0) <= t < dtime(15, 0):
-            session = 'afternoon'
-            next_change = now.replace(hour=15, minute=0, second=0, microsecond=0)
-        else:
-            session = 'closed'  # 盘后
-            next_change = None
+
+    if open_now and dtime(9, 30) <= t < dtime(11, 30):
+        session, next_change = 'morning', now.replace(hour=11, minute=30, second=0, microsecond=0)
+    elif open_now and dtime(13, 0) <= t < dtime(15, 0):
+        session, next_change = 'afternoon', now.replace(hour=15, minute=0, second=0, microsecond=0)
+    elif open_now:
+        session, next_change = 'closed', None
     else:
         session = 'closed'
-        # 下一个工作日 9:15（集合竞价）
         days_ahead = 1 if t >= dtime(15, 0) else 0
-        from datetime import date as ddate
-        next_open = (datetime.combine(ddate.today(), dtime(9, 15))
-                     + timedelta(days=days_ahead))
-        next_change = next_open.isoformat()
+        next_change = (datetime.combine(ddate.today(), dtime(9, 15))
+                       + timedelta(days=days_ahead)).isoformat()
 
-    return ok(
-        is_open=open_now,
-        session=session,
-        next_change=next_change,
-        server_time=now.isoformat(),
-    )
+    return ok(is_open=open_now, session=session, next_change=next_change,
+              server_time=now.isoformat())
 
 
 # ============================================================
@@ -1849,47 +1443,52 @@ def market_status():
 # ============================================================
 
 # ============================================================
+# P4-2: News headlines (供 streamlit / UI 替代 core.factors.nlp 直连)
+# ============================================================
+
+@app.route('/data/news/<symbol>', methods=['GET'])
+def data_news(symbol):
+    """GET /data/news/<symbol>?n=5 — 标的最新新闻标题列表(东方财富)。"""
+    n = int(request.args.get('n', 5))
+    try:
+        from core.factors.nlp import _fetch_news_eastmoney
+        headlines = _fetch_news_eastmoney(symbol, n=n) or []
+    except Exception as e:
+        return err(f'news fetch failed: {e}', 503)
+    return ok(symbol=symbol, headlines=headlines, count=len(headlines))
+
+
+# ============================================================
 # P2: LLM Signal Review (独立信号审核)
 # ============================================================
 
-@app.route('/llm/analyze', methods=['POST'])
-@rate_limit(max_per_window=10, window_seconds=60)
-def llm_analyze():
-    """
-    POST /llm/analyze — LLM 独立信号审核
-
-    Body (required):
-        symbol, direction, signal, price, alert_reason
-    Body (optional):
-        entry_price, position_shares, position_pnl,
-        rsi_value, atr_ratio, market_regime, north_flow_yi,
-        cash, equity, other_positions, recent_trades, news_sentiment
-
-    返回: {approved, decision, reason, confidence, size_rec}
-    """
-    if (e := require_json()):
-        return e
-    body = request.json
-    required = ['symbol', 'direction', 'signal', 'price', 'alert_reason']
-    for f in required:
-        if f not in body:
-            return err(f'missing required field: {f}', 422)
-
-    # 尝试初始化 LLM provider
-    provider = None
+def _probe_llm_provider():
+    """尝试初始化 LLM provider；不可用返回 None。"""
     try:
         from services.llm.providers import MiniMaxProvider
         provider = MiniMaxProvider()
         provider.chat([{"role": "user", "content": "hi"}], max_tokens=5)
+        return provider
     except Exception:
-        pass
+        return None
 
+
+@app.route('/llm/analyze', methods=['POST'])
+@rate_limit(max_per_window=10, window_seconds=60)
+def llm_analyze():
+    """POST /llm/analyze — LLM 独立信号审核 (services.llm.service.signal_review 入口)。"""
+    if (e := require_json()):
+        return e
+    body = request.json
+    for f in ('symbol', 'direction', 'signal', 'price', 'alert_reason'):
+        if f not in body:
+            return err(f'missing required field: {f}', 422)
+
+    provider = _probe_llm_provider()
     from services.llm.service import signal_review
     result = signal_review(
-        symbol=body['symbol'],
-        direction=body['direction'],
-        signal=body['signal'],
-        price=float(body['price']),
+        symbol=body['symbol'], direction=body['direction'],
+        signal=body['signal'], price=float(body['price']),
         alert_reason=body['alert_reason'],
         entry_price=body.get('entry_price'),
         position_shares=int(body.get('position_shares', 0)),
@@ -1906,12 +1505,9 @@ def llm_analyze():
         provider=provider,
     )
     return ok(
-        approved=result.approved,
-        decision=result.decision,
-        reason=result.reason,
-        confidence=result.confidence,
-        size_rec=result.size_rec,
-        llm_available=(provider is not None),
+        approved=result.approved, decision=result.decision,
+        reason=result.reason, confidence=result.confidence,
+        size_rec=result.size_rec, llm_available=(provider is not None),
     )
 
 

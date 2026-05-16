@@ -28,6 +28,7 @@ from .symbols import (
     safe_float,
     safe_int,
 )
+from .frames import normalize_kline_index
 
 __all__ = [
     # gateway
@@ -52,4 +53,6 @@ __all__ = [
     "normalize_to_tencent",
     "safe_float",
     "safe_int",
+    # frames
+    "normalize_kline_index",
 ]

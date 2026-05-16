@@ -49,6 +49,14 @@ jobs:
           print(f'compiled {len(out)} files')
           PY
 
+      - name: Guard — OpenAPI 文档与路由同步
+        run: |
+          # backend/openapi.json 由 scripts/generate_openapi.py 自动生成。
+          # 任何新增/删除/改动 backend/api.py 路由后忘了 regenerate 都会被这里
+          # 拦下,避免 /docs 与实际接口脱节。修复:本地跑 `python
+          # scripts/generate_openapi.py` 重新生成后 commit。
+          python scripts/generate_openapi.py --check
+
       - name: Guard — 旧 data_source 模块禁止回流
         run: |
           # 这些模块已迁移到 core/data_gateway/providers/*,任何 import 都意味着

@@ -1,14 +1,9 @@
 """
-core/brokers/tiger.py — 老虎证券适配器（STUB）
+core/brokers/tiger.py — 老虎证券适配器(**DEPRECATED**, STUB)
 
-⚠️  当前为 Stub 实现，所有方法均需在接入真实 tigeropen 后实现。
-
-接入步骤：
-  1. pip install tigeropen
-  2. 在老虎开放平台申请 API 权限，获取 tiger_id / 私钥文件
-  3. config/brokers.json 设置 broker=tiger, safety_mode=LIVE
-  4. 设置 3-step 解锁（见 facade.py BrokerFactory.require_live）
-  5. 逐一实现下方方法（参考 tigeropen 官方文档）
+⚠️ 产品定位:本系统不接入真实券商。本文件保留 Stub 代码,
+   不再维护,导入时打 DeprecationWarning。
+   生产路径请用 PaperBroker / SimulatedBroker。
 
 老虎 API 文档：https://tigeropen.github.io/
 
@@ -18,8 +13,15 @@ core/brokers/tiger.py — 老虎证券适配器（STUB）
 from __future__ import annotations
 
 import logging
+import warnings
 from datetime import datetime
 from typing import List, Optional, Set
+
+warnings.warn(
+    "core.brokers.tiger is deprecated: 本系统不接入真实券商,请用 PaperBroker。",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 from core.brokers.base import AccountInfo, BrokerBase, MarketType, QuoteData
 from core.oms import Fill, Order, Position
