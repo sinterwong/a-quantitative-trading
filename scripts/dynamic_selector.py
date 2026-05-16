@@ -24,6 +24,7 @@ import json
 import time as _time
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
+from http.client import RemoteDisconnected
 
 # 新闻质量评分（过滤含糊信号）
 try:
@@ -148,6 +149,11 @@ def get(url: str, headers: dict = None, timeout: int = 10) -> Optional[str]:
             else:
                 _log('WARNING', 'get: HTTPError ' + str(e.code) + ' from ' + domain + ': ' + str(e))
                 return None
+        except (ssl.SSLError, ConnectionResetError, BrokenPipeError, RemoteDisconnected) as e:
+            # SSL errors and connection resets almost always indicate transient network issues
+            # Give up immediately (no retry) — retries just waste time and keep failing
+            _log('WARNING', 'get: connection error from ' + domain + ' (giving up): ' + str(e)[:80])
+            return None
         except Exception as e:
             if attempt < 3:
                 _log('WARNING', 'get: error from ' + domain + ' (attempt ' + str(attempt + 1)
@@ -193,6 +199,9 @@ def get_gbk(url: str, headers: dict = None, timeout: int = 10) -> Optional[str]:
                     time.sleep(backoff)
                     continue
                 return None
+            return None
+        except (ssl.SSLError, ConnectionResetError, BrokenPipeError, RemoteDisconnected) as e:
+            # Connection errors on this endpoint are almost always transient; give up immediately
             return None
         except Exception as e:
             if attempt < 3:
