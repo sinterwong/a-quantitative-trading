@@ -459,3 +459,44 @@ def test_portfolio_compose_happy_path(client):
     body = r.get_json()
     assert body['method'] == 'min_variance'
     assert body['weights'] == {'A.SH': 0.5, 'B.SZ': 0.5}
+
+
+def test_backtest_run_data_unavailable_returns_503(client):
+    """DATA_UNAVAILABLE 必须映射到 503(不是 422),否则 UI 会把降级误判为请求拒绝。"""
+    from core.use_cases import UseCaseError
+    with patch(
+        'core.use_cases.backtest.run_backtest',
+        side_effect=UseCaseError('no kline', code='DATA_UNAVAILABLE'),
+    ):
+        r = client.post('/backtest/run', json={
+            'symbol': 'sh600519',
+            'strategies': [{'factor_name': 'RSI'}],
+        })
+    assert r.status_code == 503, r.status_code
+
+
+def test_backtest_run_unknown_factor_returns_422(client):
+    """UNKNOWN_FACTOR(用户填错因子名)必须 422,不能 503。"""
+    from core.use_cases import UseCaseError
+    with patch(
+        'core.use_cases.backtest.run_backtest',
+        side_effect=UseCaseError('unknown factor', code='UNKNOWN_FACTOR'),
+    ):
+        r = client.post('/backtest/run', json={
+            'symbol': 'sh600519',
+            'strategies': [{'factor_name': 'NotARealFactor'}],
+        })
+    assert r.status_code == 422, r.status_code
+
+
+def test_portfolio_compose_data_unavailable_returns_503(client):
+    """compose 端点的 DATA_UNAVAILABLE 也要 503,保证 UI 一致语义。"""
+    from core.use_cases import UseCaseError
+    with patch(
+        'core.use_cases.compose_portfolio.compose_portfolio',
+        side_effect=UseCaseError('insufficient data', code='DATA_UNAVAILABLE'),
+    ):
+        r = client.post('/portfolio/compose', json={
+            'universe': ['A.SH', 'B.SZ'], 'method': 'min_variance',
+        })
+    assert r.status_code == 503, r.status_code
