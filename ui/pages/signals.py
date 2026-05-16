@@ -76,38 +76,40 @@ with tab_new:
 
     # ── 下单 ────────────────────────────────────────
     with sub_order:
+        # backend /orders/submit 字段:symbol / direction / shares / price / price_type
+        # price_type 仅支持 'market' | 'limit'(PaperBroker / SimulatedBroker)
         with st.form('order_form'):
             c1, c2, c3 = st.columns(3)
             o_sym = c1.text_input('标的', placeholder='600519.SH')
-            o_side = c2.selectbox('方向', ['BUY', 'SELL'])
-            o_type = c3.selectbox('订单类型', ['LIMIT', 'MARKET', 'VWAP', 'TWAP'])
+            o_direction = c2.selectbox('方向', ['BUY', 'SELL'])
+            o_price_type = c3.selectbox('订单类型', ['market', 'limit'])
             c4, c5 = st.columns(2)
-            o_qty = c4.number_input('股数', min_value=0, step=100, value=0)
-            o_price = c5.number_input('价格(MARKET 单填 0)', min_value=0.0, step=0.01,
+            o_shares = c4.number_input('股数', min_value=0, step=100, value=0)
+            o_price = c5.number_input('价格(market 可填 0)', min_value=0.0, step=0.01,
                                       value=0.0, format='%.4f')
-            o_note = st.text_input('备注(可空)')
             order_submit = st.form_submit_button('准备提交')
         if order_submit:
-            if not o_sym or o_qty <= 0:
+            if not o_sym or o_shares <= 0:
                 st.warning('symbol 必填,股数 > 0')
+            elif o_price_type == 'limit' and o_price <= 0:
+                st.warning('limit 单价格必须 > 0')
             else:
                 st.session_state['_pending_order'] = {
                     'symbol': o_sym.strip(),
-                    'side': o_side,
-                    'order_type': o_type,
-                    'qty': int(o_qty),
+                    'direction': o_direction,
+                    'shares': int(o_shares),
                     'price': float(o_price),
-                    'note': o_note,
+                    'price_type': o_price_type,
                 }
 
         if '_pending_order' in st.session_state:
             p = st.session_state['_pending_order']
-            st.warning(f'**待提交订单**: {p["side"]} {p["qty"]} 股 {p["symbol"]} '
-                       f'@ {p["price"]:.4f} ({p["order_type"]})')
+            st.warning(f'**待提交订单**: {p["direction"]} {p["shares"]} 股 {p["symbol"]} '
+                       f'@ {p["price"]:.4f} ({p["price_type"]})')
             if confirm_dialog('submit_order', '不可撤销 — 走 broker',
                               confirm_label='⚠️ 提交订单'):
                 try:
-                    res = submit_order({k: v for k, v in p.items() if v != ''})
+                    res = submit_order(p)
                     st.success(f'订单已提交: {res}')
                     del st.session_state['_pending_order']
                     clear_cache()
@@ -116,10 +118,11 @@ with tab_new:
 
     # ── 录入信号 ─────────────────────────────────
     with sub_signal:
+        # backend /signals POST 字段:symbol / signal / strength / reason
         with st.form('signal_form', clear_on_submit=True):
             s_sym = st.text_input('标的', key='sig_sym')
             c1, c2 = st.columns(2)
-            s_type = c1.selectbox('信号类型', ['BUY', 'SELL', 'HOLD', 'WATCH'])
+            s_signal = c1.selectbox('信号', ['BUY', 'SELL', 'HOLD', 'WATCH'])
             s_strength = c2.slider('强度', 0.0, 1.0, 0.5, 0.05)
             s_reason = st.text_area('原因 / 备注', max_chars=400)
             s_submit = st.form_submit_button('提交')
@@ -130,7 +133,7 @@ with tab_new:
                 try:
                     record_signal({
                         'symbol': s_sym.strip(),
-                        'signal_type': s_type,
+                        'signal': s_signal,
                         'strength': s_strength,
                         'reason': s_reason,
                     })

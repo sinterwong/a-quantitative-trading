@@ -86,11 +86,15 @@ with col_side:
     st.markdown('#### 市场')
     try:
         m = get_market_status()
-        st.write(f"**今日交易日**: {'✅' if m.get('is_trading_day') or m.get('trading_day') else '❌'}")
-        st.write(f"**开盘中**: {'✅' if m.get('is_open') or m.get('market_open') else '❌'}")
-        nxt = _pick(m, 'next_open', 'next_open_time', 'next_trading_day', default=None)
+        is_open = bool(m.get('is_open') or m.get('market_open'))
+        session = m.get('session') or '—'
+        st.write(f"**当前**: {'🟢 开盘中' if is_open else '⚪ 休市'}  ·  时段 `{session}`")
+        nxt = _pick(m, 'next_change', 'next_open', 'next_open_time', default=None)
         if nxt:
-            st.caption(f'下一次开盘: {nxt}')
+            st.caption(f'下一次切换: {nxt}')
+        srv = m.get('server_time')
+        if srv:
+            st.caption(f'服务器时间: {srv}')
     except BackendError as exc:
         error_banner(exc)
 

@@ -140,32 +140,46 @@ st.markdown('---')
 
 # ── 每标的参数 ─────────────────────────────────────────
 st.markdown('#### 每标的风控参数')
+st.caption('字段白名单见 backend services.signals.PARAM_FIELDS_ALLOWED;'
+           '止损/止盈是小数(0.05 = 5%)。')
 if items:
     sym_options = [it.get('symbol') for it in items if it.get('symbol')]
     p_sel = st.selectbox('查看参数', sym_options, key='param_sel')
     if p_sel:
+        # backend 返 {symbol, params: {...}};只读 params 子字典
         try:
-            params = get_params(p_sel)
+            resp = get_params(p_sel)
         except BackendError as exc:
             error_banner(exc)
-            params = {}
+            resp = {}
+        params = resp.get('params') if isinstance(resp.get('params'), dict) else {}
         with st.form('param_form'):
-            stop_loss = st.number_input(
-                'stop_loss (止损 %)', min_value=0.0, max_value=50.0,
-                value=float(params.get('stop_loss') or 5.0), step=0.5)
-            take_profit = st.number_input(
-                'take_profit (止盈 %)', min_value=0.0, max_value=100.0,
-                value=float(params.get('take_profit') or 20.0), step=0.5)
-            bars_lookback = st.number_input(
-                'bars_lookback', min_value=10, max_value=500,
-                value=int(params.get('bars_lookback') or 60), step=5)
+            c1, c2 = st.columns(2)
+            stop_loss = c1.number_input(
+                'stop_loss (止损,小数)', min_value=0.0, max_value=0.5,
+                value=float(params.get('stop_loss') or 0.05), step=0.005, format='%.3f')
+            take_profit = c2.number_input(
+                'take_profit (止盈,小数)', min_value=0.0, max_value=2.0,
+                value=float(params.get('take_profit') or 0.2), step=0.01, format='%.3f')
+            c3, c4 = st.columns(2)
+            rsi_buy = c3.number_input(
+                'rsi_buy', min_value=0, max_value=100,
+                value=int(params.get('rsi_buy') or 30), step=1)
+            rsi_sell = c4.number_input(
+                'rsi_sell', min_value=0, max_value=100,
+                value=int(params.get('rsi_sell') or 70), step=1)
+            min_hold = st.number_input(
+                'min_hold_days', min_value=0, max_value=60,
+                value=int(params.get('min_hold_days') or 1), step=1)
             p_save = st.form_submit_button('保存参数')
         if p_save:
             try:
                 patch_params(p_sel, {
                     'stop_loss': float(stop_loss),
                     'take_profit': float(take_profit),
-                    'bars_lookback': int(bars_lookback),
+                    'rsi_buy': int(rsi_buy),
+                    'rsi_sell': int(rsi_sell),
+                    'min_hold_days': int(min_hold),
                 })
                 st.success(f'{p_sel} 参数已更新')
                 clear_cache()
