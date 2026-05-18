@@ -14,11 +14,13 @@ from __future__ import annotations
 import logging
 import math
 import re
+from datetime import datetime
+from typing import List, Optional
 
 import pandas as pd
 
 from ..capabilities import Capability, MacroIndicator, Market, ProviderCapability
-from ..schemas import Fundamentals
+from ..schemas import Fundamentals, NewsItem
 from ..symbols import a_share_exchange
 from .base import Provider, ProviderError
 
@@ -50,6 +52,7 @@ class AkshareProvider(Provider):
                 Capability.MARGIN_FLOW,
                 Capability.FUND_FLOW,
                 Capability.NORTH_FLOW,
+                Capability.NEWS_HEADLINES,    # G5: 财联社电报作第二源
             }),
             markets=frozenset({Market.GLOBAL}),
             priority_hint=0.30,  # 实测不稳定,健康度低
@@ -889,6 +892,68 @@ class AkshareProvider(Provider):
             out = out[out.index <= pd.Timestamp(end)]
 
         return out
+
+    # ── NEWS_HEADLINES (G5: 财联社电报) ────────────────────────────────────
+
+    def fetch_news_headlines(self, symbol: str, n: int = 20) -> List[NewsItem]:
+        """通过 akshare.stock_info_global_cls(symbol='全部') 拉财联社电报。
+
+        ⚠️ 语义说明：
+          财联社电报是**全市场快讯**接口，symbol 参数被忽略（与 EM 一致）。
+          gateway 在 MERGE_LISTS 策略下会把本源条目与 EM kuaixun 合并、
+          按归一标题去重、按发布时间倒序后输出给调用方。
+
+        Returns
+        -------
+        List[NewsItem]
+            最多 n 条条目；timestamp 由 "发布日期 发布时间" 列拼接解析。
+            akshare 未安装 / 抓取/解析失败 → ProviderError 触发健康度衰减。
+        """
+        try:
+            import akshare as ak
+        except ImportError:
+            logger.debug("akshare 未安装,跳过 news_headlines 请求")
+            return []
+
+        try:
+            df = ak.stock_info_global_cls(symbol="全部")
+        except Exception as exc:
+            raise ProviderError(f"akshare.fetch_news_headlines: {exc}") from exc
+
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            return []
+
+        items: List[NewsItem] = []
+        for _, row in df.iterrows():
+            title = str(row.get("标题") or "").strip()
+            if not title:
+                # 兜底用截断 content
+                content_raw = str(row.get("内容") or "").strip()
+                if not content_raw:
+                    continue
+                title = (
+                    content_raw[:57] + "..." if len(content_raw) > 60 else content_raw
+                )
+            content = str(row.get("内容") or "").strip()
+            ts = _parse_cls_datetime(row.get("发布日期"), row.get("发布时间"))
+            items.append(NewsItem(
+                title=title, timestamp=ts, source="akshare", content=content,
+            ))
+            if len(items) >= n:
+                break
+        return items
+
+
+def _parse_cls_datetime(date_raw, time_raw) -> Optional[datetime]:
+    """财联社电报的 发布日期 ('2026-05-18') + 发布时间 ('21:13:49') 拼接。"""
+    if not date_raw:
+        return None
+    date_str = str(date_raw).strip()
+    time_str = str(time_raw or "00:00:00").strip()
+    try:
+        return datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return None
 
 
 __all__ = ["AkshareProvider"]

@@ -119,6 +119,7 @@ def test_akshare_capabilities_macro_only():
     decl = AkshareProvider().declare()
     assert Capability.FUNDAMENTALS in decl.capabilities
     assert Capability.MACRO in decl.capabilities
+    assert Capability.NEWS_HEADLINES in decl.capabilities   # G5
     assert Market.GLOBAL in decl.markets
 
 
@@ -159,6 +160,88 @@ def test_akshare_macro_missing_library_returns_empty():
     finally:
         if real_ak is not None:
             sys.modules["akshare"] = real_ak
+
+
+# ── Akshare: fetch_news_headlines (G5) ──────────────────────────────────────
+
+
+def _cls_payload(rows):
+    """构造 stock_info_global_cls 返回的 DataFrame。"""
+    return pd.DataFrame(rows, columns=["标题", "内容", "发布日期", "发布时间"])
+
+
+def test_akshare_news_headlines_parses_cls_payload():
+    from core.data_gateway.schemas import NewsItem
+
+    mock_ak = MagicMock()
+    mock_ak.stock_info_global_cls.return_value = _cls_payload([
+        ["油价跳水",     "正文1", "2026-05-18", "21:13:49"],
+        ["美股开盘下跌", "正文2", "2026-05-18", "21:30:00"],
+    ])
+    with patch.dict(sys.modules, {"akshare": mock_ak}):
+        items = AkshareProvider().fetch_news_headlines("anysymbol", n=5)
+    assert len(items) == 2
+    assert all(isinstance(it, NewsItem) for it in items)
+    assert items[0].title == "油价跳水"
+    assert items[0].source == "akshare"
+    assert items[0].timestamp.year == 2026 and items[0].timestamp.hour == 21
+    # symbol="全部" 是约定调用
+    assert mock_ak.stock_info_global_cls.call_args.kwargs.get("symbol") == "全部"
+
+
+def test_akshare_news_headlines_falls_back_to_truncated_content_when_title_missing():
+    mock_ak = MagicMock()
+    long_body = "财联社快讯：" + "X" * 80
+    mock_ak.stock_info_global_cls.return_value = _cls_payload([
+        ["", long_body, "2026-05-18", "10:00:00"],
+    ])
+    with patch.dict(sys.modules, {"akshare": mock_ak}):
+        items = AkshareProvider().fetch_news_headlines("X")
+    assert len(items) == 1
+    assert items[0].title.endswith("...") and len(items[0].title) == 60
+
+
+def test_akshare_news_headlines_respects_n():
+    mock_ak = MagicMock()
+    mock_ak.stock_info_global_cls.return_value = _cls_payload([
+        [f"标题{i}", "", "2026-05-18", "10:00:00"] for i in range(10)
+    ])
+    with patch.dict(sys.modules, {"akshare": mock_ak}):
+        items = AkshareProvider().fetch_news_headlines("X", n=3)
+    assert len(items) == 3
+
+
+def test_akshare_news_headlines_missing_library_returns_empty_list():
+    real_ak = sys.modules.pop("akshare", None)
+    try:
+        with patch.dict(sys.modules, {"akshare": None}, clear=False):
+            items = AkshareProvider().fetch_news_headlines("X")
+            assert items == []
+    finally:
+        if real_ak is not None:
+            sys.modules["akshare"] = real_ak
+
+
+def test_akshare_news_headlines_provider_error_on_exception():
+    from core.data_gateway.providers.base import ProviderError
+
+    mock_ak = MagicMock()
+    mock_ak.stock_info_global_cls.side_effect = RuntimeError("net down")
+    with patch.dict(sys.modules, {"akshare": mock_ak}):
+        with pytest.raises(ProviderError):
+            AkshareProvider().fetch_news_headlines("X")
+
+
+def test_akshare_news_headlines_invalid_datetime_returns_none_ts():
+    mock_ak = MagicMock()
+    mock_ak.stock_info_global_cls.return_value = _cls_payload([
+        ["badtime", "正文", "not-a-date", "??:??"],
+    ])
+    with patch.dict(sys.modules, {"akshare": mock_ak}):
+        items = AkshareProvider().fetch_news_headlines("X")
+    assert len(items) == 1
+    assert items[0].timestamp is None     # 解析失败留 None
+    assert items[0].title == "badtime"
 
 
 # ── Akshare: _normalize_indicator_em 新增字段 (W1-1) ────────────────────────
@@ -428,16 +511,12 @@ def test_akshare_normalize_fund_flow_no_date_col_returns_empty():
     assert out.empty
 
 
-# ── Akshare: declare 不再包含 NEWS_HEADLINES ───────────────────────────────
-
-
-def test_akshare_declare_no_longer_handles_news_headlines():
-    """news_headlines 已迁到 EastmoneyProvider，AkshareProvider 不再声明。"""
-    decl = AkshareProvider().declare()
-    assert Capability.NEWS_HEADLINES not in decl.capabilities
+# ── Akshare: declare 包含 FUND_FLOW / MARGIN_FLOW / NEWS_HEADLINES (G5) ─
 
 
 def test_akshare_declare_includes_fund_flow():
     decl = AkshareProvider().declare()
     assert Capability.FUND_FLOW in decl.capabilities
     assert Capability.MARGIN_FLOW in decl.capabilities
+    # G5: 财联社电报作 news_headlines 第二源
+    assert Capability.NEWS_HEADLINES in decl.capabilities
