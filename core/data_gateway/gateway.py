@@ -79,6 +79,47 @@ _PERSISTENT_CAPS: set = {
 }
 
 
+# ─── 时序切片辅助 ─────────────────────────────────────────────────────────────
+# G3: 缓存"全量已知时序"，出口处按用户参数切片。这样同一 symbol 的
+#     不同时间窗口请求共享一份缓存，大幅降低对外网压力。
+
+# 各能力的"宽抓取"默认值——首次 miss 时拉这个量，覆盖未来其它窗口请求
+_WIDE_FETCH = {
+    Capability.KLINE_DAILY: {"days": 730, "limit": 730},          # 2 年
+    Capability.KLINE_MINUTE: {"limit": 500},                       # 500 根
+    Capability.NORTH_FLOW: {"days": 1825},                         # 5 年
+}
+
+
+def _slice_by_range(
+    df: pd.DataFrame, start: Optional[str], end: Optional[str],
+) -> pd.DataFrame:
+    """按 start/end 字符串切 DatetimeIndex DataFrame。空表/无索引时安全返回。"""
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    if not isinstance(df.index, pd.DatetimeIndex):
+        return df
+    out = df
+    if start is not None:
+        try:
+            out = out[out.index >= pd.Timestamp(start)]
+        except (ValueError, TypeError):
+            pass
+    if end is not None:
+        try:
+            out = out[out.index <= pd.Timestamp(end)]
+        except (ValueError, TypeError):
+            pass
+    return out
+
+
+def _tail_by_n(df: pd.DataFrame, n: int) -> pd.DataFrame:
+    """取末尾 n 行。空表 / n<=0 时安全返回。"""
+    if df is None or df.empty or n <= 0:
+        return df if df is not None else pd.DataFrame()
+    return df.tail(n)
+
+
 def _default_cache_dir() -> str:
     """L2 落盘路径：环境变量优先 → 项目 data/cache/data_gateway/。"""
     import os as _os
@@ -422,27 +463,34 @@ class DataGateway:
         market = detect_market(symbol)
         is_minute = interval in ("1m", "5m", "15m", "30m", "60m")
         cap = Capability.KLINE_MINUTE if is_minute else Capability.KLINE_DAILY
-        cache_key = f"kline:{symbol}:{interval}:{days}:{adjust}:{limit}"
+        # G3: cache key 仅含结构性参数(symbol/interval/adjust)，不含时间窗口
+        cache_key = f"kline:{symbol}:{interval}:{adjust}"
         cached = self._cache_get(cap, cache_key)
-        if cached is not None:
-            return cached
+        if cached is not None and not cached.empty:
+            n = limit if is_minute else days
+            return _tail_by_n(cached, n)
 
-        # 按 Capability 选择对应方法，避免在一个方法内同时处理日K和分钟K
+        # 按 Capability 选择对应方法
+        # G3: 首次拉取时用"宽窗口"，覆盖未来其他窗口请求
+        wide = _WIDE_FETCH.get(cap, {})
         if is_minute:
+            fetch_limit = max(limit, wide.get("limit", limit))
             result, _ = self._sequential_fetch(
                 cap, market, "fetch_kline_minute",
-                symbol, interval=interval, limit=limit,
+                symbol, interval=interval, limit=fetch_limit,
             )
         else:
+            fetch_days = max(days, wide.get("days", days))
+            fetch_limit = max(limit, wide.get("limit", limit))
             result, _ = self._sequential_fetch(
                 cap, market, "fetch_kline_daily",
-                symbol, days=days, adjust=adjust, limit=limit,
+                symbol, days=fetch_days, adjust=adjust, limit=fetch_limit,
             )
         df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
         if not df.empty:
             ttl = 60.0 if is_minute else 300.0
             self._cache_set(cap, cache_key, df, ttl=ttl)
-        return df
+        return _tail_by_n(df, limit if is_minute else days)
 
     def fundamentals(self, symbol: str) -> Optional[Fundamentals]:
         """基本面(字段级合并)。"""
@@ -522,20 +570,23 @@ class DataGateway:
             DatetimeIndex,列 north_flow(亿元/天)。
             空 DataFrame 表示无可用源。
         """
-        cache_key = f"north_flow_history:{days}"
+        # G3: cache key 不含 days，存最长可得序列
+        cache_key = "north_flow_history"
         cached = self._cache_get(Capability.NORTH_FLOW, cache_key)
-        if cached is not None:
-            return cached
+        if cached is not None and not cached.empty:
+            return _tail_by_n(cached, days)
 
+        # 拉取时用最宽窗口，覆盖未来 days 请求
+        wide_days = max(days, _WIDE_FETCH.get(Capability.NORTH_FLOW, {}).get("days", days))
         result, _ = self._sequential_fetch(
             Capability.NORTH_FLOW, Market.GLOBAL,
-            "fetch_north_flow_history", days,
+            "fetch_north_flow_history", wide_days,
         )
         df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
         if not df.empty:
             # 历史数据 4h 缓存(每日收盘后更新)
             self._cache_set(Capability.NORTH_FLOW, cache_key, df, ttl=14400.0)
-        return df
+        return _tail_by_n(df, days)
 
     def market_index(self, code: str) -> Optional[MarketIndexSnapshot]:
         cache_key = f"market_index:{code}"
@@ -651,19 +702,21 @@ class DataGateway:
             DatetimeIndex，列 main_net_inflow / super_net_inflow / large_net_inflow
             及其净占比（%），含 close / change_pct。
         """
-        cache_key = f"fund_flow:{symbol}:{start}:{end}"
+        # G3: cache key 不含 start/end，存全量(AkShare 默认提供 ~120 个交易日)
+        cache_key = f"fund_flow:{symbol}"
         cached = self._cache_get(Capability.FUND_FLOW, cache_key)
-        if cached is not None:
-            return cached
+        if cached is not None and not cached.empty:
+            return _slice_by_range(cached, start, end)
 
+        # 拉取时不传 start/end，让 provider 给最长可得序列
         result, _ = self._sequential_fetch(
             Capability.FUND_FLOW, Market.GLOBAL,
-            "fetch_fund_flow", symbol, start, end,
+            "fetch_fund_flow", symbol, None, None,
         )
         df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
         if not df.empty:
             self._cache_set(Capability.FUND_FLOW, cache_key, df)
-        return df
+        return _slice_by_range(df, start, end)
 
     def fundamentals_history(
         self, symbol: str, start: str | None = None, end: str | None = None,
@@ -673,11 +726,16 @@ class DataGateway:
         通过 DataGateway 统一路由，享受熔断 + 健康度 + 缓存保护。
         多 provider 列级合并:不同源贡献不同字段时取并集,重叠列由健康度
         + priority_hint 更高者胜出(类似 Quote 的字段级合并)。
+
+        G3 缓存策略：缓存键不含 start/end，内部存储"全量已知时序"，
+        本方法出口按 [start, end] 切片。同一 symbol 任何时间窗口请求
+        都命中同一份缓存。
         """
-        cache_key = f"fundamentals_history:{symbol}:{start}:{end}"
+        # G3: cache key 去掉 start/end，存全量
+        cache_key = f"fundamentals_history:{symbol}"
         cached = self._cache_get(Capability.FUNDAMENTALS_HISTORY, cache_key)
-        if cached is not None:
-            return cached
+        if cached is not None and not cached.empty:
+            return _slice_by_range(cached, start, end)
 
         candidates = self._candidates_for(
             Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
@@ -686,11 +744,12 @@ class DataGateway:
             return pd.DataFrame()
 
         # 并发问 top-K 家(默认 4),每家返回一个 DataFrame
+        # G3: 拉取时不传 start/end，让 provider 给出可得的最长序列
         top = candidates[: self._max_parallel]
         futures = {
             self._executor.submit(
                 self._invoke, p, Capability.FUNDAMENTALS_HISTORY,
-                "fetch_fundamentals_history", symbol, start, end,
+                "fetch_fundamentals_history", symbol, None, None,
             ): (p, score)
             for p, score in top
         }
@@ -728,8 +787,9 @@ class DataGateway:
 
         # 整体 ffill,确保 union 后引入的索引也有值
         merged = merged.sort_index().ffill()
+        # G3: 缓存全量，出口处切片
         self._cache_set(Capability.FUNDAMENTALS_HISTORY, cache_key, merged)
-        return merged
+        return _slice_by_range(merged, start, end)
 
     # ── 监控 / 调试 ──────────────────────────────────────────────────────────
 
@@ -744,16 +804,13 @@ class DataGateway:
         self._cache.clear()
 
     def invalidate_fundamentals_history(self, symbol: str) -> None:
-        """清除指定标的的基本面历史缓存（精确清除，不影响其他标的缓存）。"""
-        # fundamentals_history 缓存键格式：fundamentals_history:{symbol}:{start}:{end}
-        # 用 prefix 匹配清除该标的所有变体缓存键
-        prefix = f"fundamentals_history:{symbol}:"
-        self._cache._store.pop(prefix, None)  # exact match (no start/end)
-        # 清除所有以该 prefix 开头的键（不同 start/end 组合）
-        with self._cache._lock:
-            to_remove = [k for k in self._cache._store if k.startswith(prefix)]
-            for k in to_remove:
-                self._cache._store.pop(k, None)
+        """清除指定标的的基本面历史缓存（精确清除，不影响其他标的缓存）。
+
+        G3 后缓存键为 'fundamentals_history:{symbol}'（不再含 start/end），
+        因此精确 invalidate 即可，无需 prefix 扫描。
+        """
+        cache_key = f"fundamentals_history:{symbol}"
+        self._cache.invalidate(cache_key)
 
 
 # ─── 默认注册 + 单例 ──────────────────────────────────────────────────────────

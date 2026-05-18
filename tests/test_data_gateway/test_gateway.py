@@ -772,6 +772,220 @@ def test_quote_does_not_persist_to_disk(tmp_path):
         assert len(files) == 0
 
 
+# ── G3: 时序缓存全量+切片 ────────────────────────────────────────────────
+
+
+def test_fundamentals_history_caches_full_serves_slices(gw):
+    """同一 symbol 不同时间窗口请求共享缓存：第 2 次起不再调 provider。"""
+    full_df = pd.DataFrame(
+        {"roe_ttm": [8.0, 9.0, 10.0, 11.0, 12.0]},
+        index=pd.to_datetime(["2023-01-01", "2023-04-01", "2023-07-01",
+                              "2023-10-01", "2024-01-01"]),
+    )
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+        markets=(Market.GLOBAL,), fundamentals_history_value=full_df,
+    )
+    gw.register_provider(p)
+
+    # 第一次 miss：拉全量
+    out1 = gw.fundamentals_history("sh600519", "2023-01-01", "2023-12-31")
+    assert len(out1) == 4    # 2023 内 4 个季报点
+
+    # 第二次完全不同的窗口：应命中缓存，provider 0 次额外调用
+    out2 = gw.fundamentals_history("sh600519", "2023-07-01", "2024-12-31")
+    assert len(out2) == 3
+    n_calls = len([c for c in p.call_log if "fetch_fundamentals_history" in c])
+    assert n_calls == 1     # 仍是首次的那 1 次
+
+
+def test_fundamentals_history_fetch_ignores_start_end(gw):
+    """G3: 拉取 provider 时不再传 start/end，让 provider 给最长可得序列。"""
+    captured = {"args": None}
+
+    class _SpyProvider(Provider):
+        name = "spy"
+        def declare(self):
+            return ProviderCapability(
+                capabilities=frozenset({Capability.FUNDAMENTALS_HISTORY}),
+                markets=frozenset({Market.GLOBAL}),
+                priority_hint=0.5,
+            )
+        def fetch_fundamentals_history(self, symbol, start=None, end=None):
+            captured["args"] = (symbol, start, end)
+            return pd.DataFrame(
+                {"roe_ttm": [10.0]},
+                index=pd.to_datetime(["2024-01-01"]),
+            )
+
+    gw.register_provider(_SpyProvider())
+    gw.fundamentals_history("sh600519", start="2024-06-01", end="2024-12-31")
+    assert captured["args"] == ("sh600519", None, None)
+
+
+def test_kline_caches_wide_serves_narrow(gw):
+    """kline 缓存"宽窗口"，多次窄请求共享。"""
+    wide_df = pd.DataFrame(
+        {"open": list(range(100)), "close": list(range(1, 101)),
+         "high": list(range(2, 102)), "low": list(range(100)),
+         "volume": list(range(100))},
+        index=pd.date_range("2024-01-01", periods=100, freq="B"),
+    )
+    p = _FakeProvider(
+        "p", capabilities=(Capability.KLINE_DAILY,),
+        markets=(Market.A,), kline_value=wide_df,
+    )
+    gw.register_provider(p)
+
+    out1 = gw.kline("sh600519", interval="daily", days=30)
+    assert len(out1) == 30
+    out2 = gw.kline("sh600519", interval="daily", days=50)
+    assert len(out2) == 50
+
+    # 两次 kline 调用，provider 只被命中 1 次
+    assert len([c for c in p.call_log if "fetch_kline_daily" in c]) == 1
+
+
+def test_kline_first_fetch_widens_to_default(gw):
+    """首次 miss 时 days/limit 被放宽到 _WIDE_FETCH 默认值。"""
+    captured = {"kw": None}
+
+    class _SpyP(Provider):
+        name = "spy"
+        def declare(self):
+            return ProviderCapability(
+                capabilities=frozenset({Capability.KLINE_DAILY}),
+                markets=frozenset({Market.A}),
+                priority_hint=0.5,
+            )
+        def fetch_kline_daily(self, symbol, **kw):
+            captured["kw"] = kw
+            return pd.DataFrame(
+                {"close": list(range(50))},
+                index=pd.date_range("2024-01-01", periods=50, freq="B"),
+            )
+
+    gw.register_provider(_SpyP())
+    gw.kline("sh600519", interval="daily", days=20)
+    # _WIDE_FETCH[KLINE_DAILY] = {"days": 730, "limit": 730}
+    assert captured["kw"]["days"] == 730
+
+
+def test_fund_flow_caches_full_serves_slices(gw):
+    """fund_flow 缓存全量，按 start/end 切片。"""
+    full_df = pd.DataFrame(
+        {"main_net_inflow": list(range(60))},
+        index=pd.date_range("2024-01-01", periods=60, freq="B"),
+    )
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.FUND_FLOW,),
+        markets=(Market.GLOBAL,),
+    )
+    p._fund_flow = full_df    # 通过实例变量直接注入(FakeProvider 字段命名问题)
+
+    # FakeProvider 用 margin_flow_value=... 兼容 fund_flow？让我们直接给一个适配
+    # 简单点：mock fetch_fund_flow
+    class _FFProvider(Provider):
+        name = "ff"
+        call_log: List[str] = []
+        def declare(self):
+            return ProviderCapability(
+                capabilities=frozenset({Capability.FUND_FLOW}),
+                markets=frozenset({Market.GLOBAL}),
+                priority_hint=0.5,
+            )
+        def fetch_fund_flow(self, symbol, start=None, end=None):
+            self.call_log.append(f"fetch_fund_flow:{symbol}:{start}:{end}")
+            return full_df
+
+    ff = _FFProvider()
+    gw.register_provider(ff)
+
+    out1 = gw.fund_flow("sh600519", start="2024-01-15", end="2024-02-15")
+    assert (out1.index >= pd.Timestamp("2024-01-15")).all()
+    assert (out1.index <= pd.Timestamp("2024-02-15")).all()
+
+    out2 = gw.fund_flow("sh600519", start="2024-02-20", end="2024-03-31")
+    assert (out2.index >= pd.Timestamp("2024-02-20")).all()
+    # provider 只调用 1 次
+    assert len(ff.call_log) == 1
+    # 拉取时不传 start/end
+    assert ff.call_log[0].endswith(":None:None")
+
+
+def test_north_flow_history_caches_full_serves_tail(gw):
+    """north_flow_history 缓存全量，按 days 取末尾。"""
+    full_df = pd.DataFrame(
+        {"north_flow": list(range(500))},
+        index=pd.date_range("2023-01-01", periods=500, freq="B"),
+    )
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.NORTH_FLOW,), markets=(Market.GLOBAL,),
+        north_history_value=full_df,
+    )
+    gw.register_provider(p)
+
+    out1 = gw.north_flow_history(days=30)
+    assert len(out1) == 30
+    out2 = gw.north_flow_history(days=100)
+    assert len(out2) == 100
+    out3 = gw.north_flow_history(days=500)
+    assert len(out3) == 500
+
+    # 3 次请求，provider 只被命中 1 次
+    assert len([c for c in p.call_log if "fetch_north_flow_history" in c]) == 1
+
+
+def test_north_flow_history_first_fetch_widens(gw):
+    """首次 miss 时 days 放宽到 5 年。"""
+    captured = {"days": None}
+
+    class _SpyP(Provider):
+        name = "spy"
+        def declare(self):
+            return ProviderCapability(
+                capabilities=frozenset({Capability.NORTH_FLOW}),
+                markets=frozenset({Market.GLOBAL}),
+                priority_hint=0.5,
+            )
+        def fetch_north_flow_history(self, days=252):
+            captured["days"] = days
+            return pd.DataFrame(
+                {"north_flow": [1.0]},
+                index=pd.to_datetime(["2024-01-01"]),
+            )
+
+    gw.register_provider(_SpyP())
+    gw.north_flow_history(days=30)
+    # _WIDE_FETCH[NORTH_FLOW] = {"days": 1825}
+    assert captured["days"] == 1825
+
+
+def test_invalidate_fundamentals_history_precise(gw):
+    """G3 后缓存键只有 symbol，精确 invalidate 即可。"""
+    df = pd.DataFrame(
+        {"roe_ttm": [10.0]}, index=pd.to_datetime(["2024-01-01"]),
+    )
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+        markets=(Market.GLOBAL,), fundamentals_history_value=df,
+    )
+    gw.register_provider(p)
+
+    gw.fundamentals_history("sh600519")
+    gw.fundamentals_history("sh000001")
+    gw.invalidate_fundamentals_history("sh600519")
+
+    # sh600519 被清，再请求会触发 provider
+    gw.fundamentals_history("sh600519")
+    n_calls_a = len([c for c in p.call_log if "fetch_fundamentals_history:sh600519" in c])
+    assert n_calls_a == 2
+    # sh000001 仍命中缓存
+    gw.fundamentals_history("sh000001")
+    n_calls_b = len([c for c in p.call_log if "fetch_fundamentals_history:sh000001" in c])
+    assert n_calls_b == 1
+
+
 def test_kline_daily_persists_kline_minute_does_not(tmp_path):
     """KLINE_DAILY 在白名单内落盘；KLINE_MINUTE 不在白名单不落盘。"""
     cache_dir = str(tmp_path / "gw_cache")
