@@ -89,7 +89,7 @@ Provider 注册表
   ├─ SinaProvider        hq.sinajs.cn  (实时行情备选)
   ├─ EastmoneyProvider   push2.eastmoney.com  (板块/北向)
   ├─ BaostockProvider    api.baostock.com  (A 股基本面 + 日 K)
-  ├─ AkShareProvider     akshare  (宏观/历史,兜底)
+| AkShareProvider     akshare  (宏观/基本面/资金流,兜底)
   └─ YFinanceProvider    yfinance  (美股/港股指数兜底)
 ```
 
@@ -106,7 +106,10 @@ Provider 注册表
 | BALANCE_SHEET | — | — | — | A | — | — |
 | SECTOR_RANKING | — | A(备) | A(主,含资金流) | — | — | — |
 | SECTOR_CONSTITUENTS | — | — | A | — | — | — |
-| NORTH_FLOW | — | — | A | — | — | — |
+| NORTH_FLOW | — | — | A | — | GLOBAL | — |
+| MARGIN_FLOW | — | — | — | — | GLOBAL | — |
+| FUND_FLOW | — | — | — | — | GLOBAL | — |
+| NEWS_HEADLINES | — | — | — | — | GLOBAL | — |
 | MACRO | — | — | — | — | GLOBAL | — |
 
 ### 选源策略
@@ -135,6 +138,8 @@ Provider 注册表
 | 分钟 K | 60s |
 | 宏观 | 24h |
 | 基本面历史时序 | 24h |
+| 融资融券 / 资金流 | 4h |
+| 新闻标题 | 30min |
 
 ### 调用示例
 
