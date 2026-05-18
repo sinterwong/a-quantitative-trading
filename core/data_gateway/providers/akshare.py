@@ -319,14 +319,16 @@ class AkshareProvider(Provider):
 
     @classmethod
     def _fetch_credit(cls, ak) -> pd.DataFrame:
-        raw = ak.macro_china_shrzgm()
+        # macro_china_shrzgm() 返回"社会融资规模增量"，不是同比；
+        # 正确数据源: macro_china_new_financial_credit() 含"当月-同比增长"列
+        raw = ak.macro_china_new_financial_credit()
         raw.columns = [c.strip() for c in raw.columns]
         date_col = raw.columns[0]
-        val_col = (
-            next((c for c in raw.columns if "yoy" in c.lower()), None)
-            or next((c for c in raw.columns if "同比" in c), raw.columns[1])
+        val_col = next(
+            (c for c in raw.columns if '当月-同比增长' in c),
+            raw.columns[1],
         )
-        return cls._normalize(raw, date_col, val_col, "credit_yoy")
+        return cls._normalize(raw, date_col, val_col, 'credit_yoy')
 
     def fetch_fundamentals_history(
         self, symbol: str, start: str | None = None, end: str | None = None,
