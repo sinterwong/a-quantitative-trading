@@ -125,6 +125,37 @@ def test_submit_with_routing_disabled_uses_single_submit(monitor):
     monitor._broker.submit_order.assert_called_once()
 
 
+def test_submit_with_routing_slice_pretrade_rejection_stops_emission(monitor):
+    """大单拆 6 个 slice 时,中途 PreTrade 拒单 → 停止发后续 slice。"""
+    monitor._broker = MagicMock()
+    filled = MagicMock(status='filled', filled_shares=10_000,
+                       avg_price=10.0, order_id='S1',
+                       submitted_at='', filled_at='')
+    monitor._broker.submit_order.return_value = filled
+    monitor._algo_config = lambda: _make_algo_config(
+        algo_method='TWAP', algo_duration_minutes=30, algo_slice_interval=5,
+        algo_threshold_amount=100, algo_threshold_shares=1,
+    )
+
+    # RiskEngine: 前两次通过,第三次拒(模拟头寸累计到上限)
+    fake_re = MagicMock()
+    rr_ok = MagicMock(passed=True, reason='')
+    rr_reject = MagicMock(passed=False, reason='Position 26% > 25% limit')
+    fake_re.check.side_effect = [rr_ok, rr_ok, rr_reject, rr_ok, rr_ok, rr_ok]
+    monitor._strategy_runner = MagicMock(risk_engine=fake_re)
+    # MagicMock 默认对未定义属性返回 MagicMock,会让 getattr fallback 失效。
+    # 显式绑定真实 helper。
+    monitor._get_pretrade_risk_engine = ExecutionMixin._get_pretrade_risk_engine.__get__(monitor)
+    monitor._check_slice_pretrade = ExecutionMixin._check_slice_pretrade.__get__(monitor)
+
+    ExecutionMixin._submit_with_routing(
+        monitor, symbol='600519.SH', direction='BUY',
+        shares=60_000, price=10.0,
+    )
+    # 30/5 = 6 个 slice,第 3 个拒单 → 实际只下了 2 单
+    assert monitor._broker.submit_order.call_count == 2
+
+
 # ── _submit_order_for_signal ─────────────────────────────
 # 这些方法访问 self.NO_TRADE_SIGNALS / SIGNAL_TO_ORDER 等类属性,
 # 需要给 monitor 注入。
