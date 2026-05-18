@@ -838,7 +838,11 @@ class BacktestEngine:
 
         # 胜率
         win_rate = self._wins / (self._wins + self._losses) if (self._wins + self._losses) > 0 else 0
-        profit_factor = self._total_profit / self._total_loss if self._total_loss > 0 else float('inf')
+        profit_factor = (
+            round(self._total_profit / self._total_loss, 2)
+            if self._total_loss > 0
+            else (999.0 if self._total_profit > 0 else 0.0)
+        )
 
         # 平均持仓
         avg_holding = np.mean(self._holding_periods) if self._holding_periods else 0
