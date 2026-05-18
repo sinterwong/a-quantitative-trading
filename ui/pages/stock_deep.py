@@ -70,6 +70,9 @@ with tab_news:
             st.caption('暂无新闻')
         else:
             for i, it in enumerate(items, 1):
+                if isinstance(it, str):
+                    st.markdown(f'{i}. {it}')
+                    continue
                 title = it.get('title') or it.get('headline') or str(it)
                 url = it.get('url') or it.get('link')
                 ts = it.get('ts') or it.get('time') or it.get('publish_time') or ''
