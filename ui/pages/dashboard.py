@@ -46,26 +46,21 @@ except BackendError as exc:
     st.stop()
 
 equity = _pick(summary, 'total_equity', 'equity', 'nav', 'value', default=0)
-market_value = _pick(summary, 'market_value', 'positions_value', 'holding_value', default=0)
+market_value = _pick(summary, 'position_value', 'market_value',
+                     'positions_value', 'holding_value', default=0)
 cash = _pick(summary, 'cash', 'available_cash', default=0)
-daily_return = _pick(summary, 'daily_return', 'daily_return_pct',
-                     'today_return', 'pnl_pct', default=None)
-daily_pnl = _pick(summary, 'daily_pnl', 'today_pnl', default=None)
+total_pnl = _pick(summary, 'total_pnl', 'unrealized_pnl', default=None)
 
-# 防御：后端有时返回字符串 'None' 而不是 Python None
-if isinstance(daily_return, str) and daily_return.lower() in ('none', 'null', ''):
-    daily_return = None
-if isinstance(daily_pnl, str) and daily_pnl.lower() in ('none', 'null', ''):
-    daily_pnl = None
+# 占比 = 持仓 / 总权益,fmt_pct 期望小数所以无需 /100
+position_ratio = (market_value / equity) if equity else None
 
 kpi_row([
     {'label': '总权益', 'value': fmt_money(equity)},
     {'label': '持仓市值', 'value': fmt_money(market_value),
-     'help': f'占比 {fmt_pct(market_value / equity) if equity else "—"}'},
+     'help': f'占比 {fmt_pct(position_ratio) if position_ratio is not None else "—"}'},
     {'label': '可用现金', 'value': fmt_money(cash)},
-    {'label': '当日收益', 'value': fmt_pct(daily_return, signed=True),
-     'delta': fmt_money(daily_pnl) if daily_pnl is not None else None,
-     'delta_color': 'normal'},
+    {'label': '累计盈亏', 'value': fmt_money(total_pnl) if total_pnl is not None else '—',
+     'help': '已实现 + 未实现盈亏(总)'},
 ])
 
 st.markdown('')
