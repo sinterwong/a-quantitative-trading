@@ -12,12 +12,14 @@ akshare 实测稳定性差,只在无替代方案的数据类型上保留:
 from __future__ import annotations
 
 import logging
+import math
 import re
 
 import pandas as pd
 
 from ..capabilities import Capability, MacroIndicator, Market, ProviderCapability
 from ..schemas import Fundamentals
+from ..symbols import a_share_exchange
 from .base import Provider, ProviderError
 
 logger = logging.getLogger("data_gateway.akshare")
@@ -46,7 +48,7 @@ class AkshareProvider(Provider):
                 Capability.FUNDAMENTALS,
                 Capability.FUNDAMENTALS_HISTORY,
                 Capability.MARGIN_FLOW,
-                Capability.NEWS_HEADLINES,
+                Capability.FUND_FLOW,
                 Capability.NORTH_FLOW,
             }),
             markets=frozenset({Market.GLOBAL}),
@@ -542,39 +544,141 @@ class AkshareProvider(Provider):
     def fetch_margin_flow(
         self, symbol: str, start: str | None = None, end: str | None = None,
     ) -> pd.DataFrame:
-        """通过 AkShare stock_margin_detail 获取个股融资融券日序列。
+        """通过 AkShare stock_margin_detail_sse / stock_margin_detail_szse 获取融资融券。
+
+        ⚠️ 数据层已知局限：
+          AkShare 此处的两个接口是**市场快照**（所有标的在某日的余额/净买入），
+          不是个股时序。本方法仅返回 end 日（或最近交易日）单行数据。
+          如果调用方传了 start，会返回空 DataFrame（明确表示"本源不支持时序"），
+          这样上层 gateway 可继续 failover 到未来接入的真源（如东方财富）。
 
         Returns
         -------
         pd.DataFrame
-            DatetimeIndex,列 margin_balance(融资余额,元) / short_balance(融券余额,元)。
+            DatetimeIndex，单行（end 日），列：
+            - margin_balance（融资余额，元）
+            - net_buy（融资净买入额，元）= 融资买入额 - 融资偿还额
+            - short_balance（融券余额，元）
+            空 DataFrame 表示本源无数据或调用方明确要求时序。
         """
+        # 明示不支持时序：避免下游误把单点当时序回填，污染 Parquet 缓存
+        if start is not None:
+            logger.debug(
+                "akshare.fetch_margin_flow(%s): 本源仅支持单日快照，start=%s 时返回空",
+                symbol, start,
+            )
+            return pd.DataFrame()
+
         try:
             import akshare as ak
         except ImportError:
             logger.debug("akshare 未安装,跳过 margin_flow 请求")
             return pd.DataFrame()
 
-        # 去掉常见后缀,akshare 接口接受 6 位代码
-        code = symbol.replace(".SH", "").replace(".SZ", "")
-        if code.lower().startswith(("sh", "sz")):
-            code = code[2:]
+        # end 日期缺省取今天（非交易日由 ak 返回空，由调用方决定是否回退到上一交易日）
+        target_date = end or pd.Timestamp.now().strftime("%Y%m%d")
 
         try:
-            raw = ak.stock_margin_detail(symbol=code)
+            if a_share_exchange(symbol) == "sh":
+                raw = ak.stock_margin_detail_sse(date=target_date)
+            else:
+                raw = ak.stock_margin_detail_szse(date=target_date)
         except Exception as exc:
             raise ProviderError(f"akshare.fetch_margin_flow({symbol}): {exc}") from exc
 
         if raw is None or raw.empty:
             return pd.DataFrame()
 
-        return self._normalize_margin(raw, start, end)
+        return self._normalize_margin_snapshot(raw, symbol, target_date)
+
+    @staticmethod
+    def _normalize_margin_snapshot(
+        raw: pd.DataFrame, symbol: str, target_date: str,
+    ) -> pd.DataFrame:
+        """归一 AkShare 融资融券**市场快照** → 单行 DataFrame。
+
+        raw 格式：
+          SSE: ['信用交易日期','标的证券代码','融资余额','融资买入额','融资偿还额','融券余额'...]
+          SZSE: ['证券代码','融资余额','融资买入额','融资偿还额','融券余额'...]
+
+        Returns
+        -------
+        pd.DataFrame
+            单行，index=target_date，列 margin_balance / net_buy / short_balance。
+        """
+        df = raw.copy()
+        df.columns = [c.strip() for c in df.columns]
+
+        sym_col = next(
+            (c for c in ("标的证券代码", "证券代码") if c in df.columns),
+            None,
+        )
+        if sym_col is None:
+            return pd.DataFrame()
+
+        code_raw = symbol.split(".")[0].upper()
+        if code_raw.startswith(("SH", "SZ")):
+            code_raw = code_raw[2:]
+        target_code = code_raw.zfill(6)
+
+        df[sym_col] = df[sym_col].astype(str).str.zfill(6)
+        rows = df[df[sym_col] == target_code]
+        if rows.empty:
+            return pd.DataFrame()
+        row = rows.iloc[0]
+
+        def _f(col: str, default: float = 0.0) -> float:
+            if col not in df.columns:
+                return default
+            try:
+                v = float(row[col])
+                return v if not math.isnan(v) else default
+            except (TypeError, ValueError):
+                return default
+
+        # 用白名单候选精确匹配，避免子串撞列（"当日融资余额" vs "期末融资余额"）
+        margin_balance = next(
+            (_f(c) for c in ("融资余额", "融资余额(元)") if c in df.columns),
+            0.0,
+        )
+        short_balance = next(
+            (_f(c) for c in ("融券余额", "融券余额(元)") if c in df.columns),
+            0.0,
+        )
+
+        buy_col = next(
+            (c for c in ("融资买入额", "融资买入额(元)") if c in df.columns),
+            None,
+        )
+        repay_col = next(
+            (c for c in ("融资偿还额", "融资偿还额(元)") if c in df.columns),
+            None,
+        )
+        net_buy = (_f(buy_col) - _f(repay_col)) if buy_col else 0.0
+
+        dt = pd.Timestamp(target_date)
+        return pd.DataFrame(
+            {
+                "margin_balance": [margin_balance],
+                "net_buy": [net_buy],
+                "short_balance": [short_balance],
+            },
+            index=[dt],
+        )
 
     @staticmethod
     def _normalize_margin(
         raw: pd.DataFrame, start: str | None, end: str | None,
     ) -> pd.DataFrame:
-        """归一 AkShare stock_margin_detail 列名 → margin_balance / short_balance。"""
+        """归一融资融券**时序** DataFrame（兼容 AkShare 旧接口及未来接入数据源）。
+
+        raw 格式：['date','rz_ye','rq_ye'] 或 ['信用交易日期','融资余额','融券余额']。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex，列 margin_balance / short_balance（start/end 区间过滤）。
+        """
         df = raw.copy()
         df.columns = [c.strip().lower() for c in df.columns]
 
@@ -591,13 +695,15 @@ class AkshareProvider(Provider):
         rename = {src.lower(): dst for src, dst in col_map.items() if src.lower() in df.columns}
         df = df.rename(columns=rename)
 
-        # 找日期列
         date_col = next(
             (c for c in ("date", "信用交易日期", "trade_date") if c in df.columns),
-            df.columns[0],
+            None,
         )
-        df["date"] = pd.to_datetime(df[date_col], errors="coerce")
-        df = df.dropna(subset=["date"]).set_index("date").sort_index()
+        if date_col is None:
+            return pd.DataFrame()
+
+        df["_dt"] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=["_dt"]).set_index("_dt").sort_index()
 
         out = pd.DataFrame(index=df.index)
         if "margin_balance" in df.columns:
@@ -684,45 +790,105 @@ class AkshareProvider(Provider):
         })
         return out.dropna().tail(days)
 
-    # ─── NEWS_HEADLINES ──────────────────────────────────────────────────────
+    # ─── FUND_FLOW ────────────────────────────────────────────────────────────
 
-    def fetch_news_headlines(self, symbol: str, n: int = 20) -> list:
-        """通过 AkShare stock_news_em 获取个股新闻标题列表(最新在前)。
+    def fetch_fund_flow(
+        self, symbol: str, start: str | None = None, end: str | None = None,
+    ) -> pd.DataFrame:
+        """通过 AkShare stock_individual_fund_flow 获取个股资金流日频时序。
+
+        数据粒度：主力净流入 / 超大单净流入 / 大单净流入 / 中单净流入 / 小单净流入
+        及其各自的净占比（%），含收盘价和涨跌幅。
+
+        注意：AkShare 实测稳定性一般，作为备灾能力声明。
+        数据约 120 个交易日，非完全实时（收盘后更新）。
 
         Returns
         -------
-        List[str]
-            最多 n 条新闻标题。空列表表示无数据。
+        pd.DataFrame
+            DatetimeIndex，列：
+            - main_net_inflow（元）/ main_net_ratio（%）
+            - super_net_inflow（元）/ super_net_ratio（%）
+            - large_net_inflow（元）/ large_net_ratio（%）
+            - medium_net_inflow（元）/ medium_net_ratio（%）
+            - small_net_inflow（元）/ small_net_ratio（%）
+            - close（收盘价） / change_pct（涨跌幅 %）
         """
         try:
             import akshare as ak
         except ImportError:
-            logger.debug("akshare 未安装,跳过 news_headlines 请求")
-            return []
+            logger.debug("akshare 未安装,跳过 fund_flow 请求")
+            return pd.DataFrame()
 
-        # 去掉后缀,接口接受 6 位代码
-        code = symbol.split(".")[0]
-        if code.lower().startswith(("sh", "sz")):
-            code = code[2:]
+        # AkShare 接口要求 6 位纯代码 + sh/sz 市场标记
+        code_raw = symbol.split(".")[0].upper()
+        if code_raw.startswith(("SH", "SZ")):
+            code_raw = code_raw[2:]
+        market = a_share_exchange(symbol)
 
         try:
-            df = ak.stock_news_em(symbol=code)
+            raw = ak.stock_individual_fund_flow(stock=code_raw, market=market)
         except Exception as exc:
-            raise ProviderError(f"akshare.fetch_news_headlines({symbol}): {exc}") from exc
+            raise ProviderError(f"akshare.fetch_fund_flow({symbol}): {exc}") from exc
 
-        if df is None or df.empty:
-            return []
+        if raw is None or raw.empty:
+            return pd.DataFrame()
 
-        title_col = None
-        for col in ("标题", "title", "新闻标题", "news_title"):
-            if col in df.columns:
-                title_col = col
-                break
-        if title_col is None:
-            return []
+        return self._normalize_fund_flow(raw, start, end)
 
-        headlines = df[title_col].dropna().tolist()[:n]
-        return [str(h).strip() for h in headlines if h]
+    @staticmethod
+    def _normalize_fund_flow(
+        raw: pd.DataFrame, start: str | None, end: str | None,
+    ) -> pd.DataFrame:
+        """归一 AkShare stock_individual_fund_flow → 标准资金流 DataFrame。"""
+        df = raw.copy()
+        df.columns = [c.strip() for c in df.columns]
+
+        # 日期列
+        date_col = next((c for c in ("日期", "date", "trade_date") if c in df.columns), None)
+        if date_col is None:
+            return pd.DataFrame()
+
+        df["date"] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=["date"]).set_index("date").sort_index()
+
+        # 字段映射（中文列名兼容）
+        col_map = {
+            "收盘价": "close",
+            "涨跌幅": "change_pct",
+            "主力净流入-净额": "main_net_inflow",
+            "主力净流入-净占比": "main_net_ratio",
+            "超大单净流入-净额": "super_net_inflow",
+            "超大单净流入-净占比": "super_net_ratio",
+            "大单净流入-净额": "large_net_inflow",
+            "大单净流入-净占比": "large_net_ratio",
+            "中单净流入-净额": "medium_net_inflow",
+            "中单净流入-净占比": "medium_net_ratio",
+            "小单净流入-净额": "small_net_inflow",
+            "小单净流入-净占比": "small_net_ratio",
+        }
+
+        rename = {k: v for k, v in col_map.items() if k in df.columns}
+        df = df.rename(columns=rename)
+
+        # 只保留映射后的列
+        out_cols = [
+            "close", "change_pct",
+            "main_net_inflow", "main_net_ratio",
+            "super_net_inflow", "super_net_ratio",
+            "large_net_inflow", "large_net_ratio",
+            "medium_net_inflow", "medium_net_ratio",
+            "small_net_inflow", "small_net_ratio",
+        ]
+        out = df[[c for c in out_cols if c in df.columns]].copy()
+        out = out.apply(pd.to_numeric, errors="coerce")
+
+        if start:
+            out = out[out.index >= pd.Timestamp(start)]
+        if end:
+            out = out[out.index <= pd.Timestamp(end)]
+
+        return out
 
 
 __all__ = ["AkshareProvider"]

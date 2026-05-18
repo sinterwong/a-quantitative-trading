@@ -29,6 +29,7 @@ class Capability(str, Enum):
     FUNDAMENTALS_HISTORY = "fundamentals_history"  # 基本面历史时序 DataFrame（日频，前向填充）
     BALANCE_SHEET = "balance_sheet"               # BalanceSheet（资产负债表）
     MARGIN_FLOW = "margin_flow"                   # 融资融券日频时序 DataFrame
+    FUND_FLOW = "fund_flow"                       # 个股资金流日频 DataFrame（主力/超大/大单净流入）
     NEWS_HEADLINES = "news_headlines"             # 新闻标题列表 List[str]
 
 

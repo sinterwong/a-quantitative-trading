@@ -59,6 +59,7 @@ _DEFAULT_TTL = {
     Capability.MARKET_INDEX: 60.0,
     Capability.MACRO: 86400.0,
     Capability.MARGIN_FLOW: 14400.0,           # 融资融券日频，4h 缓存(收盘后更新)
+    Capability.FUND_FLOW: 14400.0,              # 资金流日频，4h 缓存(收盘后更新)
     Capability.NEWS_HEADLINES: 1800.0,         # 新闻标题，30min 缓存
 }
 
@@ -574,6 +575,31 @@ class DataGateway:
         if headlines:
             self._cache.set(cache_key, headlines, _DEFAULT_TTL[Capability.NEWS_HEADLINES])
         return headlines
+
+    def fund_flow(
+        self, symbol: str, start: str | None = None, end: str | None = None,
+    ) -> pd.DataFrame:
+        """个股资金流日频时序（主力/超大/大单净流入）。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex，列 main_net_inflow / super_net_inflow / large_net_inflow
+            及其净占比（%），含 close / change_pct。
+        """
+        cache_key = f"fund_flow:{symbol}:{start}:{end}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        result, _ = self._sequential_fetch(
+            Capability.FUND_FLOW, Market.GLOBAL,
+            "fetch_fund_flow", symbol, start, end,
+        )
+        df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
+        if not df.empty:
+            self._cache.set(cache_key, df, _DEFAULT_TTL.get(Capability.FUND_FLOW, 14400.0))
+        return df
 
     def fundamentals_history(
         self, symbol: str, start: str | None = None, end: str | None = None,

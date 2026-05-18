@@ -219,3 +219,225 @@ def test_akshare_normalize_indicator_em_dividend_yield_passes_through():
     daily = AkshareProvider._normalize_indicator_em(raw, "2024-07-01", "2024-07-15")
     assert "dividend_yield" in daily.columns
     assert abs(daily["dividend_yield"].dropna().iloc[-1] - 3.2) < 1e-6
+
+
+# ── Akshare: fetch_margin_flow (单日快照) ───────────────────────────────────
+
+
+def _make_margin_sse_snapshot() -> pd.DataFrame:
+    """模拟 ak.stock_margin_detail_sse(date=...) 返回的市场快照。"""
+    return pd.DataFrame({
+        "信用交易日期": ["20240515", "20240515", "20240515"],
+        "标的证券代码": ["600519", "601318", "688981"],
+        "标的证券简称": ["贵州茅台", "中国平安", "中芯国际"],
+        "融资余额": [1.0e10, 2.5e10, 5.5e9],
+        "融资买入额": [1.5e8, 3.2e8, 2.1e8],
+        "融资偿还额": [1.2e8, 2.8e8, 1.9e8],
+        "融券余额": [1.0e7, 2.0e7, 5.0e6],
+    })
+
+
+def _make_margin_szse_snapshot() -> pd.DataFrame:
+    """模拟 ak.stock_margin_detail_szse(date=...) 返回的市场快照。"""
+    return pd.DataFrame({
+        "证券代码": ["000001", "300750", "159915"],
+        "融资余额": [1.0e10, 2.0e10, 3.0e9],
+        "融资买入额": [1.2e8, 2.5e8, 1.0e7],
+        "融资偿还额": [1.1e8, 2.4e8, 0.9e7],
+        "融券余额": [5.0e6, 1.0e7, 0],
+    })
+
+
+def test_akshare_fetch_margin_flow_routes_sse_for_60x():
+    """600xxx → 沪市，路由到 stock_margin_detail_sse。"""
+    mock_ak = MagicMock()
+    mock_ak.stock_margin_detail_sse.return_value = _make_margin_sse_snapshot()
+    with patch.dict(sys.modules, {"akshare": mock_ak}):
+        df = AkshareProvider().fetch_margin_flow("600519.SH", end="20240515")
+
+    mock_ak.stock_margin_detail_sse.assert_called_once_with(date="20240515")
+    mock_ak.stock_margin_detail_szse.assert_not_called()
+    assert len(df) == 1
+    assert df["margin_balance"].iloc[0] == 1.0e10
+    # net_buy = 融资买入额 - 融资偿还额 = 1.5e8 - 1.2e8 = 3.0e7
+    assert abs(df["net_buy"].iloc[0] - 3.0e7) < 1.0
+    assert df["short_balance"].iloc[0] == 1.0e7
+
+
+def test_akshare_fetch_margin_flow_routes_szse_for_000():
+    """000001 → 深市，路由到 stock_margin_detail_szse。"""
+    mock_ak = MagicMock()
+    mock_ak.stock_margin_detail_szse.return_value = _make_margin_szse_snapshot()
+    with patch.dict(sys.modules, {"akshare": mock_ak}):
+        df = AkshareProvider().fetch_margin_flow("000001.SZ", end="20240515")
+
+    mock_ak.stock_margin_detail_szse.assert_called_once_with(date="20240515")
+    mock_ak.stock_margin_detail_sse.assert_not_called()
+    assert len(df) == 1
+    assert df["margin_balance"].iloc[0] == 1.0e10
+
+
+def test_akshare_fetch_margin_flow_szse_etf_159():
+    """159xxx 是深交所 ETF，必须路由到 SZSE 接口（之前被误归 SSE，已修复）。"""
+    mock_ak = MagicMock()
+    mock_ak.stock_margin_detail_szse.return_value = _make_margin_szse_snapshot()
+    with patch.dict(sys.modules, {"akshare": mock_ak}):
+        df = AkshareProvider().fetch_margin_flow("159915.SZ", end="20240515")
+
+    mock_ak.stock_margin_detail_szse.assert_called_once_with(date="20240515")
+    mock_ak.stock_margin_detail_sse.assert_not_called()
+    assert len(df) == 1
+
+
+def test_akshare_fetch_margin_flow_with_start_returns_empty():
+    """传 start 即表明要时序，本源不支持 → 返回空（不调 ak）。"""
+    mock_ak = MagicMock()
+    with patch.dict(sys.modules, {"akshare": mock_ak}):
+        df = AkshareProvider().fetch_margin_flow(
+            "600519.SH", start="20240101", end="20240515",
+        )
+    assert df.empty
+    mock_ak.stock_margin_detail_sse.assert_not_called()
+    mock_ak.stock_margin_detail_szse.assert_not_called()
+
+
+def test_akshare_fetch_margin_flow_missing_symbol_returns_empty():
+    """快照里没有该 symbol → 返回空 DataFrame。"""
+    mock_ak = MagicMock()
+    mock_ak.stock_margin_detail_sse.return_value = _make_margin_sse_snapshot()
+    with patch.dict(sys.modules, {"akshare": mock_ak}):
+        df = AkshareProvider().fetch_margin_flow("600000.SH", end="20240515")
+    assert df.empty
+
+
+def test_akshare_fetch_margin_flow_empty_raw_returns_empty():
+    mock_ak = MagicMock()
+    mock_ak.stock_margin_detail_sse.return_value = pd.DataFrame()
+    with patch.dict(sys.modules, {"akshare": mock_ak}):
+        df = AkshareProvider().fetch_margin_flow("600519.SH", end="20240515")
+    assert df.empty
+
+
+def test_akshare_normalize_margin_snapshot_no_symbol_col():
+    """raw 缺少 '标的证券代码'/'证券代码' 列 → 返回空。"""
+    raw = pd.DataFrame({"融资余额": [1e10], "融券余额": [1e7]})
+    out = AkshareProvider._normalize_margin_snapshot(raw, "600519.SH", "20240515")
+    assert out.empty
+
+
+def test_akshare_normalize_margin_timeseries_still_works():
+    """旧时序模式（兼容老 raw 格式）：保留下游 MarginDataStore 的归一路径。"""
+    raw = pd.DataFrame({
+        "date": pd.date_range("2024-01-01", periods=5, freq="B"),
+        "rz_ye": [1e10, 1.01e10, 1.02e10, 1.03e10, 1.04e10],
+        "rq_ye": [1e7, 1.05e7, 1.1e7, 1.15e7, 1.2e7],
+    })
+    out = AkshareProvider._normalize_margin(raw, None, None)
+    assert "margin_balance" in out.columns
+    assert "short_balance" in out.columns
+    assert len(out) == 5
+
+
+# ── Akshare: fetch_fund_flow ──────────────────────────────────────────────────
+
+
+def _make_fund_flow_raw(n: int = 10) -> pd.DataFrame:
+    return pd.DataFrame({
+        "日期": pd.date_range("2024-01-01", periods=n, freq="B").strftime("%Y-%m-%d"),
+        "收盘价": [10.0 + i * 0.1 for i in range(n)],
+        "涨跌幅": [0.5 + i * 0.1 for i in range(n)],
+        "主力净流入-净额": [1e7 * (i + 1) for i in range(n)],
+        "主力净流入-净占比": [1.0 + i * 0.1 for i in range(n)],
+        "超大单净流入-净额": [5e6 * (i + 1) for i in range(n)],
+        "超大单净流入-净占比": [0.5 + i * 0.05 for i in range(n)],
+        "大单净流入-净额": [3e6 * (i + 1) for i in range(n)],
+        "大单净流入-净占比": [0.3 + i * 0.05 for i in range(n)],
+        "中单净流入-净额": [1e6 * (i + 1) for i in range(n)],
+        "中单净流入-净占比": [0.1 + i * 0.02 for i in range(n)],
+        "小单净流入-净额": [5e5 * (i + 1) for i in range(n)],
+        "小单净流入-净占比": [0.05 + i * 0.01 for i in range(n)],
+    })
+
+
+def test_akshare_fetch_fund_flow_routes_sh_for_60x():
+    mock_ak = MagicMock()
+    mock_ak.stock_individual_fund_flow.return_value = _make_fund_flow_raw()
+    with patch.dict(sys.modules, {"akshare": mock_ak}):
+        df = AkshareProvider().fetch_fund_flow("600519.SH")
+    mock_ak.stock_individual_fund_flow.assert_called_once_with(stock="600519", market="sh")
+    assert "main_net_inflow" in df.columns
+    assert len(df) == 10
+
+
+def test_akshare_fetch_fund_flow_routes_sz_for_000():
+    mock_ak = MagicMock()
+    mock_ak.stock_individual_fund_flow.return_value = _make_fund_flow_raw()
+    with patch.dict(sys.modules, {"akshare": mock_ak}):
+        df = AkshareProvider().fetch_fund_flow("000001.SZ")
+    mock_ak.stock_individual_fund_flow.assert_called_once_with(stock="000001", market="sz")
+    assert "main_net_ratio" in df.columns
+
+
+def test_akshare_fetch_fund_flow_szse_etf_159():
+    """159xxx → 深交所 ETF（修复 159 错路由到 sh 的 bug）。"""
+    mock_ak = MagicMock()
+    mock_ak.stock_individual_fund_flow.return_value = _make_fund_flow_raw()
+    with patch.dict(sys.modules, {"akshare": mock_ak}):
+        AkshareProvider().fetch_fund_flow("159915.SZ")
+    mock_ak.stock_individual_fund_flow.assert_called_once_with(stock="159915", market="sz")
+
+
+def test_akshare_fetch_fund_flow_sh_etf_510():
+    """510xxx → 上交所 ETF。"""
+    mock_ak = MagicMock()
+    mock_ak.stock_individual_fund_flow.return_value = _make_fund_flow_raw()
+    with patch.dict(sys.modules, {"akshare": mock_ak}):
+        AkshareProvider().fetch_fund_flow("510300.SH")
+    mock_ak.stock_individual_fund_flow.assert_called_once_with(stock="510300", market="sh")
+
+
+def test_akshare_fetch_fund_flow_missing_library_returns_empty():
+    real_ak = sys.modules.pop("akshare", None)
+    try:
+        with patch.dict(sys.modules, {"akshare": None}, clear=False):
+            df = AkshareProvider().fetch_fund_flow("600519.SH")
+            assert df.empty
+    finally:
+        if real_ak is not None:
+            sys.modules["akshare"] = real_ak
+
+
+def test_akshare_fetch_fund_flow_empty_raw_returns_empty():
+    mock_ak = MagicMock()
+    mock_ak.stock_individual_fund_flow.return_value = pd.DataFrame()
+    with patch.dict(sys.modules, {"akshare": mock_ak}):
+        df = AkshareProvider().fetch_fund_flow("600519.SH")
+    assert df.empty
+
+
+def test_akshare_normalize_fund_flow_start_end_filter():
+    raw = _make_fund_flow_raw(20)
+    out = AkshareProvider._normalize_fund_flow(raw, "2024-01-05", "2024-01-15")
+    assert (out.index >= pd.Timestamp("2024-01-05")).all()
+    assert (out.index <= pd.Timestamp("2024-01-15")).all()
+
+
+def test_akshare_normalize_fund_flow_no_date_col_returns_empty():
+    raw = pd.DataFrame({"主力净流入-净额": [1e7]})
+    out = AkshareProvider._normalize_fund_flow(raw, None, None)
+    assert out.empty
+
+
+# ── Akshare: declare 不再包含 NEWS_HEADLINES ───────────────────────────────
+
+
+def test_akshare_declare_no_longer_handles_news_headlines():
+    """news_headlines 已迁到 EastmoneyProvider，AkshareProvider 不再声明。"""
+    decl = AkshareProvider().declare()
+    assert Capability.NEWS_HEADLINES not in decl.capabilities
+
+
+def test_akshare_declare_includes_fund_flow():
+    decl = AkshareProvider().declare()
+    assert Capability.FUND_FLOW in decl.capabilities
+    assert Capability.MARGIN_FLOW in decl.capabilities
