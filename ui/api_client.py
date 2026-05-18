@@ -262,7 +262,7 @@ def patch_params(symbol: str, payload: dict) -> dict:
 @st.cache_data(ttl=15)
 def get_realtime(symbol: str) -> dict:
     body = _get(f'/data/realtime/{symbol}')
-    return body.get('data') or body
+    return body.get('quote') or body.get('data') or body
 
 
 @st.cache_data(ttl=300)
