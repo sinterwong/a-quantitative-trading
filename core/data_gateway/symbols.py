@@ -85,6 +85,38 @@ def detect_market(symbol: str) -> Market:
 # ─── 格式归一化 ────────────────────────────────────────────────────────────────
 
 
+def a_share_exchange(symbol: str) -> str:
+    """识别 A 股 / A 股 ETF 标的属于哪个交易所。
+
+    返回 "sh"（上交所）或 "sz"（深交所）。
+
+    规则：
+      个股: 6/9 开头 → SH（沪 A / 科创板）；0/3 开头 → SZ（深 A / 创业板）
+      ETF: 51x / 56x / 58x → SH（上交所基金）；15x / 16x / 18x → SZ（深交所基金）
+            注意：159xxx 是深交所 ETF（曾被误归 SH，已修正）。
+
+    输入支持各类常见格式（sh600519 / 600519.SH / 600519），
+    无法识别时默认返回 "sz"。
+    """
+    s = symbol.strip().upper()
+    # 剥掉常见前后缀
+    for prefix in ("SH:", "SZ:", "SH", "SZ"):
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    if s.endswith(".SH") or s.endswith(".SZ"):
+        s = s[:-3]
+    s = s.lstrip(".")
+    if not s:
+        return "sz"
+
+    # SH 前缀：A 股 6/9 + ETF 51/56/58
+    if s.startswith(("6", "9", "51", "56", "58")):
+        return "sh"
+    # SZ 前缀：A 股 0/3（含创业板 30、新三板北交所 8）+ ETF 15/16/18
+    return "sz"
+
+
 def normalize_to_sina(symbol: str) -> str:
     """转换为新浪格式: sh600519 / sz000001 / hk00700 / gb_aapl"""
     s = symbol.strip()
@@ -149,6 +181,7 @@ __all__ = [
     "safe_float",
     "safe_int",
     "detect_market",
+    "a_share_exchange",
     "normalize_to_sina",
     "normalize_to_tencent",
 ]

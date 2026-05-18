@@ -87,9 +87,9 @@ DataGateway
 Provider 注册表
   ├─ TencentProvider     qt.gtimg.cn / web.ifzq.gtimg.cn  (主选,字段最全)
   ├─ SinaProvider        hq.sinajs.cn  (实时行情备选)
-  ├─ EastmoneyProvider   push2.eastmoney.com  (板块/北向)
+  ├─ EastmoneyProvider   push2.eastmoney.com  (板块/北向/全市场快讯)
   ├─ BaostockProvider    api.baostock.com  (A 股基本面 + 日 K)
-| AkShareProvider     akshare  (宏观/基本面/资金流,兜底)
+  ├─ AkShareProvider     akshare  (宏观/基本面/融资融券/资金流,兜底)
   └─ YFinanceProvider    yfinance  (美股/港股指数兜底)
 ```
 
@@ -107,9 +107,9 @@ Provider 注册表
 | SECTOR_RANKING | — | A(备) | A(主,含资金流) | — | — | — |
 | SECTOR_CONSTITUENTS | — | — | A | — | — | — |
 | NORTH_FLOW | — | — | A | — | GLOBAL | — |
-| MARGIN_FLOW | — | — | — | — | GLOBAL | — |
+| MARGIN_FLOW | — | — | — | — | GLOBAL(单日快照, start 参数被忽略) | — |
 | FUND_FLOW | — | — | — | — | GLOBAL | — |
-| NEWS_HEADLINES | — | — | — | — | GLOBAL | — |
+| NEWS_HEADLINES | — | — | GLOBAL(全市场快讯, symbol 被忽略) | — | — | — |
 | MACRO | — | — | — | — | GLOBAL | — |
 
 ### 选源策略

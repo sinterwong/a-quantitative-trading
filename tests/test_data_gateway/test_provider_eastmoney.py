@@ -173,3 +173,104 @@ def test_fetch_north_flow_both_fail_raises():
     p = EastmoneyProvider(http=http)
     with pytest.raises(ProviderError):
         p.fetch_north_flow()
+
+
+# ── fetch_news_headlines ────────────────────────────────────────────────────
+
+
+def _kuaixun_payload(lives: list) -> str:
+    """模拟 EastMoney kuaixun 接口的 `var ajaxResult={...};` 回包。"""
+    return f"var ajaxResult={json.dumps({'LivesList': lives})};"
+
+
+def test_capability_includes_news_headlines():
+    decl = EastmoneyProvider().declare()
+    assert Capability.NEWS_HEADLINES in decl.capabilities
+
+
+def test_supports_news_headlines_ignores_market():
+    """NEWS_HEADLINES 是全市场快讯，任何 market 都应返回 True。"""
+    from core.data_gateway.capabilities import Market
+
+    p = EastmoneyProvider()
+    assert p.supports(Capability.NEWS_HEADLINES, Market.GLOBAL)
+    assert p.supports(Capability.NEWS_HEADLINES, Market.A)
+    assert p.supports(Capability.NEWS_HEADLINES, Market.US)
+
+
+def test_fetch_news_headlines_parses_titles():
+    http = MagicMock()
+    http.get_text.return_value = _kuaixun_payload([
+        {"title": "央行：保持流动性合理充裕", "content": "正文..."},
+        {"title": "证监会重拳整治财务造假", "content": ""},
+    ])
+    p = EastmoneyProvider(http=http)
+    titles = p.fetch_news_headlines("600519.SH", n=5)
+    assert len(titles) == 2
+    assert "央行" in titles[0]
+    # 验证 HttpClient 注入路径，URL 走 newsapi.eastmoney.com
+    call_args = http.get_text.call_args
+    assert "newsapi.eastmoney.com" in call_args[0][0]
+    assert "getlist_102" in call_args[0][0]
+
+
+def test_fetch_news_headlines_falls_back_to_content_when_title_missing():
+    http = MagicMock()
+    long_content = "国务院常务会议研究" + "X" * 100   # >60 字会被截断
+    short_content = "短消息：A 股开盘红"            # <60 字保留原文
+    http.get_text.return_value = _kuaixun_payload([
+        {"title": "", "content": long_content},
+        {"title": None, "content": short_content},
+    ])
+    p = EastmoneyProvider(http=http)
+    titles = p.fetch_news_headlines("000001.SZ", n=5)
+    assert len(titles) == 2
+    assert titles[0].endswith("...")
+    assert len(titles[0]) == 60
+    assert titles[1] == short_content
+
+
+def test_fetch_news_headlines_respects_n_limit():
+    http = MagicMock()
+    http.get_text.return_value = _kuaixun_payload([
+        {"title": f"标题{i}", "content": ""} for i in range(20)
+    ])
+    p = EastmoneyProvider(http=http)
+    titles = p.fetch_news_headlines("anysymbol", n=3)
+    assert len(titles) == 3
+
+
+def test_fetch_news_headlines_http_error_raises_provider_error():
+    http = MagicMock()
+    http.get_text.side_effect = HttpError("connect timeout")
+    p = EastmoneyProvider(http=http)
+    with pytest.raises(ProviderError):
+        p.fetch_news_headlines("600519.SH")
+
+
+def test_fetch_news_headlines_bad_json_raises_provider_error():
+    http = MagicMock()
+    http.get_text.return_value = "not a json blob at all"
+    p = EastmoneyProvider(http=http)
+    with pytest.raises(ProviderError):
+        p.fetch_news_headlines("600519.SH")
+
+
+def test_fetch_news_headlines_empty_lives_returns_empty_list():
+    http = MagicMock()
+    http.get_text.return_value = _kuaixun_payload([])
+    p = EastmoneyProvider(http=http)
+    titles = p.fetch_news_headlines("600519.SH")
+    assert titles == []
+
+
+def test_fetch_news_headlines_symbol_is_ignored():
+    """不同 symbol 得到同一份全市场快讯（说明 symbol 参数被忽略）。"""
+    http = MagicMock()
+    http.get_text.return_value = _kuaixun_payload([
+        {"title": "全市场新闻 X", "content": ""}
+    ])
+    p = EastmoneyProvider(http=http)
+    titles_1 = p.fetch_news_headlines("600519.SH", n=5)
+    titles_2 = p.fetch_news_headlines("000001.SZ", n=5)
+    assert titles_1 == titles_2

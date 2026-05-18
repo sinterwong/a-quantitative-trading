@@ -6,6 +6,8 @@ data_gateway.providers.eastmoney — 东方财富板块数据源
   - SECTOR_RANKING: 全市场板块涨跌幅 + 资金流排名(唯一来源)
   - SECTOR_CONSTITUENTS: 单板块成分股(唯一来源)
   - NORTH_FLOW: 北向/南向资金净流入(来自 kamt.rtmin / kamt 端点)
+  - NEWS_HEADLINES: 全市场财经快讯(来自 newsapi.eastmoney.com/kuaixun，
+    无个股粒度，symbol 参数被忽略——见 fetch_news_headlines docstring)
 
 封禁感知:
   对 ConnectionResetError / RemoteDisconnected 等"疑似封禁"信号,
@@ -42,6 +44,11 @@ _KAMT_DAILY_URL = (
     "?fields1=f1,f2&fields2=f51,f52,f53,f54,f55,f56"
 )
 _KAMT_HEADERS = {"Referer": "https://data.eastmoney.com/"}
+
+_NEWS_BASE_URL = "https://newsapi.eastmoney.com/kuaixun/v1"
+_NEWS_HEADERS = {"Referer": "https://www.eastmoney.com/"}
+_NEWS_TITLE_TRUNCATE = 57   # content 段落截断到 60 字（含省略号）
+_NEWS_TITLE_MAX_LEN = 60
 
 _FIELDS = (
     "f2,f3,f4,f5,f6,f7,f8,f10,f12,f14,f15,f16,f17,f18,f20,f21,"
@@ -154,13 +161,18 @@ class EastmoneyProvider(Provider):
                 Capability.SECTOR_RANKING,  # push2 clist（已有）
                 Capability.SECTOR_CONSTITUENTS,  # push2 clist（已有）
                 Capability.NORTH_FLOW,      # kamt 实时/日总结（已有）
+                Capability.NEWS_HEADLINES,  # kuaixun 全市场快讯（symbol 被忽略）
             }),
-            markets=frozenset({Market.A, Market.INDEX, Market.HK}),
+            # GLOBAL 用于无市场维度的能力（如 NEWS_HEADLINES、NORTH_FLOW）
+            markets=frozenset({Market.A, Market.INDEX, Market.HK, Market.GLOBAL}),
             priority_hint=0.70,
         )
 
     def supports(self, capability: Capability, market: Market) -> bool:
-        """QUOTE / MARKET_INDEX / SECTOR_* / NORTH_FLOW 均只支持 A / INDEX / HK 市场。"""
+        """QUOTE / MARKET_INDEX / SECTOR_* / NORTH_FLOW 均只支持 A / INDEX / HK 市场。
+        NEWS_HEADLINES 是全市场快讯能力（接口无市场维度），市场维度任意。"""
+        if capability == Capability.NEWS_HEADLINES:
+            return capability in self.declare().capabilities
         if market not in (Market.A, Market.INDEX, Market.HK):
             return False
         return super().supports(capability, market)
@@ -480,6 +492,73 @@ class EastmoneyProvider(Provider):
                 currency="CNY" if market in (Market.A, Market.INDEX) else "HKD",
             )
         return out
+
+    # ── NEWS_HEADLINES ───────────────────────────────────────────────────────
+
+    def fetch_news_headlines(self, symbol: str, n: int = 20) -> List[str]:
+        """通过 EastMoney 快讯接口（kuaixun/v1/getlist_102_*）获取财经资讯标题。
+
+        ⚠️ 语义说明：
+          东方财富免费接口**没有个股粒度新闻**，本方法返回**全市场快讯**，
+          symbol 参数被完全忽略。所有 symbol 的调用都将得到同一份数据。
+          调用方应将此视为"宽泛财经舆情"而非"个股事件"——例如把它用作
+          市场情绪信号，而不是给单只股票做精准舆情打分。
+
+        Returns
+        -------
+        List[str]
+            最多 n 条快讯标题（最新在前），空列表表示无数据。
+            HTTP/解析失败抛 ProviderError 触发 gateway 健康度记录。
+        """
+        page_size = max(1, min(n, 20))
+        url = f"{_NEWS_BASE_URL}/getlist_102_ajaxResult_{page_size}_1_.html"
+
+        try:
+            text = self._http.get_text(url, headers=_NEWS_HEADERS)
+        except HttpError as exc:
+            raise ProviderError(f"eastmoney.fetch_news_headlines: {exc}") from exc
+
+        # 回包形如 `var ajaxResult={...};` —— 复用 JSONP 解析器
+        payload = parse_jsonp(text)
+        # parse_jsonp 处理 callback(...) 形式；这里也兜底剥 `var x =` 前缀
+        if payload.startswith("var "):
+            eq_pos = payload.find("=")
+            if eq_pos >= 0:
+                payload = payload[eq_pos + 1:].rstrip(";").strip()
+
+        try:
+            data = json.loads(payload)
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise ProviderError(
+                f"eastmoney.fetch_news_headlines: JSON 解析失败: {exc}"
+            ) from exc
+
+        lives = data.get("LivesList") if isinstance(data, dict) else None
+        if not isinstance(lives, list):
+            return []
+
+        titles: List[str] = []
+        for item in lives:
+            if not isinstance(item, dict):
+                continue
+            # 优先 title；缺失时降级到 content 并截断
+            raw_title = item.get("title")
+            title = str(raw_title).strip() if raw_title else ""
+            if not title:
+                content = item.get("content")
+                if content:
+                    content_str = str(content).strip()
+                    if len(content_str) > _NEWS_TITLE_MAX_LEN:
+                        title = content_str[:_NEWS_TITLE_TRUNCATE] + "..."
+                    else:
+                        title = content_str
+            if not title:
+                continue
+            titles.append(title)
+            if len(titles) >= n:
+                break
+
+        return titles
 
     # ── MARKET_INDEX ─────────────────────────────────────────────────────────
 

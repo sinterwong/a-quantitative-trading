@@ -175,9 +175,37 @@ class Provider(ABC):
         -------
         pd.DataFrame
             DatetimeIndex，列 margin_balance（融资余额，元）/ short_balance（融券余额，元）。
+            可选列 net_buy（融资净买入额，元）当源支持时返回。
             空 DataFrame 表示本源无数据。
         """
         return pd.DataFrame()
+
+    def fetch_fund_flow(
+        self, symbol: str, start: str | None = None, end: str | None = None,
+    ) -> pd.DataFrame:
+        """个股资金流日频时序。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex，列 main_net_inflow / super_net_inflow / large_net_inflow
+            （元）及对应 _ratio（%），可选 close / change_pct。
+            空 DataFrame 表示本源无数据。
+        """
+        return pd.DataFrame()
+
+    def fetch_news_headlines(self, symbol: str, n: int = 20) -> list:
+        """新闻标题列表。
+
+        语义约定：通常按 symbol 返回个股相关新闻；若 provider 文档明示
+        "全市场快讯"，调用方应理解为宽泛财经舆情。
+
+        Returns
+        -------
+        List[str]
+            最多 n 条标题（最新在前），空列表表示本源无数据。
+        """
+        return []
 
 
 __all__ = ["Provider", "ProviderError"]
