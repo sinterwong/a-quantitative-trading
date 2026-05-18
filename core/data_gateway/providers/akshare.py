@@ -48,6 +48,7 @@ class AkshareProvider(Provider):
                 Capability.FUNDAMENTALS,
                 Capability.FUNDAMENTALS_HISTORY,
                 Capability.MARGIN_FLOW,
+                Capability.FUND_FLOW,
                 Capability.NEWS_HEADLINES,
                 Capability.NORTH_FLOW,
             }),
@@ -801,6 +802,108 @@ class AkshareProvider(Provider):
                 break
 
         return titles
+
+    # ─── FUND_FLOW ────────────────────────────────────────────────────────────
+
+    def fetch_fund_flow(
+        self, symbol: str, start: str | None = None, end: str | None = None,
+    ) -> pd.DataFrame:
+        """通过 AkShare stock_individual_fund_flow 获取个股资金流日频时序。
+
+        数据粒度：主力净流入 / 超大单净流入 / 大单净流入 / 中单净流入 / 小单净流入
+        及其各自的净占比（%），含收盘价和涨跌幅。
+
+        注意：AkShare 实测稳定性一般，作为备灾能力声明。
+        数据约 120 个交易日，非完全实时（收盘后更新）。
+
+        Returns
+        -------
+        pd.DataFrame
+            DatetimeIndex，列：
+            - main_net_inflow（元）/ main_net_ratio（%）
+            - super_net_inflow（元）/ super_net_ratio（%）
+            - large_net_inflow（元）/ large_net_ratio（%）
+            - medium_net_inflow（元）/ medium_net_ratio（%）
+            - small_net_inflow（元）/ small_net_ratio（%）
+            - close（收盘价） / change_pct（涨跌幅 %）
+        """
+        try:
+            import akshare as ak
+        except ImportError:
+            logger.debug("akshare 未安装,跳过 fund_flow 请求")
+            return pd.DataFrame()
+
+        # 解析市场
+        code_raw = symbol.split(".")[0].upper()
+        if code_raw.startswith(("SH", "SZ")):
+            code_raw = code_raw[2:]
+
+        # 判断沪市(6/9开头)还是深市(0/3开头)
+        market = "sh" if code_raw.startswith(("6", "9", "510", "512", "159")) else "sz"
+
+        try:
+            raw = ak.stock_individual_fund_flow(stock=code_raw, market=market)
+        except Exception as exc:
+            raise ProviderError(f"akshare.fetch_fund_flow({symbol}): {exc}") from exc
+
+        if raw is None or raw.empty:
+            return pd.DataFrame()
+
+        return self._normalize_fund_flow(raw, start, end)
+
+    @staticmethod
+    def _normalize_fund_flow(
+        raw: pd.DataFrame, start: str | None, end: str | None,
+    ) -> pd.DataFrame:
+        """归一 AkShare stock_individual_fund_flow → 标准资金流 DataFrame。"""
+        df = raw.copy()
+        df.columns = [c.strip() for c in df.columns]
+
+        # 日期列
+        date_col = next((c for c in ("日期", "date", "trade_date") if c in df.columns), None)
+        if date_col is None:
+            return pd.DataFrame()
+
+        df["date"] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=["date"]).set_index("date").sort_index()
+
+        # 字段映射（中文列名兼容）
+        col_map = {
+            "收盘价": "close",
+            "涨跌幅": "change_pct",
+            "主力净流入-净额": "main_net_inflow",
+            "主力净流入-净占比": "main_net_ratio",
+            "超大单净流入-净额": "super_net_inflow",
+            "超大单净流入-净占比": "super_net_ratio",
+            "大单净流入-净额": "large_net_inflow",
+            "大单净流入-净占比": "large_net_ratio",
+            "中单净流入-净额": "medium_net_inflow",
+            "中单净流入-净占比": "medium_net_ratio",
+            "小单净流入-净额": "small_net_inflow",
+            "小单净流入-净占比": "small_net_ratio",
+        }
+
+        rename = {k: v for k, v in col_map.items() if k in df.columns}
+        df = df.rename(columns=rename)
+
+        # 只保留映射后的列
+        out_cols = [
+            "close", "change_pct",
+            "main_net_inflow", "main_net_ratio",
+            "super_net_inflow", "super_net_ratio",
+            "large_net_inflow", "large_net_ratio",
+            "medium_net_inflow", "medium_net_ratio",
+            "small_net_inflow", "small_net_ratio",
+        ]
+        out = df[[c for c in out_cols if c in df.columns]].copy()
+        out = out.apply(pd.to_numeric, errors="coerce")
+
+        if start:
+            out = out[out.index >= pd.Timestamp(start)]
+        if end:
+            out = out[out.index <= pd.Timestamp(end)]
+
+        return out
 
 
 __all__ = ["AkshareProvider"]
