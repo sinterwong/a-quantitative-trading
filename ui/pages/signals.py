@@ -113,6 +113,7 @@ with tab_new:
                     st.success(f'订单已提交: {res}')
                     del st.session_state['_pending_order']
                     clear_cache()
+                    st.rerun()
                 except BackendError as exc:
                     error_banner(exc)
 

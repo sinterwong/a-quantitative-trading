@@ -262,7 +262,7 @@ def patch_params(symbol: str, payload: dict) -> dict:
 @st.cache_data(ttl=15)
 def get_realtime(symbol: str) -> dict:
     body = _get(f'/data/realtime/{symbol}')
-    return body.get('data') or body
+    return body.get('quote') or body.get('data') or body
 
 
 @st.cache_data(ttl=300)
@@ -281,9 +281,12 @@ def get_fund_flow() -> dict:
     return _get('/data/fund_flow')
 
 
-@st.cache_data(ttl=1800)
+_MACRO_TIMEOUT = 15.0   # akshare 宏观接口网络较慢，给予足够超时
+
+@st.cache_data(ttl=86400)
 def get_macro(indicator: str) -> dict:
-    return _get(f'/data/macro/{indicator}')
+    timeout = _MACRO_TIMEOUT if indicator == 'CREDIT' else None
+    return _get(f'/data/macro/{indicator}', timeout=timeout)
 
 
 @st.cache_data(ttl=300)

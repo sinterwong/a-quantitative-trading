@@ -54,8 +54,11 @@ with tab_rot:
                 c3.markdown(f'- `{s}`')
 
             st.markdown('---')
-            st.markdown(f'**换手率**: {res.get("avg_turnover_pct", "—")}'
-                        f'   ·   **再平衡日**: {res.get("rebalance_date", "—")}')
+            st.markdown(
+                f'**再平衡日**: {res.get("rebalance_date", "—")}'
+                f'   ·   **样本数**: {res.get("universe_size", "—")}'
+                f'   ·   **top_n**: {res.get("top_n", "—")}'
+            )
 
             scores = res.get('scores') or {}
             if scores:

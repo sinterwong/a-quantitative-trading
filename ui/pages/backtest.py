@@ -38,10 +38,75 @@ slip = c3.number_input('滑点 bps', min_value=0.0, max_value=100.0,
 
 st.markdown('#### 策略列表(`st.data_editor` 内联编辑)')
 st.caption('factor_name 可填 RSI / MACDTrend / Bollinger / ATR 等(由 backend FactorRegistry 决定);'
-           'params_json 是合法 JSON,如 `{"window": 14}`。')
+           ' params_json 是合法 JSON,如 `{"period": 14}`。')
 
 default_strategies = pd.DataFrame([
-    {'factor_name': 'RSI', 'threshold': 1.0, 'params_json': '{"window": 14}'},
+    # ── 技术面（趋势/动量）──────────────────────────────
+    {
+        'factor_name': 'RSI',
+        'threshold': 1.0,        # z < -1.0 即 RSI<30 视为超卖
+        'params_json': '{"period": 14}',
+    },
+    {
+        'factor_name': 'MACD',
+        'threshold': 0.0,
+        'params_json': '{"fast": 12, "slow": 26, "signal": 9}',
+    },
+    {
+        'factor_name': 'BollingerBands',
+        'threshold': 0.5,
+        'params_json': '{"period": 20, "nb_std": 2.0}',
+    },
+    # ── 技术面（成交量/订单簿）─────────────────────────
+    {
+        'factor_name': 'OrderImbalance',
+        'threshold': 1.0,
+        'params_json': '{"window": 10}',
+    },
+    {
+        'factor_name': 'BuyingPressure',
+        'threshold': 0.5,
+        'params_json': '{"window": 10}',
+    },
+    # ── 技术面（波动率/通道）───────────────────────────
+    {
+        'factor_name': 'VolAcceleration',
+        'threshold': 1.0,
+        'params_json': '{"short_window": 5, "long_window": 20}',
+    },
+    {
+        'factor_name': 'OpenGap',
+        'threshold': 1.5,
+        'params_json': '{"window": 20}',
+    },
+    # ── 资金流 ────────────────────────────────────────
+    {
+        'factor_name': 'NorthboundFlow',
+        'threshold': 1.0,
+        'params_json': '{"window": 5}',
+    },
+    {
+        'factor_name': 'SectorMomentum',
+        'threshold': 1.0,
+        'params_json': '{"momentum_window": 20}',
+    },
+    # ── 基本面 ────────────────────────────────────────
+    {
+        'factor_name': 'ROEMomentum',
+        'threshold': 0.5,
+        'params_json': '{"diff_days": 252}',
+    },
+    {
+        'factor_name': 'RevenueGrowth',
+        'threshold': 0.5,
+        'params_json': '{"accel_window": 60}',
+    },
+    # ── 相对强弱 ──────────────────────────────────────
+    {
+        'factor_name': 'IndexRelativeStrength',
+        'threshold': 1.0,
+        'params_json': '{"window": 20}',
+    },
 ])
 edited = st.data_editor(
     default_strategies, num_rows='dynamic', use_container_width=True,
@@ -53,7 +118,7 @@ edited = st.data_editor(
     },
 )
 
-run_btn = st.button('🚀 运行回测', type='primary', disabled=not sym)
+run_btn = st.button('🚀 运行回测', type='primary', disabled=not sym or len(edited) == 0)
 st.markdown('---')
 
 if run_btn:
@@ -99,11 +164,20 @@ if run_btn:
 res = st.session_state.get('_bt_result')
 if res:
     st.markdown('#### 结果')
+    _tr = res.get('total_return')
+    _ar = res.get('annual_return')
+    _dd = res.get('max_drawdown_pct')
     kpi_row([
-        {'label': '累计收益', 'value': fmt_pct(res.get('total_return'), signed=True)},
-        {'label': '年化收益', 'value': fmt_pct(res.get('annual_return'), signed=True)},
+        {'label': '累计收益',
+         'value': fmt_pct(_tr, signed=True) if _tr is not None else '—',
+         'raw': f'{_tr*100:.2f}%' if isinstance(_tr, (int, float)) else '—'},
+        {'label': '年化收益',
+         'value': fmt_pct(_ar, signed=True) if _ar is not None else '—',
+         'raw': f'{_ar*100:.2f}%' if isinstance(_ar, (int, float)) else '—'},
         {'label': '夏普', 'value': fmt_num(res.get('sharpe'), decimals=2)},
-        {'label': '最大回撤', 'value': fmt_pct(res.get('max_drawdown_pct'))},
+        {'label': '最大回撤',
+         'value': fmt_pct(_dd) if _dd is not None else '—',
+         'raw': f'{_dd*100:.2f}%' if isinstance(_dd, (int, float)) else '—'},
         {'label': '胜率', 'value': fmt_pct(res.get('win_rate'))},
     ])
     kpi_row([

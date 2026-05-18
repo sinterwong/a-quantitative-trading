@@ -42,17 +42,22 @@ except BackendError as exc:
     error_banner(exc)
     perf = {}
 
+# 注:/performance/summary 的 total_return_pct / max_drawdown_pct 已是百分数
+# (e.g. 5.0 表示 5%),fmt_pct 期望小数,所以这里 /100 再传。
+_tr = perf.get('total_return_pct')
+_mdd = perf.get('max_drawdown_pct')
 kpi_row([
     {'label': '可用现金', 'value': fmt_money(cash), 'raw': fmt_money(cash)},
-    {'label': '累计收益', 'value': fmt_pct(perf.get('total_return_pct'), signed=True),
-     'raw': f"{perf.get('total_return_pct') * 100:.4f}%" if perf.get('total_return_pct') is not None else '—'},
-    {'label': '年化收益', 'value': fmt_pct(perf.get('annual_return'), signed=True),
-     'raw': f"{perf.get('annual_return') * 100:.4f}%" if perf.get('annual_return') is not None else '—'},
+    {'label': '累计收益',
+     'value': fmt_pct(_tr / 100, signed=True) if _tr is not None else '—',
+     'raw': f"{_tr:.4f}%" if _tr is not None else '—'},
     {'label': '夏普', 'value': fmt_num(perf.get('sharpe'), decimals=2),
      'raw': f"{perf.get('sharpe'):.4f}" if perf.get('sharpe') is not None else '—'},
     {'label': '最大回撤',
-     'value': fmt_pct(perf.get('max_drawdown_pct')),
-     'raw': f"{perf.get('max_drawdown_pct') * 100:.4f}%" if perf.get('max_drawdown_pct') is not None else '—'},
+     'value': fmt_pct(_mdd / 100) if _mdd is not None else '—',
+     'raw': f"{_mdd:.4f}%" if _mdd is not None else '—'},
+    {'label': '初始资金',
+     'value': fmt_money(perf.get('initial_capital')) if perf.get('initial_capital') else '—'},
 ])
 
 st.markdown('')

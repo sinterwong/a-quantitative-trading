@@ -683,7 +683,7 @@
     },
     "/analysis/status": {
       "get": {
-        "summary": "GET /analysis/status — last known analysis metadata.",
+        "summary": "GET /analysis/status — 最近一次每日分析: daily_meta + 持久化 JSON 内容。",
         "operationId": "get_analysis_status",
         "responses": {
           "200": {

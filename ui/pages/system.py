@@ -41,9 +41,9 @@ kpi_row([
     {'label': '后端', 'value': '🟢 OK' if (h.get('status') == 'ok' or h.get('ok')) else '🔴 异常'},
     {'label': '交易模式', 'value': mode},
     {'label': 'IntradayMonitor',
-     'value': '✅ 运行' if (mon.get('running') or mon.get('is_running')) else '⏸ 停'},
+     'value': '✅ 运行' if (mon.get('data', {}).get('running') or mon.get('is_running')) else '⏸ 停'},
     {'label': '最近 tick',
-     'value': str(mon.get('last_tick_ts') or mon.get('last_tick') or '—')},
+     'value': str(mon.get('data', {}).get('last_scan_time') or mon.get('last_tick_ts') or mon.get('last_tick') or '—')},
 ])
 
 st.markdown('')

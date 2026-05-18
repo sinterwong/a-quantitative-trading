@@ -44,12 +44,14 @@ else:
         }
         try:
             rt = get_realtime(sym)
+            # backend services.signals.fetch_realtime returns:
+            #   {symbol, price, prev_close, high, low, chg, pct, volume, amount, ...}
             row.update({
-                'last': rt.get('last') or rt.get('price') or rt.get('current'),
-                'chg_pct': rt.get('chg_pct') or rt.get('change_pct')
-                          or rt.get('pct_change'),
+                'last': rt.get('price') or rt.get('last') or rt.get('current'),
+                'chg_pct': rt.get('pct') or rt.get('chg_pct')
+                          or rt.get('change_pct') or rt.get('pct_change'),
                 'volume': rt.get('volume') or rt.get('vol'),
-                'turnover': rt.get('turnover'),
+                'turnover': rt.get('amount') or rt.get('turnover'),
             })
         except BackendError:
             row.update({'last': None, 'chg_pct': None})
@@ -58,7 +60,10 @@ else:
     if 'last' in df.columns:
         df['last_disp'] = df['last'].apply(fmt_money)
     if 'chg_pct' in df.columns:
-        df['chg_disp'] = df['chg_pct'].apply(lambda v: fmt_pct(v, signed=True))
+        # backend pct 已经是百分数(e.g. 1.5 表示 1.5%),fmt_pct 期望小数,先 /100
+        df['chg_disp'] = df['chg_pct'].apply(
+            lambda v: fmt_pct(v / 100, signed=True) if isinstance(v, (int, float)) else '—'
+        )
     if 'volume' in df.columns:
         df['vol_disp'] = df['volume'].apply(fmt_num)
     display_cols = [c for c in [

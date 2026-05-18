@@ -40,10 +40,11 @@ with col_run:
     if st.button('🚀 立即运行', type='primary'):
         with st.spinner('运行中(最多 120 秒)...'):
             try:
-                trigger_daily_analysis()
-                st.success('触发成功,刷新状态...')
+                result = trigger_daily_analysis()
+                st.session_state['daily_pick_last_run'] = result
+                st.success('触发成功')
                 clear_cache()
-                time.sleep(0.5)
+                time.sleep(0.3)
                 st.rerun()
             except BackendError as exc:
                 error_banner(exc)
@@ -61,19 +62,46 @@ except BackendError as exc:
     error_banner(exc)
     status = {}
 
-if not status:
+# 本会话刚跑过的结果优先(避免 status 接口缓存或滞后导致空白)
+session_run = st.session_state.get('daily_pick_last_run') or {}
+merged = {**status, **{k: v for k, v in session_run.items() if v not in (None, [], {})}}
+
+if not merged or set(merged.keys()) <= {'status', 'timestamp', 'message'}:
     st.info('尚无运行记录')
 else:
-    last_ts = status.get('last_run') or status.get('timestamp') or status.get('ts')
+    last_ts = (
+        merged.get('last_run') or merged.get('timestamp')
+        or merged.get('trade_date') or merged.get('ts')
+    )
     if last_ts:
         st.caption(f'上次运行时间: **{last_ts}**')
 
-    # 候选 / 选中
-    candidates = status.get('candidates') or status.get('selected') or status.get('picks') or []
+    top_sectors = merged.get('top_sectors') or []
+    if top_sectors:
+        st.markdown(f'**Top 板块 ({len(top_sectors)})**')
+        generic_table(top_sectors)
+
+    candidates = (
+        merged.get('selected_stocks') or merged.get('candidates')
+        or merged.get('selected') or merged.get('picks') or []
+    )
     if candidates:
         st.markdown(f'**候选数: {len(candidates)}**')
         generic_table(candidates)
-    else:
-        # 没有 candidates 字段 → 直接 dump
+
+    news = merged.get('news_summary')
+    if news:
+        with st.expander('新闻摘要', expanded=False):
+            if isinstance(news, str):
+                st.text(news)
+            else:
+                generic_table(news)
+
+    warnings = merged.get('warnings') or []
+    if warnings:
+        for w in warnings:
+            st.warning(w)
+
+    if not top_sectors and not candidates:
         with st.expander('原始响应'):
-            st.json(status)
+            st.json(merged)

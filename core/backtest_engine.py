@@ -541,17 +541,18 @@ class BacktestEngine:
             if pos and pos.shares > 0:
                 return  # 已有持仓，不加仓
 
-            # 风控：仓位上限
-            if not self._can_buy(exec_price, sig.metadata.get('shares')):
-                return
+            # 计算买入股数：先尝试 Kelly，否则用固定 25% 仓位（最低 100 股）
+            kelly_shares = self._calc_shares_price(exec_price)
+            shares = kelly_shares if kelly_shares >= 100 else self._calc_shares_from_equity(exec_price)
+            if shares < 100:
+                return  # 资金不足以买最低 100 股
 
-            shares = sig.metadata.get('shares', self._calc_shares_price(exec_price))
-            if shares <= 0:
+            # 风控：仓位上限（用实际股数计算）
+            if not self._can_buy(exec_price, shares):
                 return
 
             fill_price = self._simulate_fill(sig.direction, exec_price)
             self._execute_buy(sym, fill_price, shares, sig, dt)
-
         elif sig.direction == 'SELL':
             if not pos or pos.shares == 0:
                 return  # 无持仓
@@ -632,30 +633,25 @@ class BacktestEngine:
         avg_loss = avg_loss_pnl / equity
         return win_rate, max(avg_win, 1e-6), max(avg_loss, 1e-6)
 
+    def _calc_shares_from_equity(self, price: float) -> int:
+        shares = int(self._equity * 0.25 / price)
+        shares = (shares // 100) * 100
+        return max(shares, 100)  # A股最低 100 股约束
+
     def _calc_shares_price(self, price: float) -> int:
         """基于动态 Kelly 公式计算买入份额"""
         try:
             equity = self._get_equity()
             win_rate, avg_win, avg_loss = self._calc_kelly_params()
-            # Kelly 公式: f = (p*b - q) / b，其中 b = avg_win/avg_loss
-            b = avg_win / avg_loss
+            b = avg_win / avg_loss if avg_loss != 0 else 1.0
             kelly = (win_rate * b - (1 - win_rate)) / b
-            kelly = max(kelly, 0) * 0.5   # 半 Kelly
-            # 再叠加仓位上限约束
+            kelly = max(kelly, 0) * 0.5
             kelly = min(kelly, self.config.max_position_pct)
             shares = int(equity * kelly / price)
             shares = (shares // 100) * 100
-            return max(shares, 0)
+            return max(shares, 100)  # A股最低 100 股约束
         except Exception:
             return 0
-
-    def _calc_shares(self, sig: Signal) -> int:
-        """兼容旧接口（转发给 _calc_shares_price）"""
-        return self._calc_shares_price(sig.price)
-
-    def _calc_shares_from_equity(self, price: float) -> int:
-        shares = int(self._equity * 0.25 / price)
-        return (shares // 100) * 100
 
     def _simulate_fill(self, direction: Literal['BUY', 'SELL'], price: float) -> float:
         """模拟成交价（滑点）"""
@@ -838,7 +834,11 @@ class BacktestEngine:
 
         # 胜率
         win_rate = self._wins / (self._wins + self._losses) if (self._wins + self._losses) > 0 else 0
-        profit_factor = self._total_profit / self._total_loss if self._total_loss > 0 else float('inf')
+        profit_factor = (
+            round(self._total_profit / self._total_loss, 2)
+            if self._total_loss > 0
+            else (999.0 if self._total_profit > 0 else 0.0)
+        )
 
         # 平均持仓
         avg_holding = np.mean(self._holding_periods) if self._holding_periods else 0

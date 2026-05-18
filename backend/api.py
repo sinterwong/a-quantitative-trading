@@ -684,12 +684,38 @@ def analysis_health():
 
 @app.route('/analysis/status', methods=['GET'])
 def analysis_status():
-    """GET /analysis/status — last known analysis metadata."""
+    """GET /analysis/status — 最近一次每日分析: daily_meta + 持久化 JSON 内容。"""
     svc = get_svc()
+    payload: dict = {}
+
     metas = svc.get_daily_metas(limit=1)
     if metas:
-        return ok(**metas[0])
-    return ok(message="No analysis run yet")
+        payload.update(metas[0])
+
+    analysis_dir = os.path.join(BACKEND_DIR, 'outputs', 'analysis')
+    try:
+        files = sorted(
+            f for f in os.listdir(analysis_dir)
+            if f.startswith('analysis_') and f.endswith('.json')
+        )
+    except FileNotFoundError:
+        files = []
+    if files:
+        latest = os.path.join(analysis_dir, files[-1])
+        try:
+            with open(latest, encoding='utf-8') as f:
+                content = json.load(f)
+            for k in ('timestamp', 'sources', 'top_sectors', 'news_summary',
+                      'selected_stocks', 'warnings'):
+                if k in content:
+                    payload[k] = content[k]
+            payload['source_file'] = os.path.basename(latest)
+        except (OSError, ValueError):
+            pass
+
+    if not payload:
+        return ok(message="No analysis run yet")
+    return ok(**payload)
 
 
 # ============================================================
