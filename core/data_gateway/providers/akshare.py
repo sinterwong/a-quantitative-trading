@@ -591,76 +591,108 @@ class AkshareProvider(Provider):
 
     @staticmethod
     def _normalize_margin(
-        raw: pd.DataFrame, symbol: str, target_date: str,
+        raw: pd.DataFrame,
+        start_or_symbol: str | None,
+        end_or_target: str | None = None,
     ) -> pd.DataFrame:
-        """归一融资融券市场快照 DataFrame → 个股单行 DataFrame。
+        """归一融资融券 DataFrame。
 
-        raw 格式有两种：
-          - SSE: ['信用交易日期','标的证券代码','标的证券简称',
-                  '融资余额','融资买入额','融资偿还额','融券余量','融券卖出量','融券偿还量']
-          - SZSE: ['证券代码','证券简称','融资买入额','融资余额',
-                  '融券卖出量','融券余量','融券余额','融资融券余额']
+        支持两种调用模式（通过第二个参数区分）：
+        1. 新快照模式（fetch_margin_flow 调用）：symbol + target_date
+           raw 格式：SSE=['信用交易日期','标的证券代码','融资余额'...]
+                    SZSE=['证券代码','融资余额'...]
+           返回：单行 DataFrame（index=target_date）。
 
-        返回：单行 DataFrame，index=target_date，列 margin_balance / net_buy / short_balance。
+        2. 旧时序模式（测试及未来数据源兼容）：
+           raw 格式：['date','rz_ye','rq_ye'] 或 ['信用交易日期','融资余额','融券余额']
+           返回：多行 DataFrame（index=DatetimeIndex，start/end 过滤）。
+
+        注意：两种模式返回的列不同——快照模式多 net_buy 字段。
         """
         df = raw.copy()
         df.columns = [c.strip() for c in df.columns]
 
-        # 找标的代码列
-        sym_col = None
-        for col in ("标的证券代码", "证券代码"):
-            if col in df.columns:
-                sym_col = col
-                break
-        if sym_col is None:
-            return pd.DataFrame()
+        # ── 新快照模式判断：raw 包含 '标的证券代码' 或 '证券代码' 列 ──
+        has_sym_col = "标的证券代码" in df.columns or "证券代码" in df.columns
 
-        # 提取纯代码用于匹配
-        code_raw = symbol.split(".")[0].upper()
-        if code_raw.startswith(("SH", "SZ")):
-            code_raw = code_raw[2:]
+        if has_sym_col and end_or_target is not None:
+            # ── 新快照模式（symbol + target_date）───────────────────────────
+            sym_col = "标的证券代码" if "标的证券代码" in df.columns else "证券代码"
 
-        # 过滤目标标的（代码可能是 str 或 int）
-        df[sym_col] = df[sym_col].astype(str).str.zfill(6)
-        row = df[df[sym_col] == code_raw.zfill(6)]
-        if row.empty:
-            return pd.DataFrame()
-        row = row.iloc[0]
+            # 提取纯代码用于匹配
+            code_raw = str(start_or_symbol or "").split(".")[0].upper()
+            if code_raw.startswith(("SH", "SZ")):
+                code_raw = code_raw[2:]
 
-        # 统一字段名
-        def gv(col_name: str | None, default: float = 0.0) -> float:
-            if col_name is None:
+            df[sym_col] = df[sym_col].astype(str).str.zfill(6)
+            row = df[df[sym_col] == code_raw.zfill(6)]
+            if row.empty:
+                return pd.DataFrame()
+            row = row.iloc[0]
+
+            def gv(col_name: str, default: float = 0.0) -> float:
+                for c in df.columns:
+                    if col_name in c:
+                        try:
+                            f = float(row[c])
+                            return f if f == f else default
+                        except (TypeError, ValueError):
+                            return default
                 return default
-            for c in df.columns:
-                if col_name in c:
-                    v = row[c]
-                    try:
-                        f = float(v)
-                        return f if f == f else default
-                    except (TypeError, ValueError):
-                        return default
-            return default
 
-        # 融资余额（元）
-        margin_balance = gv("融资余额")
-        # 融资净买入额 = 融资买入额 - 融资偿还额
-        buy_col = next((c for c in df.columns if "融资买入额" in c and "偿还" not in c), None)
-        repay_col = next((c for c in df.columns if "融资偿还额" in c), None)
-        net_buy = 0.0
-        if buy_col is not None:
-            try:
-                net_buy = float(row[buy_col]) - (float(row[repay_col]) if repay_col else 0.0)
-            except (TypeError, ValueError):
-                net_buy = 0.0
-        # 融券余额（元）
-        short_balance = gv("融券余额")
+            # 融资余额 / 净买入 / 融券余额
+            margin_balance = gv("融资余额")
+            buy_col = next((c for c in df.columns if "融资买入额" in c and "偿还" not in c), None)
+            repay_col = next((c for c in df.columns if "融资偿还额" in c), None)
+            net_buy = 0.0
+            if buy_col is not None:
+                try:
+                    net_buy = float(row[buy_col]) - (float(row[repay_col]) if repay_col else 0.0)
+                except (TypeError, ValueError):
+                    net_buy = 0.0
+            short_balance = gv("融券余额")
 
-        dt = pd.Timestamp(target_date)
-        result = pd.DataFrame(
-            {"margin_balance": [margin_balance], "net_buy": [net_buy], "short_balance": [short_balance]},
-            index=[dt],
+            dt = pd.Timestamp(end_or_target)
+            return pd.DataFrame(
+                {"margin_balance": [margin_balance], "net_buy": [net_buy], "short_balance": [short_balance]},
+                index=[dt],
+            )
+
+        # ── 旧时序模式（start + end，或 positional None/None）─────────────
+        # 兼容列名：rz_ye / rzye / 融资余额（margin_balance）
+        #           rq_ye / rqye / 融券余额（short_balance）
+        date_col = next(
+            (c for c in ("date", "信用交易日期", "trade_date") if c in df.columns),
+            None,
         )
-        return result
+        if date_col is None:
+            return pd.DataFrame()
+
+        df["_dt"] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=["_dt"]).set_index("_dt").sort_index()
+
+        out = pd.DataFrame(index=df.index)
+
+        # margin_balance
+        for col in ("rz_ye", "rzye", "融资余额"):
+            if col in df.columns:
+                out["margin_balance"] = pd.to_numeric(df[col], errors="coerce")
+                break
+
+        # short_balance
+        for col in ("rq_ye", "rqye", "融券余额"):
+            if col in df.columns:
+                out["short_balance"] = pd.to_numeric(df[col], errors="coerce")
+                break
+
+        out = out.dropna(how="all")
+
+        if start_or_symbol:  # start（时序模式）
+            out = out[out.index >= pd.Timestamp(start_or_symbol)]
+        if end_or_target:  # end
+            out = out[out.index <= pd.Timestamp(end_or_target)]
+
+        return out
 
     # ─── NORTH_FLOW history ──────────────────────────────────────────────────
 
