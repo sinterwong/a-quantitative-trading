@@ -542,12 +542,20 @@ class AkshareProvider(Provider):
     def fetch_margin_flow(
         self, symbol: str, start: str | None = None, end: str | None = None,
     ) -> pd.DataFrame:
-        """通过 AkShare stock_margin_detail 获取个股融资融券日序列。
+        """通过 AkShare stock_margin_detail_sse / stock_margin_detail_szse 获取融资融券。
+
+        注意：AkShare 这两个接口是市场快照（所有标的在某日的余额/净买），
+        不是个股时序。start 参数被忽略，仅用 end 拉取该日全市场数据后过滤
+        目标标的。无该日数据时返回空 DataFrame。
+
+        这是数据层已知局限：AkShare 无法提供个股连续历史融资融券，
+        如需完整时序需接入其他数据源。
 
         Returns
         -------
         pd.DataFrame
-            DatetimeIndex,列 margin_balance(融资余额,元) / short_balance(融券余额,元)。
+            DatetimeIndex，单行（end 日），列 margin_balance(融资余额，元)
+            / net_buy(融资净买入额，元) / short_balance(融券余额，元)。
         """
         try:
             import akshare as ak
@@ -555,62 +563,101 @@ class AkshareProvider(Provider):
             logger.debug("akshare 未安装,跳过 margin_flow 请求")
             return pd.DataFrame()
 
-        # 去掉常见后缀,akshare 接口接受 6 位代码
-        code = symbol.replace(".SH", "").replace(".SZ", "")
-        if code.lower().startswith(("sh", "sz")):
-            code = code[2:]
+        # 解析代码市场
+        code_raw = symbol.split(".")[0].upper()
+        if code_raw.startswith(("SH", "SZ")):
+            code_raw = code_raw[2:]
+        # 判断沪市(6/9开头)还是深市(0/3开头)
+        is_sse = code_raw.startswith(("6", "9", "510", "512", "159"))
+
+        # end 日期缺省取最近交易日
+        target_date = end or pd.Timestamp.now().strftime("%Y%m%d")
 
         try:
-            raw = ak.stock_margin_detail(symbol=code)
+            if is_sse:
+                raw = ak.stock_margin_detail_sse(date=target_date)
+            else:
+                raw = ak.stock_margin_detail_szse(date=target_date)
         except Exception as exc:
             raise ProviderError(f"akshare.fetch_margin_flow({symbol}): {exc}") from exc
 
         if raw is None or raw.empty:
             return pd.DataFrame()
 
-        return self._normalize_margin(raw, start, end)
+        return self._normalize_margin(raw, symbol, target_date)
 
     @staticmethod
     def _normalize_margin(
-        raw: pd.DataFrame, start: str | None, end: str | None,
+        raw: pd.DataFrame, symbol: str, target_date: str,
     ) -> pd.DataFrame:
-        """归一 AkShare stock_margin_detail 列名 → margin_balance / short_balance。"""
+        """归一融资融券市场快照 DataFrame → 个股单行 DataFrame。
+
+        raw 格式有两种：
+          - SSE: ['信用交易日期','标的证券代码','标的证券简称',
+                  '融资余额','融资买入额','融资偿还额','融券余量','融券卖出量','融券偿还量']
+          - SZSE: ['证券代码','证券简称','融资买入额','融资余额',
+                  '融券卖出量','融券余量','融券余额','融资融券余额']
+
+        返回：单行 DataFrame，index=target_date，列 margin_balance / net_buy / short_balance。
+        """
         df = raw.copy()
-        df.columns = [c.strip().lower() for c in df.columns]
+        df.columns = [c.strip() for c in df.columns]
 
-        col_map = {
-            "rz_ye": "margin_balance",
-            "rzye": "margin_balance",
-            "融资余额": "margin_balance",
-            "rq_ye": "short_balance",
-            "rqye": "short_balance",
-            "融券余额": "short_balance",
-            "信用交易日期": "date",
-            "trade_date": "date",
-        }
-        rename = {src.lower(): dst for src, dst in col_map.items() if src.lower() in df.columns}
-        df = df.rename(columns=rename)
+        # 找标的代码列
+        sym_col = None
+        for col in ("标的证券代码", "证券代码"):
+            if col in df.columns:
+                sym_col = col
+                break
+        if sym_col is None:
+            return pd.DataFrame()
 
-        # 找日期列
-        date_col = next(
-            (c for c in ("date", "信用交易日期", "trade_date") if c in df.columns),
-            df.columns[0],
+        # 提取纯代码用于匹配
+        code_raw = symbol.split(".")[0].upper()
+        if code_raw.startswith(("SH", "SZ")):
+            code_raw = code_raw[2:]
+
+        # 过滤目标标的（代码可能是 str 或 int）
+        df[sym_col] = df[sym_col].astype(str).str.zfill(6)
+        row = df[df[sym_col] == code_raw.zfill(6)]
+        if row.empty:
+            return pd.DataFrame()
+        row = row.iloc[0]
+
+        # 统一字段名
+        def gv(col_name: str | None, default: float = 0.0) -> float:
+            if col_name is None:
+                return default
+            for c in df.columns:
+                if col_name in c:
+                    v = row[c]
+                    try:
+                        f = float(v)
+                        return f if f == f else default
+                    except (TypeError, ValueError):
+                        return default
+            return default
+
+        # 融资余额（元）
+        margin_balance = gv("融资余额")
+        # 融资净买入额 = 融资买入额 - 融资偿还额
+        buy_col = next((c for c in df.columns if "融资买入额" in c and "偿还" not in c), None)
+        repay_col = next((c for c in df.columns if "融资偿还额" in c), None)
+        net_buy = 0.0
+        if buy_col is not None:
+            try:
+                net_buy = float(row[buy_col]) - (float(row[repay_col]) if repay_col else 0.0)
+            except (TypeError, ValueError):
+                net_buy = 0.0
+        # 融券余额（元）
+        short_balance = gv("融券余额")
+
+        dt = pd.Timestamp(target_date)
+        result = pd.DataFrame(
+            {"margin_balance": [margin_balance], "net_buy": [net_buy], "short_balance": [short_balance]},
+            index=[dt],
         )
-        df["date"] = pd.to_datetime(df[date_col], errors="coerce")
-        df = df.dropna(subset=["date"]).set_index("date").sort_index()
-
-        out = pd.DataFrame(index=df.index)
-        if "margin_balance" in df.columns:
-            out["margin_balance"] = pd.to_numeric(df["margin_balance"], errors="coerce")
-        if "short_balance" in df.columns:
-            out["short_balance"] = pd.to_numeric(df["short_balance"], errors="coerce")
-
-        out = out.dropna(how="all")
-        if start:
-            out = out[out.index >= pd.Timestamp(start)]
-        if end:
-            out = out[out.index <= pd.Timestamp(end)]
-        return out
+        return result
 
     # ─── NORTH_FLOW history ──────────────────────────────────────────────────
 
