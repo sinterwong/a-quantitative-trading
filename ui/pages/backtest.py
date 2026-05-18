@@ -41,7 +41,9 @@ st.caption('factor_name 可填 RSI / MACDTrend / Bollinger / ATR 等(由 backend
            ' params_json 是合法 JSON,如 `{"period": 14}`。')
 
 default_strategies = pd.DataFrame([
+    # ✅ 直接点击"运行回测"即可执行的示例策略
     {'factor_name': 'RSI', 'threshold': 1.0, 'params_json': '{"period": 14}'},
+    {'factor_name': 'BollingerBands', 'threshold': 0.5, 'params_json': '{"period": 20, "nb_std": 2.0}'},
 ])
 edited = st.data_editor(
     default_strategies, num_rows='dynamic', use_container_width=True,
