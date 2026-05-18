@@ -24,8 +24,14 @@ tab_macro, tab_flow, tab_north, tab_status = st.tabs(
 )
 
 with tab_macro:
-    # 后端 /data/macro/<indicator> 只返单点 {indicator, value, date, unit}
-    indicator = st.selectbox('指标', ['PMI', 'M2_growth', 'CPI', 'PPI', 'GDP'])
+    # 后端 MacroIndicator 枚举仅支持 PMI / M2 / CREDIT；扩展此处时同步更新 capabilities.py
+    MACRO_OPTIONS = {
+        '制造业PMI': 'PMI',
+        'M2货币供应': 'M2',
+        '社融存量同比': 'CREDIT',
+    }
+    selected_label = st.selectbox('指标', list(MACRO_OPTIONS.keys()))
+    indicator = MACRO_OPTIONS[selected_label]
     try:
         data = get_macro(indicator)
     except BackendError as exc:
