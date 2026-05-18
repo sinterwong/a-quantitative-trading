@@ -34,7 +34,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from .cache import MemoryCache, ParquetDiskCache, TieredCache
-from .capabilities import Capability, MacroIndicator, Market
+from .capabilities import (
+    Capability, MacroIndicator, Market, RoutingStrategy, get_policy,
+)
 from .health import HealthTracker, get_health_tracker
 from .merge import Candidate, merge_field_level
 from .providers.base import Provider, ProviderError
@@ -462,6 +464,53 @@ class DataGateway:
                 continue
             return result, provider.name
         return None, None
+
+    # ── G4: 策略声明驱动的统一分派器 ───────────────────────────────────────
+    def _route(
+        self,
+        capability: Capability,
+        market: Optional[Market],
+        fn_name: str,
+        *args,
+        **kwargs,
+    ) -> Tuple[Any, Dict[str, str]]:
+        """根据 ROUTING_POLICY 把 (capability, fn_name) 分派到对应聚合原语。
+
+        统一返回 (value, prov_dict)：
+          - FAILOVER: value 来自首个非空源；prov_dict = {"_provider": name}
+            或 {} (无可用源)。比直接调用 _sequential_fetch 多保留了源名，便于
+            profile / 调试时复盘单源选源。
+          - MERGE_FIELDS: 走 _merged_fetch，prov_dict 为字段→源映射。
+          - MERGE_FRAMES: 走 _merged_history_fetch，prov_dict 为列→源映射。
+          - MERGE_LISTS: G5 实现；当前 raise NotImplementedError 防误用。
+
+        强制查表：未登记 → KeyError，避免新加 capability 时静默走默认分支
+        造成行为不一致。
+        """
+        policy = get_policy(capability, fn_name)
+        strat = policy.strategy
+        if strat is RoutingStrategy.FAILOVER:
+            result, provider_name = self._sequential_fetch(
+                capability, market, fn_name, *args, **kwargs,
+            )
+            prov: Dict[str, str] = {"_provider": provider_name} if provider_name else {}
+            return result, prov
+        if strat is RoutingStrategy.MERGE_FIELDS:
+            return self._merged_fetch(
+                capability, market, fn_name, policy.skip_fields,
+                *args, **kwargs,
+            )
+        if strat is RoutingStrategy.MERGE_FRAMES:
+            return self._merged_history_fetch(
+                capability, market, fn_name, *args,
+                ffill=policy.ffill, **kwargs,
+            )
+        if strat is RoutingStrategy.MERGE_LISTS:
+            raise NotImplementedError(
+                "RoutingStrategy.MERGE_LISTS 暂未实现，G5 sprint 会接入 "
+                "news_headlines 多源归一去重。"
+            )
+        raise ValueError(f"未知 RoutingStrategy: {strat!r}")
 
     # ──────────────────────────────────────────────────────────────────────────
     # 公开 API
