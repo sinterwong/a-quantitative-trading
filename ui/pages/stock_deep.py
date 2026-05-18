@@ -90,7 +90,7 @@ with tab_llm:
     # (不是 /llm/analyze —— 那是 signal_review 入口,需要 direction/price/alert_reason)
     st.warning('调用 LLM 会产生费用,确认后点按钮。')
     if st.button('🤖 调用 LLM 解读', key='llm_call_btn'):
-        with st.spinner('LLM 思考中(最多 120 秒)...'):
+        with st.spinner('LLM 思考中(最多 300 秒)...'):
             try:
                 payload = {'symbol': sym, 'include_llm': True}
                 if market == 'a':
