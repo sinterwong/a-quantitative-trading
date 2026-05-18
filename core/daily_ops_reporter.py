@@ -78,6 +78,7 @@ class DailyOpsReporter:
             'generated_at': datetime.now().isoformat(),
             'portfolio': self._fetch_portfolio(),
             'trades': self._fetch_trades_summary(today_str),
+            'signals': self._fetch_signals_summary(today_str),
             'health': self._fetch_health(),
             'alerts': self._fetch_alert_summary(today_str),
             'factor_ic': self._fetch_factor_ic_snapshot(),
@@ -143,6 +144,20 @@ class DailyOpsReporter:
             'buy_count': sum(1 for t in today_trades if t.get('side', '').upper() == 'BUY'),
             'sell_count': sum(1 for t in today_trades if t.get('side', '').upper() == 'SELL'),
         }
+
+    def _fetch_signals_summary(self, today_str: str) -> Dict[str, Any]:
+        """从 /signals 获取当日信号汇总(原 afternoon_report 提供的维度)。"""
+        data = self._api_get(f'/signals?since={today_str}')
+        if data is None:
+            return {'n_signals': 0}
+        sigs = data.get('signals', data.get('data', {}).get('signals', [])) if isinstance(data, dict) else []
+        sigs = sigs or []
+        today_sigs = [s for s in sigs if str(s.get('time', s.get('date', '')))[:10] == today_str]
+        by_dir: Dict[str, int] = {}
+        for s in today_sigs:
+            d = str(s.get('signal', s.get('direction', ''))).upper()
+            by_dir[d] = by_dir.get(d, 0) + 1
+        return {'n_signals': len(today_sigs), 'by_signal': by_dir}
 
     def _fetch_health(self) -> Dict[str, Any]:
         """从 StrategyHealthMonitor 获取策略健康摘要。"""
@@ -226,6 +241,7 @@ class DailyOpsReporter:
 
             portfolio = report.get('portfolio', {})
             trades = report.get('trades', {})
+            signals = report.get('signals', {})
             health = report.get('health', {})
             alerts_summary = report.get('alerts', {})
 
@@ -233,6 +249,7 @@ class DailyOpsReporter:
             realized = trades.get('realized_pnl', 0.0)
             n_positions = portfolio.get('n_positions', 0)
             n_trades = trades.get('n_trades', 0)
+            n_signals = signals.get('n_signals', 0)
             health_status = health.get('status', 'unknown')
             n_alerts = alerts_summary.get('total', 0)
             critical_msg = alerts_summary.get('last_critical')
@@ -245,6 +262,7 @@ class DailyOpsReporter:
                 'extra': {
                     '已实现盈亏': f'{realized:+.2f} 元',
                     '持仓数量': n_positions,
+                    '今日信号': n_signals,
                     '策略健康': health_status,
                     '当日告警': n_alerts,
                     **({'最新CRITICAL': critical_msg[:60]} if critical_msg else {}),
