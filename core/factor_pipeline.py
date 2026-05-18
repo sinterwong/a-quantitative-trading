@@ -378,6 +378,8 @@ class DynamicWeightPipeline(FactorPipeline):
         min_bars: int = 30,
         decay_window: int = 3,
         recovery_rate: float = 0.5,
+        persist: bool = True,
+        pipeline_id: str = 'default',
     ) -> None:
         """
         Parameters
@@ -386,20 +388,42 @@ class DynamicWeightPipeline(FactorPipeline):
             连续多少次权重更新 IC < 0 才触发衰减保护（默认 3 次 ≈ 63 天）
         recovery_rate : float
             因子从衰减恢复时，首次恢复的权重占等权的比例（默认 0.5，即先恢复到半权）
+        persist : bool
+            True(默认) 时把 IC / 权重 / 衰减状态写入 state.db,init 时恢复,
+            避免进程重启后 63 天 IC 窗口从 0 攒。回测/单元测试可关。
+        pipeline_id : str
+            state.db 中区分不同 pipeline 的标识(目前固定 'default')。
         """
         super().__init__(reg=reg, min_bars=min_bars)
         self.ic_window_days = ic_window_days
         self.update_freq_days = update_freq_days
         self.decay_window = decay_window
         self.recovery_rate = recovery_rate
+        self._persist = persist
+        self._pipeline_id = pipeline_id
 
-        # 运行时状态
+        # 运行时状态(下方若 persist 则从 state.db 恢复)
         self._ic_history: Dict[str, List[float]] = {}   # factor_name → 每次更新的 IC 值序列
         self._dynamic_weights: Dict[str, float] = {}    # factor_name → 最新权重
         self._bars_since_update: int = 0
         self._weight_history: List[Dict[str, float]] = []  # 权重历史（诊断用）
         self._decay_disabled: Dict[str, bool] = {}      # factor_name → 是否因衰减被禁用
         self._factor_status_log: List[Dict] = []        # 因子状态变更日志
+
+        if persist:
+            try:
+                from core.factor_pipeline_persistence import load_pipeline_state
+                ic_hist, weights, disabled, bars = load_pipeline_state(pipeline_id)
+                if ic_hist or weights or disabled:
+                    self._ic_history = ic_hist
+                    self._dynamic_weights = weights
+                    self._decay_disabled = disabled
+                    self._bars_since_update = bars
+            except Exception as exc:  # noqa: BLE001
+                import logging as _lg
+                _lg.getLogger('core.factor_pipeline').warning(
+                    '[DynamicWeightPipeline] 状态恢复失败,从空状态启动: %s', exc,
+                )
 
     # ------------------------------------------------------------------
     # Override run() — 在执行前更新动态权重
@@ -520,6 +544,21 @@ class DynamicWeightPipeline(FactorPipeline):
             **{f'w_{k}': v for k, v in self._dynamic_weights.items()},
             **{f'ic_{k}': ic_map.get(k, 0.0) for k in ic_map},
         })
+
+        # 落库:确保进程重启后 IC/权重/衰减状态不丢
+        if self._persist:
+            try:
+                from core.factor_pipeline_persistence import save_pipeline_state
+                save_pipeline_state(
+                    self._ic_history, self._dynamic_weights,
+                    self._decay_disabled, self._bars_since_update,
+                    pipeline_id=self._pipeline_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging as _lg
+                _lg.getLogger('core.factor_pipeline').warning(
+                    '[DynamicWeightPipeline] 状态落库失败(本轮跳过): %s', exc,
+                )
 
     # ------------------------------------------------------------------
     # 衰减检测
