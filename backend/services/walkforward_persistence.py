@@ -157,14 +157,19 @@ def get_latest_params(symbol: str) -> Optional[Dict]:
     return None
 
 
-def get_wf_history(symbol: str = None, limit: int = 20) -> list:
+def get_wf_history(symbol: str = None, strategy: str = None, limit: int = 20) -> list:
     """获取历史 WFA 结果"""
     init_db()
-    sql = "SELECT * FROM wf_results"
-    args = []
+    conditions, args = [], []
     if symbol:
-        sql += " WHERE symbol = ?"
+        conditions.append("symbol = ?")
         args.append(symbol)
+    if strategy:
+        conditions.append("strategy = ?")
+        args.append(strategy)
+    sql = "SELECT * FROM wf_results"
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
     sql += " ORDER BY created_at DESC, window ASC LIMIT ?"
     args.append(limit)
 
