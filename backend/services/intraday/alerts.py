@@ -17,6 +17,18 @@ from ..signals import SignalAlert
 logger = logging.getLogger('intraday_monitor')
 
 
+def _llm_review_failure_outcome(reason: str):
+    """LLM 终极审核失败的默认动作:fail-closed(拒单)。
+
+    终极审核既然定位是"最后一道门控",失败时静默放行就等于把门拆了——
+    生产 LLM key 失效 / 限流 / 超时都是常见事件,默认应拒单 + 告警。
+    紧急情况下可设 LLM_REVIEW_FAIL_OPEN=1 临时退回旧的"自动放行"行为。
+    """
+    if os.environ.get('LLM_REVIEW_FAIL_OPEN', '0').strip() == '1':
+        return True, f'{reason},LLM_REVIEW_FAIL_OPEN=1 自动放行', 0.0, 'full'
+    return False, f'{reason},终极审核失败已拒单', 0.0, 'skip'
+
+
 class AlertsMixin:
     """告警推送 + 可观测性日志。"""
 
@@ -244,11 +256,13 @@ class AlertsMixin:
                 return approved, reason, confidence, size_rec
             else:
                 logger.warning('LLM response parse failed: %s', content[:200])
-                return True, f'LLM parse failed({content[:50]}),自动放行', 0.0, 'full'
+                return _llm_review_failure_outcome(
+                    f'LLM parse failed({content[:50]})'
+                )
 
         except Exception as e:
             logger.error('LLM review error for %s: %s', alert.symbol, e)
-            return True, f'LLM异常({str(e)[:30]}),自动放行', 0.0, 'full'
+            return _llm_review_failure_outcome(f'LLM异常({str(e)[:30]})')
 
     # ── 飞书 IM 推送 ───────────────────────────────────────
 
