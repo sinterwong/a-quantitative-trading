@@ -281,9 +281,12 @@ def get_fund_flow() -> dict:
     return _get('/data/fund_flow')
 
 
-@st.cache_data(ttl=1800)
+_MACRO_TIMEOUT = 15.0   # akshare 宏观接口网络较慢，给予足够超时
+
+@st.cache_data(ttl=86400)
 def get_macro(indicator: str) -> dict:
-    return _get(f'/data/macro/{indicator}')
+    timeout = _MACRO_TIMEOUT if indicator == 'CREDIT' else None
+    return _get(f'/data/macro/{indicator}', timeout=timeout)
 
 
 @st.cache_data(ttl=300)
