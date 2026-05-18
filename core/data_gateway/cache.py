@@ -118,7 +118,7 @@ class ParquetDiskCache:
         self._ensure_root()
         path = self._path_for(key)
         try:
-            df.to_parquet(path, index=False)
+            df.to_parquet(path)  # index=True 以保留 DatetimeIndex，macro/日K 等均依赖索引做时间对齐
         except Exception:
             # 缓存失败不影响主流程
             pass
