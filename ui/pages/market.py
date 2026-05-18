@@ -24,64 +24,90 @@ tab_macro, tab_flow, tab_north, tab_status = st.tabs(
 )
 
 with tab_macro:
+    # 后端 /data/macro/<indicator> 只返单点 {indicator, value, date, unit}
     indicator = st.selectbox('指标', ['PMI', 'M2_growth', 'CPI', 'PPI', 'GDP'])
     try:
         data = get_macro(indicator)
     except BackendError as exc:
         error_banner(exc)
         data = {}
-    rows = data.get('data') or data.get('series') or data.get('values') or []
-    if isinstance(rows, list) and rows:
-        # 兜底字段名
-        sample = rows[0] if isinstance(rows[0], dict) else {}
-        x_key = next((k for k in ('date', 'period', 'ts', 'month') if k in sample), 'date')
-        y_key = next((k for k in ('value', 'val', indicator.lower()) if k in sample), 'value')
-        st.plotly_chart(
-            line_series(rows, x_key=x_key, y_key=y_key,
-                        title=indicator, y_title=indicator),
-            use_container_width=True,
-        )
-        with st.expander('原始数据'):
-            generic_table(rows)
-    elif isinstance(rows, dict):
-        st.json(rows)
+    value = data.get('value')
+    date_str = data.get('date')
+    unit = data.get('unit') or ''
+    if value is not None:
+        c1, c2 = st.columns(2)
+        c1.metric(label=f'{indicator}', value=f'{value:g} {unit}'.strip())
+        c2.metric(label='截至日期', value=str(date_str or '—'))
+        st.caption('后端仅暴露单点最新值;若需历史曲线需扩 /data/macro/<indicator>/history。')
     else:
-        st.caption(f'{indicator} 无数据(后端返回:{data}')
+        st.caption(f'{indicator} 无数据')
+        with st.expander('原始响应'):
+            st.json(data)
 
 with tab_flow:
+    # 后端默认 source=market 返大盘汇总 {type, sh_close, sh_change, sz_close,
+    # sz_change, main_net, main_pct, ...},不含 sectors 列表
     try:
         ff = get_fund_flow()
     except BackendError as exc:
         error_banner(exc)
         ff = {}
-    sectors = ff.get('sectors') or ff.get('data') or ff.get('flows') or []
-    if isinstance(sectors, list) and sectors:
-        st.markdown('##### 行业资金净流入')
-        generic_table(sectors)
+    if ff.get('type') == 'market':
+        st.markdown('##### 大盘资金流(主力)')
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric('上证收盘', ff.get('sh_close', '—'),
+                  delta=f"{ff.get('sh_change', 0):+.2f}%"
+                  if ff.get('sh_change') is not None else None)
+        c2.metric('深证收盘', ff.get('sz_close', '—'),
+                  delta=f"{ff.get('sz_change', 0):+.2f}%"
+                  if ff.get('sz_change') is not None else None)
+        c3.metric('主力净流入(亿)', ff.get('main_net', '—'))
+        c4.metric('主力净流入占比', f"{ff.get('main_pct', 0):.2f}%"
+                  if ff.get('main_pct') is not None else '—')
     else:
-        st.json(ff)
+        sectors = (ff.get('stocks') or ff.get('sectors')
+                   or ff.get('data') or ff.get('flows') or [])
+        if isinstance(sectors, list) and sectors:
+            st.markdown('##### 资金流明细')
+            generic_table(sectors)
+        else:
+            with st.expander('原始响应'):
+                st.json(ff)
 
 with tab_north:
+    # 后端返 {summary, net_north_yi, direction, history(dict), ...}
     try:
         nb = get_northbound()
     except BackendError as exc:
         error_banner(exc)
         nb = {}
-    series = nb.get('data') or nb.get('flow') or nb.get('series') or []
-    if isinstance(series, list) and series:
-        sample = series[0] if isinstance(series[0], dict) else {}
-        x_key = next((k for k in ('date', 'ts') if k in sample), 'date')
-        y_key = next((k for k in ('net', 'net_buy', 'amount', 'value')
-                      if k in sample), 'net')
-        st.plotly_chart(
-            line_series(series, x_key=x_key, y_key=y_key,
-                        title='北向资金净流入', y_title='净流入'),
-            use_container_width=True,
-        )
-        with st.expander('原始数据'):
-            generic_table(series)
+    if nb:
+        c1, c2, c3 = st.columns(3)
+        c1.metric('今日净流入(亿)', nb.get('net_north_yi', '—'))
+        c2.metric('方向', nb.get('direction', '—'))
+        c3.metric('强度', nb.get('strength', '—'))
+        if nb.get('summary'):
+            st.caption(nb['summary'])
+
+        history = nb.get('history') or {}
+        if isinstance(history, dict) and history:
+            series = [{'date': d, 'net': v} for d, v in sorted(history.items())]
+            st.plotly_chart(
+                line_series(series, x_key='date', y_key='net',
+                            title='北向资金净流入(近10日, 亿元)',
+                            y_title='净流入(亿)'),
+                use_container_width=True,
+            )
+            with st.expander('原始数据'):
+                generic_table(series)
+        elif isinstance(history, list) and history:
+            st.plotly_chart(
+                line_series(history, x_key='date', y_key='net',
+                            title='北向资金净流入', y_title='净流入'),
+                use_container_width=True,
+            )
     else:
-        st.json(nb)
+        st.caption('北向数据不可用')
 
 with tab_status:
     try:
