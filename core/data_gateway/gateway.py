@@ -25,6 +25,7 @@ data_gateway.gateway — 统一数据网关
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -133,6 +134,48 @@ def _default_cache_dir() -> str:
     # 项目根目录的 data/cache/data_gateway
     repo_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
     return _os.path.join(repo_root, "data", "cache", "data_gateway")
+
+
+# ─── G5: NewsItem 归一与时间排序辅助 ─────────────────────────────────────────
+
+# 常见标题前缀（去除后做 dedupe key）。所有形式 "【XXX】" 都已统一剥掉，
+# 这里仅列具体业务前缀以兜底正则之外的纯文本前缀。
+_NEWS_TITLE_PREFIX_PATTERN = re.compile(r"^[【\[][^】\]]{1,12}[】\]]\s*")
+
+
+def _news_dedupe_key(item: Any) -> str:
+    """把一条 NewsItem 的标题归一为 dedupe key。
+
+    归一化：strip → 去 "【...】"/"[...]" 前缀 → 全角空格转半角 →
+    多空白折叠 → 末尾的"。"/"."统一去掉。两源对同事件的常见写法
+    如 "【快讯】央行降准" 与 "央行降准。" 会归到同一 key。
+    """
+    if not hasattr(item, "title"):
+        return ""
+    title = str(item.title or "").strip()
+    if not title:
+        return ""
+    title = _NEWS_TITLE_PREFIX_PATTERN.sub("", title)
+    title = title.replace("　", " ")    # 全角空格
+    title = re.sub(r"\s+", " ", title).strip()
+    title = title.rstrip("。.")
+    return title
+
+
+def _news_has_ts(item: Any) -> bool:
+    ts = getattr(item, "timestamp", None)
+    return isinstance(ts, datetime)
+
+
+def _news_ts_epoch(item: Any) -> float:
+    """timestamp epoch（秒）；缺失返回 0.0，排序时配合 has_ts 一起用。"""
+    ts = getattr(item, "timestamp", None)
+    if not isinstance(ts, datetime):
+        return 0.0
+    try:
+        return ts.timestamp()
+    except (OSError, ValueError, OverflowError):
+        return 0.0
 
 
 # ─── 熔断器辅助 ────────────────────────────────────────────────────────────────
@@ -443,6 +486,89 @@ class DataGateway:
 
         return merged, provenance
 
+    # ── 多源 list 归一去重 (G5) ─────────────────────────────────────────────
+
+    def _merged_list_fetch(
+        self,
+        capability: Capability,
+        market: Optional[Market],
+        fn_name: str,
+        *args,
+        **kwargs,
+    ) -> Tuple[List[Any], Dict[str, str]]:
+        """并发拉 top-K 源的 list，归一去重 + 时间倒序合并。
+
+        当前唯一消费者：`news_headlines`，元素类型 NewsItem。
+
+        规则：
+          - 并发问全部候选源（list 是有限规模，不必限 top-K：失败的源被
+            _invoke 静默忽略；多 1-2 源额外成本可控）
+          - 元素若有 `title` 属性 → 归一化标题做 dedupe key，保留首次出现
+            的条目（首次按 source health 高→低）
+          - 元素若有 `timestamp` 属性且为 datetime → 按 ts 倒序排在前；
+            缺 ts 的条目按 source health 顺序紧随其后
+          - 不在此截断 n，由 gateway 出口处 tail(n)
+          - prov_dict: {source_name: 该源贡献条数}
+
+        Returns:
+            (merged_list, {source: n_contributed_unique})
+            无可用源 → ([], {})
+        """
+        candidates = self._candidates_for(capability, market)
+        if not candidates:
+            return [], {}
+
+        futures = {
+            self._executor.submit(
+                self._invoke, p, capability, fn_name, *args, **kwargs,
+            ): (p, score)
+            for p, score in candidates
+        }
+
+        # 收集 (score, provider_name, list)，按 score 降序排
+        results: List[Tuple[float, str, List[Any]]] = []
+        for fut in as_completed(futures):
+            provider, score = futures[fut]
+            obj = fut.result()
+            if isinstance(obj, list) and obj:
+                results.append((score, provider.name, obj))
+
+        if not results:
+            return [], {}
+        results.sort(key=lambda x: x[0], reverse=True)
+
+        merged: List[Any] = []
+        provenance: Dict[str, int] = {}
+        seen_keys: set = set()
+
+        for _score, prov_name, items in results:
+            contrib = 0
+            for item in items:
+                key = _news_dedupe_key(item)
+                if not key:
+                    # 没有标题等可去重信号 → 直接加入（罕见兜底）
+                    merged.append(item)
+                    contrib += 1
+                    continue
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                merged.append(item)
+                contrib += 1
+            if contrib:
+                provenance[prov_name] = contrib
+
+        # 排序：有 ts 的按 ts 倒序在前；无 ts 的紧随其后（保留原顺序作 stable
+        # tiebreaker，即按 source health 高→低 + 该源内原顺序）
+        merged.sort(
+            key=lambda it: (
+                0 if _news_has_ts(it) else 1,            # 有 ts 的在前
+                -_news_ts_epoch(it),                      # ts 越大越靠前
+            )
+        )
+        # provenance dict 值 int → str 便于与其它策略统一类型
+        return merged, {k: str(v) for k, v in provenance.items()}
+
     # ── 顺序 failover ────────────────────────────────────────────────────────
 
     def _sequential_fetch(
@@ -506,9 +632,8 @@ class DataGateway:
                 ffill=policy.ffill, **kwargs,
             )
         if strat is RoutingStrategy.MERGE_LISTS:
-            raise NotImplementedError(
-                "RoutingStrategy.MERGE_LISTS 暂未实现，G5 sprint 会接入 "
-                "news_headlines 多源归一去重。"
+            return self._merged_list_fetch(
+                capability, market, fn_name, *args, **kwargs,
             )
         raise ValueError(f"未知 RoutingStrategy: {strat!r}")
 

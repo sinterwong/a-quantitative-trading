@@ -82,9 +82,9 @@ def test_routing_policy_default_strategies_unchanged_post_g4():
     assert get_policy(Capability.KLINE_DAILY, "fetch_kline_daily").ffill is False, (
         "K 线缺失多为停牌，禁止 ffill"
     )
-    # G5 前 news 仍走 FAILOVER
+    # G5: news 切到 MERGE_LISTS（EM kuaixun + AkShare 财联社电报多源去重）
     assert get_policy(Capability.NEWS_HEADLINES, "fetch_news_headlines").strategy is (
-        RoutingStrategy.FAILOVER
+        RoutingStrategy.MERGE_LISTS
     )
 
 
@@ -164,18 +164,21 @@ def test_route_merge_frames_passes_ffill_from_policy(gw):
     assert k["days"] == 120
 
 
-def test_route_merge_lists_not_yet_implemented(gw, monkeypatch):
-    """MERGE_LISTS 是 G5 占位，当前应 raise NotImplementedError 防误用。"""
-    monkeypatch.setitem(
-        ROUTING_POLICY,
-        (Capability.NEWS_HEADLINES, "fetch_news_headlines"),
-        CapabilityPolicy(RoutingStrategy.MERGE_LISTS),
-    )
-    with pytest.raises(NotImplementedError, match="MERGE_LISTS"):
-        gw._route(
+def test_route_merge_lists_dispatches_to_merged_list_fetch(gw):
+    """G5: MERGE_LISTS 走 _merged_list_fetch（替代 G4 的 NotImplementedError）。"""
+    with patch.object(
+        gw, "_merged_list_fetch", return_value=(["X"], {"em": "1"}),
+    ) as spy:
+        result, prov = gw._route(
             Capability.NEWS_HEADLINES, Market.GLOBAL,
             "fetch_news_headlines", "sh600519", 10,
         )
+    spy.assert_called_once_with(
+        Capability.NEWS_HEADLINES, Market.GLOBAL,
+        "fetch_news_headlines", "sh600519", 10,
+    )
+    assert result == ["X"]
+    assert prov == {"em": "1"}
 
 
 def test_route_unknown_capability_raises_keyerror(gw):

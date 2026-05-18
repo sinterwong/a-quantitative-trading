@@ -156,7 +156,7 @@ ROUTING_POLICY: Dict[Tuple[Capability, str], CapabilityPolicy] = {
         RoutingStrategy.MERGE_FRAMES, ffill=False,
     ),
     (Capability.NEWS_HEADLINES, "fetch_news_headlines"): CapabilityPolicy(
-        RoutingStrategy.FAILOVER,   # G5 引入第 2/3 源后改 MERGE_LISTS
+        RoutingStrategy.MERGE_LISTS,   # G5: EM kuaixun + AkShare 财联社电报
     ),
 }
 
