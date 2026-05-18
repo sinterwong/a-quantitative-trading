@@ -343,6 +343,102 @@ class DataGateway:
         merged, prov = merge_field_level(results, skip_fields=skip_fields)
         return merged, prov
 
+    # ── 时序数据多源列级合并 (G1) ──────────────────────────────────────────
+
+    def _merged_history_fetch(
+        self,
+        capability: Capability,
+        market: Optional[Market],
+        fn_name: str,
+        *args,
+        ffill: bool = True,
+        **kwargs,
+    ) -> Tuple[pd.DataFrame, Dict[str, str]]:
+        """并发拉 top-K 源，按 (索引并集 × 列级 score 胜出) 合并时序 DataFrame。
+
+        合并规则：
+          - 行索引：所有源 DatetimeIndex 的并集，升序
+          - 列：所有源出现过的列的并集
+          - 同一(行, 列)单元格：按 score 降序，首个非 NaN 值胜出
+            (即 score 高的源覆盖低的，但低源能填高源缺失的行/列)
+          - ffill=True 时整体前向填充（适合季报这类稀疏时序的日频回填）
+
+        Args:
+            capability / market / fn_name / *args / **kwargs: 与 _sequential_fetch 一致
+            ffill: 是否对合并结果做前向填充。
+                季报类数据(fundamentals_history) → True
+                K 线 / 资金流 / 北向 → False（缺失日期通常是真缺失）
+
+        Returns:
+            (merged_df, provenance):
+              merged_df: 合并后的 DataFrame，空 DataFrame 表示无可用源
+              provenance: {column_name: provider_name} 记录每列首贡献源
+        """
+        candidates = self._candidates_for(capability, market)
+        if not candidates:
+            return pd.DataFrame(), {}
+
+        top = candidates[: self._max_parallel]
+        futures = {
+            self._executor.submit(
+                self._invoke, p, capability, fn_name, *args, **kwargs,
+            ): (p, score)
+            for p, score in top
+        }
+
+        results: List[Tuple[str, float, pd.DataFrame]] = []
+        for fut in as_completed(futures):
+            provider, score = futures[fut]
+            obj = fut.result()
+            if isinstance(obj, pd.DataFrame) and not obj.empty:
+                results.append((provider.name, score, obj))
+
+        if not results:
+            return pd.DataFrame(), {}
+
+        results.sort(key=lambda x: x[1], reverse=True)
+
+        # 索引并集
+        union_idx = results[0][2].index
+        for _, _, df in results[1:]:
+            union_idx = union_idx.union(df.index)
+        union_idx = union_idx.sort_values()
+
+        # 列并集（保持首次出现顺序，让高分源的列在前）
+        all_cols: List[str] = []
+        seen: set = set()
+        for _, _, df in results:
+            for c in df.columns:
+                if c not in seen:
+                    all_cols.append(c)
+                    seen.add(c)
+
+        merged = pd.DataFrame(index=union_idx)
+        provenance: Dict[str, str] = {}
+
+        for col in all_cols:
+            sources = [(name, df[col]) for name, _, df in results if col in df.columns]
+            if not sources:
+                continue
+            provenance[col] = sources[0][0]    # score 最高的贡献源
+            col_series = sources[0][1].reindex(union_idx)
+            # combine_first：self 非 NaN 留 self，self NaN 用 other —— 正符合
+            # 「score 高的胜，低的补缺」语义
+            for _name, s in sources[1:]:
+                col_series = col_series.combine_first(s.reindex(union_idx))
+            merged[col] = col_series
+
+        if ffill:
+            merged = merged.ffill()
+
+        # 尽量保持数值列的 numeric dtype（reindex/combine_first 可能引入 object）
+        for col in merged.columns:
+            if merged[col].dtype == object:
+                converted = pd.to_numeric(merged[col], errors="ignore")
+                merged[col] = converted
+
+        return merged, provenance
+
     # ── 顺序 failover ────────────────────────────────────────────────────────
 
     def _sequential_fetch(
@@ -470,27 +566,29 @@ class DataGateway:
             n = limit if is_minute else days
             return _tail_by_n(cached, n)
 
-        # 按 Capability 选择对应方法
+        # G1: K 线走多源列级合并(腾讯/新浪/Baostock OHLCV 互补 + 高分胜出)
         # G3: 首次拉取时用"宽窗口"，覆盖未来其他窗口请求
         wide = _WIDE_FETCH.get(cap, {})
         if is_minute:
             fetch_limit = max(limit, wide.get("limit", limit))
-            result, _ = self._sequential_fetch(
+            merged, prov = self._merged_history_fetch(
                 cap, market, "fetch_kline_minute",
                 symbol, interval=interval, limit=fetch_limit,
+                ffill=False,    # K 线缺失多为停牌，不应 ffill
             )
         else:
             fetch_days = max(days, wide.get("days", days))
             fetch_limit = max(limit, wide.get("limit", limit))
-            result, _ = self._sequential_fetch(
+            merged, prov = self._merged_history_fetch(
                 cap, market, "fetch_kline_daily",
                 symbol, days=fetch_days, adjust=adjust, limit=fetch_limit,
+                ffill=False,
             )
-        df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
-        if not df.empty:
+        if not merged.empty:
             ttl = 60.0 if is_minute else 300.0
-            self._cache_set(cap, cache_key, df, ttl=ttl)
-        return _tail_by_n(df, limit if is_minute else days)
+            self._cache_set(cap, cache_key, merged, ttl=ttl)
+            self._last_provenance[cache_key] = prov
+        return _tail_by_n(merged, limit if is_minute else days)
 
     def fundamentals(self, symbol: str) -> Optional[Fundamentals]:
         """基本面(字段级合并)。"""
@@ -576,17 +674,19 @@ class DataGateway:
         if cached is not None and not cached.empty:
             return _tail_by_n(cached, days)
 
+        # G1: 走列级合并(north / south 两列可能来自不同源)
         # 拉取时用最宽窗口，覆盖未来 days 请求
         wide_days = max(days, _WIDE_FETCH.get(Capability.NORTH_FLOW, {}).get("days", days))
-        result, _ = self._sequential_fetch(
+        merged, prov = self._merged_history_fetch(
             Capability.NORTH_FLOW, Market.GLOBAL,
             "fetch_north_flow_history", wide_days,
+            ffill=False,
         )
-        df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
-        if not df.empty:
+        if not merged.empty:
             # 历史数据 4h 缓存(每日收盘后更新)
-            self._cache_set(Capability.NORTH_FLOW, cache_key, df, ttl=14400.0)
-        return _tail_by_n(df, days)
+            self._cache_set(Capability.NORTH_FLOW, cache_key, merged, ttl=14400.0)
+            self._last_provenance[cache_key] = prov
+        return _tail_by_n(merged, days)
 
     def market_index(self, code: str) -> Optional[MarketIndexSnapshot]:
         cache_key = f"market_index:{code}"
@@ -708,15 +808,17 @@ class DataGateway:
         if cached is not None and not cached.empty:
             return _slice_by_range(cached, start, end)
 
+        # G1: 走列级合并(为未来接入第二个资金流源做准备)
         # 拉取时不传 start/end，让 provider 给最长可得序列
-        result, _ = self._sequential_fetch(
+        merged, prov = self._merged_history_fetch(
             Capability.FUND_FLOW, Market.GLOBAL,
             "fetch_fund_flow", symbol, None, None,
+            ffill=False,
         )
-        df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
-        if not df.empty:
-            self._cache_set(Capability.FUND_FLOW, cache_key, df)
-        return _slice_by_range(df, start, end)
+        if not merged.empty:
+            self._cache_set(Capability.FUND_FLOW, cache_key, merged)
+            self._last_provenance[cache_key] = prov
+        return _slice_by_range(merged, start, end)
 
     def fundamentals_history(
         self, symbol: str, start: str | None = None, end: str | None = None,
@@ -737,58 +839,19 @@ class DataGateway:
         if cached is not None and not cached.empty:
             return _slice_by_range(cached, start, end)
 
-        candidates = self._candidates_for(
-            Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
-        )
-        if not candidates:
-            return pd.DataFrame()
-
-        # 并发问 top-K 家(默认 4),每家返回一个 DataFrame
+        # G1: 用 _merged_history_fetch 统一处理多源列级合并
         # G3: 拉取时不传 start/end，让 provider 给出可得的最长序列
-        top = candidates[: self._max_parallel]
-        futures = {
-            self._executor.submit(
-                self._invoke, p, Capability.FUNDAMENTALS_HISTORY,
-                "fetch_fundamentals_history", symbol, None, None,
-            ): (p, score)
-            for p, score in top
-        }
-
-        # 按分数降序收集 (provider, score, df)
-        results: List[tuple] = []
-        for fut in as_completed(futures):
-            provider, score = futures[fut]
-            obj = fut.result()
-            if isinstance(obj, pd.DataFrame) and not obj.empty:
-                results.append((provider.name, score, obj))
-
-        if not results:
+        merged, prov = self._merged_history_fetch(
+            Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
+            "fetch_fundamentals_history", symbol, None, None,
+            ffill=True,    # 季报稀疏 → 日频前向填充
+        )
+        if merged.empty:
             return pd.DataFrame()
 
-        # 列级合并:按 score 降序处理,新出现的列保留,已出现的列保留高分源版本
-        results.sort(key=lambda x: x[1], reverse=True)
-        merged: Optional[pd.DataFrame] = None
-        for _name, _score, df in results:
-            if merged is None:
-                merged = df.copy()
-                continue
-            # 把 df 中尚未在 merged 出现的列加入,行索引取并集后 ffill
-            new_cols = [c for c in df.columns if c not in merged.columns]
-            if not new_cols:
-                continue
-            union_idx = merged.index.union(df.index).sort_values()
-            merged = merged.reindex(union_idx)
-            extra = df[new_cols].reindex(union_idx).ffill()
-            for c in new_cols:
-                merged[c] = extra[c]
-
-        if merged is None or merged.empty:
-            return pd.DataFrame()
-
-        # 整体 ffill,确保 union 后引入的索引也有值
-        merged = merged.sort_index().ffill()
         # G3: 缓存全量，出口处切片
         self._cache_set(Capability.FUNDAMENTALS_HISTORY, cache_key, merged)
+        self._last_provenance[cache_key] = prov
         return _slice_by_range(merged, start, end)
 
     # ── 监控 / 调试 ──────────────────────────────────────────────────────────

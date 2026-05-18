@@ -267,24 +267,63 @@ def test_quote_all_providers_fail_returns_none(gw):
     assert gw.quote("sh600519") is None
 
 
-# ── 不可合并: kline 顺序 failover ─────────────────────────────────────────────
+# ── G1: kline 多源列级合并 ─────────────────────────────────────────────────
 
 
-def test_kline_sequential_first_success_wins(gw):
-    """K 线第一个成功源即返回,其余不调用。"""
-    df1 = pd.DataFrame({"date": ["2026-05-08"], "close": [100]})
+def test_kline_merges_multiple_sources_high_score_wins_overlap(gw):
+    """K 线并发问多源；重叠日期/列由 score(priority_hint) 高的源胜出。"""
+    df_a = pd.DataFrame(
+        {"close": [100], "volume": [1000]},
+        index=pd.to_datetime(["2026-05-08"]),
+    )
+    df_b = pd.DataFrame(
+        {"close": [200], "volume": [2000]},
+        index=pd.to_datetime(["2026-05-08"]),
+    )
     a = _FakeProvider("A", priority_hint=0.9,
                       capabilities=(Capability.KLINE_DAILY,),
-                      kline_value=df1)
+                      kline_value=df_a)
     b = _FakeProvider("B", priority_hint=0.8,
                       capabilities=(Capability.KLINE_DAILY,),
-                      kline_value=pd.DataFrame({"date": ["2026-05-08"], "close": [200]}))
+                      kline_value=df_b)
     gw.register_provider(a)
     gw.register_provider(b)
     df = gw.kline("sh600519")
+    # 重叠列：高分 A 胜出
     assert df["close"].iloc[0] == 100
-    # B 因 A 已成功而未被调用
-    assert len(b.call_log) == 0
+    assert df["volume"].iloc[0] == 1000
+    # 两源都被并发调用(G1 行为)
+    assert len(b.call_log) >= 1
+
+
+def test_kline_merges_complementary_dates_and_columns(gw):
+    """A 提供 OHLCV，B 提供 turnover_rate；合并后列并集 + 索引并集。"""
+    df_a = pd.DataFrame(
+        {"open": [10, 11], "close": [11, 12], "volume": [100, 200]},
+        index=pd.to_datetime(["2026-05-08", "2026-05-09"]),
+    )
+    df_b = pd.DataFrame(
+        {"turnover_rate": [1.5, 2.0, 2.5]},
+        index=pd.to_datetime(["2026-05-09", "2026-05-10", "2026-05-11"]),
+    )
+    a = _FakeProvider("A", priority_hint=0.9,
+                      capabilities=(Capability.KLINE_DAILY,),
+                      kline_value=df_a)
+    b = _FakeProvider("B", priority_hint=0.8,
+                      capabilities=(Capability.KLINE_DAILY,),
+                      kline_value=df_b)
+    gw.register_provider(a)
+    gw.register_provider(b)
+    df = gw.kline("sh600519")
+    # 列并集：OHLCV + turnover_rate
+    assert "open" in df.columns
+    assert "turnover_rate" in df.columns
+    # 索引并集：2026-05-08 ~ 2026-05-11
+    assert len(df) == 4
+    # A 没有 2026-05-10 的 close，应为 NaN（kline ffill=False）
+    assert pd.isna(df.loc["2026-05-10", "close"])
+    # B 没有 2026-05-08 的 turnover，应为 NaN
+    assert pd.isna(df.loc["2026-05-08", "turnover_rate"])
 
 
 def test_kline_minute_routes_to_minute_capability(gw):
@@ -984,6 +1023,122 @@ def test_invalidate_fundamentals_history_precise(gw):
     gw.fundamentals_history("sh000001")
     n_calls_b = len([c for c in p.call_log if "fetch_fundamentals_history:sh000001" in c])
     assert n_calls_b == 1
+
+
+# ── G1: _merged_history_fetch helper 直接测试 ─────────────────────────────
+
+
+def test_merged_history_fetch_complementary_columns(gw):
+    """两源贡献不同列 → 合并后列并集，每列 provenance 正确。"""
+    df_a = pd.DataFrame(
+        {"roe_ttm": [10.0, 11.0]},
+        index=pd.to_datetime(["2024-03-31", "2024-06-30"]),
+    )
+    df_b = pd.DataFrame(
+        {"eps_yoy": [20.0, 25.0]},
+        index=pd.to_datetime(["2024-03-31", "2024-06-30"]),
+    )
+    a = _FakeProvider("baostock", priority_hint=0.9,
+                      capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                      markets=(Market.GLOBAL,),
+                      fundamentals_history_value=df_a)
+    b = _FakeProvider("akshare", priority_hint=0.5,
+                      capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                      markets=(Market.GLOBAL,),
+                      fundamentals_history_value=df_b)
+    gw.register_provider(a)
+    gw.register_provider(b)
+
+    merged, prov = gw._merged_history_fetch(
+        Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
+        "fetch_fundamentals_history", "sh600519", None, None,
+    )
+    assert "roe_ttm" in merged.columns
+    assert "eps_yoy" in merged.columns
+    assert prov["roe_ttm"] == "baostock"
+    assert prov["eps_yoy"] == "akshare"
+
+
+def test_merged_history_fetch_overlap_high_score_wins(gw):
+    """同列重叠值 → 高 score 源胜出。"""
+    idx = pd.to_datetime(["2024-01-01", "2024-04-01"])
+    df_hi = pd.DataFrame({"roe_ttm": [12.0, 13.0]}, index=idx)
+    df_lo = pd.DataFrame({"roe_ttm": [8.0, 9.0]}, index=idx)
+    hi = _FakeProvider("hi", priority_hint=0.95,
+                       capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                       markets=(Market.GLOBAL,),
+                       fundamentals_history_value=df_hi)
+    lo = _FakeProvider("lo", priority_hint=0.20,
+                       capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                       markets=(Market.GLOBAL,),
+                       fundamentals_history_value=df_lo)
+    gw.register_provider(hi)
+    gw.register_provider(lo)
+
+    merged, prov = gw._merged_history_fetch(
+        Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
+        "fetch_fundamentals_history", "sh600519", None, None,
+    )
+    assert merged["roe_ttm"].tolist() == [12.0, 13.0]
+    assert prov["roe_ttm"] == "hi"
+
+
+def test_merged_history_fetch_low_score_fills_high_score_gap(gw):
+    """高 score 源缺某行 → 低 score 源补缺。"""
+    df_hi = pd.DataFrame(
+        {"roe_ttm": [10.0]},
+        index=pd.to_datetime(["2024-01-01"]),
+    )
+    df_lo = pd.DataFrame(
+        {"roe_ttm": [8.0, 9.0]},
+        index=pd.to_datetime(["2024-01-01", "2024-04-01"]),
+    )
+    hi = _FakeProvider("hi", priority_hint=0.95,
+                       capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                       markets=(Market.GLOBAL,),
+                       fundamentals_history_value=df_hi)
+    lo = _FakeProvider("lo", priority_hint=0.20,
+                       capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                       markets=(Market.GLOBAL,),
+                       fundamentals_history_value=df_lo)
+    gw.register_provider(hi)
+    gw.register_provider(lo)
+
+    merged, _ = gw._merged_history_fetch(
+        Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
+        "fetch_fundamentals_history", "sh600519", None, None,
+        ffill=False,
+    )
+    # 索引并集 [2024-01-01, 2024-04-01]
+    assert len(merged) == 2
+    # 2024-01-01：hi 有值（10），用 hi
+    assert merged.loc["2024-01-01", "roe_ttm"] == 10.0
+    # 2024-04-01：hi 缺，用 lo 的 9
+    assert merged.loc["2024-04-01", "roe_ttm"] == 9.0
+
+
+def test_merged_history_fetch_all_empty_returns_empty(gw):
+    a = _FakeProvider("a", priority_hint=0.5,
+                      capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                      markets=(Market.GLOBAL,),
+                      fundamentals_history_value=pd.DataFrame())
+    gw.register_provider(a)
+    merged, prov = gw._merged_history_fetch(
+        Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
+        "fetch_fundamentals_history", "sh600519", None, None,
+    )
+    assert merged.empty
+    assert prov == {}
+
+
+def test_merged_history_fetch_no_candidates_returns_empty(gw):
+    """无声明该 capability 的 provider → 空。"""
+    merged, prov = gw._merged_history_fetch(
+        Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
+        "fetch_fundamentals_history", "sh600519", None, None,
+    )
+    assert merged.empty
+    assert prov == {}
 
 
 def test_kline_daily_persists_kline_minute_does_not(tmp_path):
