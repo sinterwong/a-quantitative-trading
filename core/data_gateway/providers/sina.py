@@ -179,10 +179,11 @@ class SinaProvider(Provider):
         # MARKET_INDEX 不支持美股（新浪美股指数接口不同）
         if capability == Capability.MARKET_INDEX and market == Market.US:
             return False
-        # SECTOR_CONSTITUENTS / SECTOR_RANKING 支持 GLOBAL market（板块代码与A股市场无关）
-        if capability in (Capability.SECTOR_CONSTITUENTS, Capability.SECTOR_RANKING):
-            if market == Market.GLOBAL:
-                return True
+        # SECTOR_CONSTITUENTS 走 Market.GLOBAL 路由（板块代码与 A 股市场无关）
+        # 注：SECTOR_RANKING 的网关路由用的是 Market.A（gateway.sectors），
+        # 故此处只放行 SECTOR_CONSTITUENTS，不扩大未被路由的能力面。
+        if capability == Capability.SECTOR_CONSTITUENTS and market == Market.GLOBAL:
+            return True
         return super().supports(capability, market)
 
     def field_authority(self) -> Dict[Capability, Dict[str, float]]:
@@ -429,12 +430,15 @@ class SinaProvider(Provider):
 
         code 格式支持:
           - 'SINA_new_xxx'  → strip 前缀后得 'new_xxx'
+          - 'EM_BK0xxx'     → strip 前缀后得 'BK0xxx'（与 eastmoney 行为对称；
+                              新浪 node 不识别 EM_ 板块码时上游返回空列表）
           - 'new_xxx'       → 直接使用
         """
-        # 剥离 SINA_ 前缀（gateway 传入的 sector code 带此前缀）
         node_code = code
         if node_code.startswith("SINA_"):
             node_code = node_code.split("_", 1)[1]
+        elif node_code.startswith("EM_"):
+            node_code = node_code[3:]
 
         params = {
             "num": limit,
@@ -469,15 +473,18 @@ class SinaProvider(Provider):
             name = str(rec.get("name", ""))
             if not sym or not name:
                 continue
+            # SectorConstituent.symbol 契约要求标准化代码（sh600519 / hk00700 …）。
+            # 新浪通常已返回标准前缀；归一化是对 schema 的兜底承诺，
+            # 不依赖上游格式碰巧合规。
             result.append(SectorConstituent(
-                symbol=sym,                     # e.g. 'sh600176'
+                symbol=normalize_to_sina(sym),
                 name=name,
-                price=float(rec.get("trade") or 0),
-                change_pct=float(rec.get("changepercent") or 0),
-                amount=float(rec.get("amount") or 0),
-                volume=float(rec.get("volume") or 0),
+                price=safe_float(rec.get("trade")),
+                change_pct=safe_float(rec.get("changepercent")),
+                amount=safe_float(rec.get("amount")),
+                volume=safe_float(rec.get("volume")),
             ))
-        return result
+        return result[:limit]
 
 
 __all__ = ["SinaProvider"]

@@ -231,3 +231,160 @@ def test_fetch_kline_unknown_interval_returns_empty():
     assert df.empty
     # 未发请求
     assert http.get_text.call_count == 0
+
+
+# ── fetch_sector_constituents ───────────────────────────────────────────────
+
+
+def _build_constituents_payload(n=3):
+    """Sina Market_Center.getHQNodeData 返回的 JSON 数组样本。"""
+    import json as _json
+    records = []
+    base_price = 100.0
+    for i in range(n):
+        records.append({
+            "symbol": f"sh60000{i}",
+            "name": f"个股{i}",
+            "trade": f"{base_price + i:.2f}",
+            "changepercent": f"{5.0 - i:.3f}",  # 递减,验证 server 已排序
+            "amount": f"{1_000_000 * (i + 1)}",
+            "volume": f"{10_000 * (i + 1)}",
+        })
+    return _json.dumps(records)
+
+
+def test_capabilities_includes_sector_constituents():
+    """SECTOR_CONSTITUENTS 需在 declare 中显式声明,网关才会路由。"""
+    decl = SinaProvider().declare()
+    assert Capability.SECTOR_CONSTITUENTS in decl.capabilities
+
+
+def test_supports_sector_constituents_global():
+    """SECTOR_CONSTITUENTS 走 Market.GLOBAL 路由(板块代码与 A 股市场无关)。"""
+    p = SinaProvider()
+    assert p.supports(Capability.SECTOR_CONSTITUENTS, Market.GLOBAL) is True
+
+
+def test_supports_sector_ranking_not_globalized():
+    """SECTOR_RANKING 不应被错误地放行到 GLOBAL — 网关用 Market.A 路由它。
+
+    防止 supports() 越权扩面回潮:declare/supports 的分工是"声明能力 +
+    收窄场景",未被网关路由的组合不应在 supports() 中返回 True。
+    """
+    p = SinaProvider()
+    assert p.supports(Capability.SECTOR_RANKING, Market.GLOBAL) is False
+    # Market.A 路径仍走默认 (declare ∩ markets) 逻辑
+    assert p.supports(Capability.SECTOR_RANKING, Market.A) is True
+
+
+def test_fetch_sector_constituents_parses():
+    http = MagicMock()
+    http.get_text.return_value = _build_constituents_payload(n=3)
+    p = SinaProvider(http=http)
+    out = p.fetch_sector_constituents("SINA_new_qcwl")
+    assert len(out) == 3
+    assert out[0].symbol == "sh600000"
+    assert out[0].name == "个股0"
+    assert out[0].price == 100.00
+    assert out[0].change_pct == 5.0
+    assert out[0].amount == 1_000_000.0
+    assert out[0].volume == 10_000.0
+    # 服务端已按涨幅降序;解析保持原顺序
+    assert out[0].change_pct > out[-1].change_pct
+
+
+def test_fetch_sector_constituents_strips_sina_prefix():
+    """SINA_ 前缀须剥离后作为新浪 node 参数。"""
+    http = MagicMock()
+    http.get_text.return_value = "[]"
+    p = SinaProvider(http=http)
+    p.fetch_sector_constituents("SINA_new_qcwl")
+    _, kwargs = http.get_text.call_args
+    assert kwargs["params"]["node"] == "new_qcwl"
+
+
+def test_fetch_sector_constituents_strips_em_prefix():
+    """EM_ 前缀须剥离 — 与 eastmoney 行为对称,避免上游误把 EM_ 板块码
+    透传给新浪 node 参数(会被静默忽略,得到空结果)。"""
+    http = MagicMock()
+    http.get_text.return_value = "[]"
+    p = SinaProvider(http=http)
+    p.fetch_sector_constituents("EM_BK0716")
+    _, kwargs = http.get_text.call_args
+    assert kwargs["params"]["node"] == "BK0716"
+
+
+def test_fetch_sector_constituents_no_prefix_passthrough():
+    http = MagicMock()
+    http.get_text.return_value = "[]"
+    p = SinaProvider(http=http)
+    p.fetch_sector_constituents("new_qcwl")
+    _, kwargs = http.get_text.call_args
+    assert kwargs["params"]["node"] == "new_qcwl"
+
+
+def test_fetch_sector_constituents_respects_limit_client_side():
+    """即便上游返回多于 limit 行,客户端也要兜底切片。"""
+    http = MagicMock()
+    http.get_text.return_value = _build_constituents_payload(n=10)
+    p = SinaProvider(http=http)
+    out = p.fetch_sector_constituents("SINA_new_qcwl", limit=3)
+    assert len(out) == 3
+
+
+def test_fetch_sector_constituents_normalizes_symbol():
+    """schemas.SectorConstituent.symbol 契约要求标准化代码;
+    即便上游意外返回裸数字(600519),也应归一为 sh600519。"""
+    import json as _json
+    http = MagicMock()
+    http.get_text.return_value = _json.dumps([
+        {"symbol": "600519", "name": "贵州茅台",
+         "trade": "1234.5", "changepercent": "0",
+         "amount": "0", "volume": "0"},
+    ])
+    p = SinaProvider(http=http)
+    out = p.fetch_sector_constituents("SINA_new_qcwl")
+    assert out[0].symbol == "sh600519"
+
+
+def test_fetch_sector_constituents_non_list_returns_empty():
+    """异常 JSON 形态(例如 dict / 空 dict)应安全降级为空列表,
+    不抛异常 — 让 gateway 走下家。"""
+    http = MagicMock()
+    http.get_text.return_value = '{"result": "error"}'
+    p = SinaProvider(http=http)
+    out = p.fetch_sector_constituents("SINA_new_qcwl")
+    assert out == []
+
+
+def test_fetch_sector_constituents_skips_empty_records():
+    """缺 symbol / name 的脏数据应被跳过,而不污染下游。"""
+    import json as _json
+    http = MagicMock()
+    http.get_text.return_value = _json.dumps([
+        {"symbol": "", "name": "无 symbol"},
+        {"symbol": "sh600000", "name": ""},
+        {"symbol": "sh600519", "name": "贵州茅台",
+         "trade": "1234", "changepercent": "1",
+         "amount": "100", "volume": "10"},
+    ])
+    p = SinaProvider(http=http)
+    out = p.fetch_sector_constituents("SINA_new_qcwl")
+    assert len(out) == 1
+    assert out[0].symbol == "sh600519"
+
+
+def test_fetch_sector_constituents_http_error_wraps():
+    http = MagicMock()
+    http.get_text.side_effect = HttpError("conn reset")
+    p = SinaProvider(http=http)
+    with pytest.raises(ProviderError):
+        p.fetch_sector_constituents("SINA_new_qcwl")
+
+
+def test_fetch_sector_constituents_json_decode_error_wraps():
+    http = MagicMock()
+    http.get_text.return_value = "not a json"
+    p = SinaProvider(http=http)
+    with pytest.raises(ProviderError):
+        p.fetch_sector_constituents("SINA_new_qcwl")
