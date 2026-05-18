@@ -46,6 +46,7 @@ class _FakeProvider(Provider):
         balance_value: Optional[BalanceSheet] = None,
         margin_flow_value: Optional[pd.DataFrame] = None,
         north_history_value: Optional[pd.DataFrame] = None,
+        fundamentals_history_value: Optional[pd.DataFrame] = None,
         news_value: Optional[List[str]] = None,
         raise_on: Optional[str] = None,
         field_authorities: Optional[Dict[Capability, Dict[str, float]]] = None,
@@ -66,6 +67,7 @@ class _FakeProvider(Provider):
         self._balance = balance_value
         self._margin = margin_flow_value if margin_flow_value is not None else pd.DataFrame()
         self._north_history = north_history_value if north_history_value is not None else pd.DataFrame()
+        self._fund_history = fundamentals_history_value if fundamentals_history_value is not None else pd.DataFrame()
         self._news = news_value if news_value is not None else []
         self._raise_on = raise_on
         self._authority = field_authorities or {}
@@ -148,6 +150,11 @@ class _FakeProvider(Provider):
         self._maybe_raise("fetch_north_flow_history")
         return self._north_history
 
+    def fetch_fundamentals_history(self, symbol, start=None, end=None):
+        self.call_log.append(f"fetch_fundamentals_history:{symbol}")
+        self._maybe_raise("fetch_fundamentals_history")
+        return self._fund_history
+
     def fetch_news_headlines(self, symbol, n=20):
         self.call_log.append(f"fetch_news_headlines:{symbol}:{n}")
         self._maybe_raise("fetch_news_headlines")
@@ -156,10 +163,14 @@ class _FakeProvider(Provider):
 
 @pytest.fixture
 def gw():
-    """全新 gateway + 重置健康度。"""
+    """全新 gateway + 重置健康度（不启用 L2 落盘，避免测试间互相污染）。"""
     from core.circuit_breaker import reset_all
     reset_all()
-    return DataGateway(health=HealthTracker(warmup_count=1), max_parallel=4)
+    return DataGateway(
+        health=HealthTracker(warmup_count=1),
+        max_parallel=4,
+        enable_disk_cache=False,
+    )
 
 
 # ── 注册 / 列出 provider ────────────────────────────────────────────────────
@@ -342,7 +353,7 @@ def test_quotes_merges_across_providers(gw):
 
 
 def test_quotes_empty_input():
-    gw = DataGateway()
+    gw = DataGateway(enable_disk_cache=False)
     assert gw.quotes([]) == {}
 
 
@@ -390,7 +401,7 @@ def test_market_index_falls_back_to_global(gw):
 def test_unhealthy_provider_loses_to_healthy(gw):
     """连续失败的 provider 健康度下降,后续被排到后面。"""
     health = HealthTracker(warmup_count=1)
-    gw = DataGateway(health=health, max_parallel=2)
+    gw = DataGateway(health=health, max_parallel=2, enable_disk_cache=False)
 
     bad = _FakeProvider("bad", priority_hint=0.9, raise_on="fetch_quote")
     good = _FakeProvider("good", priority_hint=0.1,
@@ -684,3 +695,103 @@ def test_get_gateway_registers_default_providers():
     names = {p.name for p in gw.providers()}
     assert names == {"tencent", "sina", "eastmoney", "yfinance", "baostock", "akshare"}
     reset_gateway(None)
+
+
+# ── G8: L2 落盘缓存集成 ────────────────────────────────────────────────────
+
+
+def test_default_gateway_enables_disk_cache(tmp_path):
+    """默认构造启用 TieredCache，cache_dir 可由参数指定。"""
+    from core.data_gateway.cache import TieredCache
+    gw = DataGateway(cache_dir=str(tmp_path / "gw_cache"))
+    assert isinstance(gw._cache, TieredCache)
+    assert gw._cache._disk is not None
+
+
+def test_disk_cache_can_be_disabled():
+    from core.data_gateway.cache import MemoryCache
+    gw = DataGateway(enable_disk_cache=False)
+    assert isinstance(gw._cache, MemoryCache)
+
+
+def test_fundamentals_history_survives_l1_purge_via_l2(tmp_path):
+    """fundamentals_history 走 L2 落盘：L1 清掉后仍能从 disk 回填，不再调 provider。"""
+    cache_dir = str(tmp_path / "gw_cache")
+    df_mock = pd.DataFrame(
+        {"roe_ttm": [10.0, 11.0], "eps_ttm": [0.5, 0.6]},
+        index=pd.to_datetime(["2024-03-31", "2024-06-30"]),
+    )
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+        markets=(Market.GLOBAL,), fundamentals_history_value=df_mock,
+    )
+
+    # 第一个 gateway：拉数据 + 落盘
+    gw1 = DataGateway(
+        health=HealthTracker(warmup_count=1), max_parallel=2,
+        cache_dir=cache_dir,
+    )
+    gw1.register_provider(p)
+    out1 = gw1.fundamentals_history("sh600519")
+    assert not out1.empty
+    n_calls_1 = len([c for c in p.call_log if "fetch_fundamentals_history" in c])
+    assert n_calls_1 == 1
+
+    # 第二个 gateway（模拟进程重启）：清掉 L1 但 L2 文件还在
+    gw2 = DataGateway(
+        health=HealthTracker(warmup_count=1), max_parallel=2,
+        cache_dir=cache_dir,
+    )
+    p2 = _FakeProvider(
+        "ak", capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+        markets=(Market.GLOBAL,), fundamentals_history_value=df_mock,
+    )
+    gw2.register_provider(p2)
+    out2 = gw2.fundamentals_history("sh600519")
+    assert not out2.empty
+    # 关键断言：新 gateway 一次都没调 provider，全部走 L2
+    assert len([c for c in p2.call_log if "fetch_fundamentals_history" in c]) == 0
+
+
+def test_quote_does_not_persist_to_disk(tmp_path):
+    """Quote 不在持久化白名单，即使 disk cache 开启也不应落盘。"""
+    cache_dir = str(tmp_path / "gw_cache")
+    p = _FakeProvider(
+        "p", quote_value=Quote(symbol="sh600519", price=100),
+    )
+    gw = DataGateway(
+        health=HealthTracker(warmup_count=1), max_parallel=2,
+        cache_dir=cache_dir,
+    )
+    gw.register_provider(p)
+    gw.quote("sh600519")
+    # disk cache 目录应该不存在或为空(quote 不落盘)
+    import os
+    if os.path.exists(cache_dir):
+        files = [f for f in os.listdir(cache_dir) if f.endswith(".parquet")]
+        assert len(files) == 0
+
+
+def test_kline_daily_persists_kline_minute_does_not(tmp_path):
+    """KLINE_DAILY 在白名单内落盘；KLINE_MINUTE 不在白名单不落盘。"""
+    cache_dir = str(tmp_path / "gw_cache")
+    kline_df = pd.DataFrame(
+        {"open": [10], "close": [11], "high": [11.5], "low": [9.8], "volume": [1000]},
+        index=pd.to_datetime(["2024-01-02"]),
+    )
+    p = _FakeProvider(
+        "p", capabilities=(Capability.KLINE_DAILY, Capability.KLINE_MINUTE),
+        markets=(Market.A, Market.HK), kline_value=kline_df,
+    )
+    gw = DataGateway(
+        health=HealthTracker(warmup_count=1), max_parallel=2,
+        cache_dir=cache_dir,
+    )
+    gw.register_provider(p)
+    gw.kline("sh600519", interval="daily")
+    gw.kline("hk00700", interval="5m")
+
+    import os
+    files = [f for f in os.listdir(cache_dir) if f.endswith(".parquet")]
+    # 只有 1 个 parquet 文件（daily 的），minute 的不落盘
+    assert len(files) == 1

@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from .cache import MemoryCache
+from .cache import MemoryCache, ParquetDiskCache, TieredCache
 from .capabilities import Capability, MacroIndicator, Market
 from .health import HealthTracker, get_health_tracker
 from .merge import Candidate, merge_field_level
@@ -62,6 +62,32 @@ _DEFAULT_TTL = {
     Capability.FUND_FLOW: 14400.0,              # 资金流日频，4h 缓存(收盘后更新)
     Capability.NEWS_HEADLINES: 1800.0,         # 新闻标题，30min 缓存
 }
+
+
+# ─── L2 持久化白名单 ──────────────────────────────────────────────────────────
+# 仅历史 / 慢变 DataFrame 落 Parquet 盘，实时 Quote / 列表数据只走 L1。
+# 进程重启后 L2 可避免重拉昂贵的多源历史时序。
+
+_PERSISTENT_CAPS: set = {
+    Capability.KLINE_DAILY,
+    Capability.FUNDAMENTALS_HISTORY,
+    Capability.BALANCE_SHEET,
+    Capability.MARGIN_FLOW,
+    Capability.FUND_FLOW,
+    Capability.NORTH_FLOW,      # 仅 north_flow_history 走 L2,实时 snapshot 不会
+    Capability.MACRO,
+}
+
+
+def _default_cache_dir() -> str:
+    """L2 落盘路径：环境变量优先 → 项目 data/cache/data_gateway/。"""
+    import os as _os
+    env = _os.environ.get("TRADING_DATA_GATEWAY_CACHE_DIR")
+    if env:
+        return env
+    # 项目根目录的 data/cache/data_gateway
+    repo_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    return _os.path.join(repo_root, "data", "cache", "data_gateway")
 
 
 # ─── 熔断器辅助 ────────────────────────────────────────────────────────────────
@@ -95,18 +121,55 @@ class DataGateway:
         self,
         *,
         health: Optional[HealthTracker] = None,
-        cache: Optional[MemoryCache] = None,
+        cache: Optional[Any] = None,
+        cache_dir: Optional[str] = None,
+        enable_disk_cache: bool = True,
         max_parallel: int = 4,
     ):
+        """
+        Args:
+            cache: 可注入自定义缓存(MemoryCache 或 TieredCache)。
+                None 时按 enable_disk_cache 自动构建。
+            cache_dir: L2 落盘目录，None 时取 _default_cache_dir()。
+            enable_disk_cache: 是否启用 L2 落盘(测试可关闭)。
+        """
         self._providers: Dict[str, Provider] = {}
         self._health = health or get_health_tracker()
-        self._cache = cache or MemoryCache(default_ttl=30.0)
+        if cache is not None:
+            self._cache = cache
+        elif enable_disk_cache:
+            disk = ParquetDiskCache(cache_dir or _default_cache_dir())
+            self._cache = TieredCache(memory=MemoryCache(default_ttl=30.0), disk=disk)
+        else:
+            self._cache = MemoryCache(default_ttl=30.0)
         self._max_parallel = max_parallel
         self._lock = threading.Lock()
         self._last_provenance: Dict[str, Dict[str, str]] = {}
         self._executor = ThreadPoolExecutor(
             max_workers=max_parallel, thread_name_prefix="gw"
         )
+
+    # ── 缓存读写辅助(自动应用 L2 落盘白名单) ──────────────────────────────
+
+    def _cache_get(self, cap: Capability, key: str) -> Optional[Any]:
+        """对持久化 capability 自动走 L2 fallback。"""
+        if isinstance(self._cache, TieredCache) and cap in _PERSISTENT_CAPS:
+            return self._cache.get(key, disk_ttl=_DEFAULT_TTL.get(cap))
+        return self._cache.get(key)
+
+    def _cache_set(
+        self,
+        cap: Capability,
+        key: str,
+        value: Any,
+        ttl: Optional[float] = None,
+    ) -> None:
+        """对持久化 capability 自动写 L2(仅 DataFrame)。"""
+        ttl = ttl if ttl is not None else _DEFAULT_TTL.get(cap, 60.0)
+        if isinstance(self._cache, TieredCache):
+            self._cache.set(key, value, ttl=ttl, persistent=cap in _PERSISTENT_CAPS)
+        else:
+            self._cache.set(key, value, ttl=ttl)
 
     # ── 注册 ─────────────────────────────────────────────────────────────────
 
@@ -360,7 +423,7 @@ class DataGateway:
         is_minute = interval in ("1m", "5m", "15m", "30m", "60m")
         cap = Capability.KLINE_MINUTE if is_minute else Capability.KLINE_DAILY
         cache_key = f"kline:{symbol}:{interval}:{days}:{adjust}:{limit}"
-        cached = self._cache.get(cache_key)
+        cached = self._cache_get(cap, cache_key)
         if cached is not None:
             return cached
 
@@ -378,7 +441,7 @@ class DataGateway:
         df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
         if not df.empty:
             ttl = 60.0 if is_minute else 300.0
-            self._cache.set(cache_key, df, ttl)
+            self._cache_set(cap, cache_key, df, ttl=ttl)
         return df
 
     def fundamentals(self, symbol: str) -> Optional[Fundamentals]:
@@ -460,7 +523,7 @@ class DataGateway:
             空 DataFrame 表示无可用源。
         """
         cache_key = f"north_flow_history:{days}"
-        cached = self._cache.get(cache_key)
+        cached = self._cache_get(Capability.NORTH_FLOW, cache_key)
         if cached is not None:
             return cached
 
@@ -471,7 +534,7 @@ class DataGateway:
         df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
         if not df.empty:
             # 历史数据 4h 缓存(每日收盘后更新)
-            self._cache.set(cache_key, df, 14400.0)
+            self._cache_set(Capability.NORTH_FLOW, cache_key, df, ttl=14400.0)
         return df
 
     def market_index(self, code: str) -> Optional[MarketIndexSnapshot]:
@@ -496,7 +559,7 @@ class DataGateway:
     def macro(self, indicator: MacroIndicator) -> pd.DataFrame:
         """indicator: MacroIndicator enum (PMI / M2 / CREDIT)。"""
         cache_key = f"macro:{indicator.value}"
-        cached = self._cache.get(cache_key)
+        cached = self._cache_get(Capability.MACRO, cache_key)
         if cached is not None:
             return cached
         result, _ = self._sequential_fetch(
@@ -504,7 +567,7 @@ class DataGateway:
         )
         df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
         if not df.empty:
-            self._cache.set(cache_key, df, _DEFAULT_TTL[Capability.MACRO])
+            self._cache_set(Capability.MACRO, cache_key, df)
         return df
 
     def balance_sheet(self, symbol: str) -> Optional[BalanceSheet]:
@@ -514,6 +577,7 @@ class DataGateway:
         当前实现源:BaostockProvider(A股)。
         """
         cache_key = f"balance_sheet:{symbol}"
+        # BalanceSheet 是 dataclass 不是 DataFrame，L2 落盘对它无意义，只用 L1
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
@@ -541,7 +605,7 @@ class DataGateway:
             空 DataFrame 表示无数据。
         """
         cache_key = f"margin_flow:{symbol}:{start}:{end}"
-        cached = self._cache.get(cache_key)
+        cached = self._cache_get(Capability.MARGIN_FLOW, cache_key)
         if cached is not None:
             return cached
 
@@ -551,7 +615,7 @@ class DataGateway:
         )
         df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
         if not df.empty:
-            self._cache.set(cache_key, df, _DEFAULT_TTL[Capability.MARGIN_FLOW])
+            self._cache_set(Capability.MARGIN_FLOW, cache_key, df)
         return df
 
     def news_headlines(self, symbol: str, n: int = 20) -> list:
@@ -588,7 +652,7 @@ class DataGateway:
             及其净占比（%），含 close / change_pct。
         """
         cache_key = f"fund_flow:{symbol}:{start}:{end}"
-        cached = self._cache.get(cache_key)
+        cached = self._cache_get(Capability.FUND_FLOW, cache_key)
         if cached is not None:
             return cached
 
@@ -598,7 +662,7 @@ class DataGateway:
         )
         df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
         if not df.empty:
-            self._cache.set(cache_key, df, _DEFAULT_TTL.get(Capability.FUND_FLOW, 14400.0))
+            self._cache_set(Capability.FUND_FLOW, cache_key, df)
         return df
 
     def fundamentals_history(
@@ -611,7 +675,7 @@ class DataGateway:
         + priority_hint 更高者胜出(类似 Quote 的字段级合并)。
         """
         cache_key = f"fundamentals_history:{symbol}:{start}:{end}"
-        cached = self._cache.get(cache_key)
+        cached = self._cache_get(Capability.FUNDAMENTALS_HISTORY, cache_key)
         if cached is not None:
             return cached
 
@@ -664,10 +728,7 @@ class DataGateway:
 
         # 整体 ffill,确保 union 后引入的索引也有值
         merged = merged.sort_index().ffill()
-        self._cache.set(
-            cache_key, merged,
-            _DEFAULT_TTL.get(Capability.FUNDAMENTALS_HISTORY, 86400.0),
-        )
+        self._cache_set(Capability.FUNDAMENTALS_HISTORY, cache_key, merged)
         return merged
 
     # ── 监控 / 调试 ──────────────────────────────────────────────────────────

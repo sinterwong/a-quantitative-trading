@@ -5,6 +5,7 @@ data_gateway.cache — 统一缓存层
 合并原先散落在 data_layer._TTLCache / ParquetCache 的实现:
   - MemoryCache: 线程安全的 TTL 内存缓存(任意可序列化对象)
   - ParquetDiskCache: K 线类 DataFrame 的本地落盘(增量更新)
+  - TieredCache: 组合 L1 内存 + L2 落盘，重启不丢、跨进程复用
 
 provider 可注入 cache 实例使用,或由 gateway 统一注入。
 """
@@ -85,6 +86,9 @@ class ParquetDiskCache:
     def __init__(self, root_dir: str, default_ttl: float = 86400.0):
         self._root = os.path.abspath(root_dir)
         self._default_ttl = default_ttl
+        # 目录懒创建：仅在第一次 set 时创建，避免无写入也产生空目录
+
+    def _ensure_root(self) -> None:
         os.makedirs(self._root, exist_ok=True)
 
     def _path_for(self, key: str) -> str:
@@ -94,6 +98,8 @@ class ParquetDiskCache:
 
     def get(self, key: str, ttl: Optional[float] = None) -> Optional[pd.DataFrame]:
         """读取缓存。超过 ttl 或不存在返回 None。"""
+        if not os.path.isdir(self._root):
+            return None
         path = self._path_for(key)
         if not os.path.exists(path):
             return None
@@ -109,6 +115,7 @@ class ParquetDiskCache:
         """写入缓存。空 DataFrame 不写盘。"""
         if df is None or df.empty:
             return
+        self._ensure_root()
         path = self._path_for(key)
         try:
             df.to_parquet(path, index=False)
@@ -125,6 +132,8 @@ class ParquetDiskCache:
             pass
 
     def clear(self) -> None:
+        if not os.path.isdir(self._root):
+            return
         try:
             for f in os.listdir(self._root):
                 if f.endswith(".parquet"):
@@ -136,4 +145,85 @@ class ParquetDiskCache:
             pass
 
 
-__all__ = ["MemoryCache", "ParquetDiskCache"]
+# ─── 分层缓存(L1 内存 + L2 落盘) ───────────────────────────────────────────────
+
+
+class TieredCache:
+    """L1 = MemoryCache(毫秒级)，L2 = ParquetDiskCache(重启不丢、跨进程共享)。
+
+    设计：
+      - 仅 DataFrame 进 L2(parquet 不支持任意 Python 对象)
+      - L1 miss → 查 L2 → 命中后回填 L1
+      - L2 仅在 set 时按 capability 白名单写盘(避免 quote 等高频数据污染)
+      - 调用方通过 `persistent=True` 明示哪些写入需要落盘
+
+    用法:
+        cache = TieredCache(memory=MemoryCache(), disk=ParquetDiskCache("data/cache/gw"))
+        cache.set(key, df, ttl=86400, persistent=True)     # 写 L1 + L2
+        cache.set(key, quote, ttl=30)                       # 只写 L1
+        df = cache.get(key, disk_ttl=86400)                # L1 miss → 查 L2
+    """
+
+    def __init__(
+        self,
+        *,
+        memory: "MemoryCache",
+        disk: Optional["ParquetDiskCache"] = None,
+    ):
+        self._memory = memory
+        self._disk = disk
+
+    # ── 透传 MemoryCache 接口 ──────────────────────────────────────────────────
+
+    def get(self, key: str, disk_ttl: Optional[float] = None) -> Optional[Any]:
+        """L1 优先；L1 miss 时若开了 L2 且传了 disk_ttl，尝试从 L2 取 DataFrame。"""
+        val = self._memory.get(key)
+        if val is not None:
+            return val
+        if self._disk is None or disk_ttl is None:
+            return None
+        df = self._disk.get(key, ttl=disk_ttl)
+        if df is None:
+            return None
+        # 回填 L1(用 disk_ttl 的 1/10，避免内存层过期窗口比 disk 还长)
+        self._memory.set(key, df, ttl=max(60.0, disk_ttl / 10.0))
+        return df
+
+    def set(
+        self,
+        key: str,
+        value: Any,
+        ttl: Optional[float] = None,
+        *,
+        persistent: bool = False,
+    ) -> None:
+        """persistent=True 时同时写 L2(仅 DataFrame 落盘)。"""
+        self._memory.set(key, value, ttl=ttl)
+        if persistent and self._disk is not None and isinstance(value, pd.DataFrame):
+            self._disk.set(key, value)
+
+    def invalidate(self, key: str) -> None:
+        self._memory.invalidate(key)
+        if self._disk is not None:
+            self._disk.invalidate(key)
+
+    def clear(self) -> None:
+        self._memory.clear()
+        if self._disk is not None:
+            self._disk.clear()
+
+    # ── 兼容 MemoryCache 内部属性访问(gateway.invalidate_fundamentals_history 用到) ──
+
+    @property
+    def _store(self) -> Dict[str, Any]:
+        return self._memory._store
+
+    @property
+    def _lock(self) -> threading.Lock:
+        return self._memory._lock
+
+    def __len__(self) -> int:
+        return len(self._memory)
+
+
+__all__ = ["MemoryCache", "ParquetDiskCache", "TieredCache"]
