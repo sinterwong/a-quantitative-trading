@@ -42,8 +42,18 @@ st.caption('factor_name 可填 RSI / MACDTrend / Bollinger / ATR 等(由 backend
 
 default_strategies = pd.DataFrame([
     # ✅ 直接点击"运行回测"即可执行的示例策略
-    {'factor_name': 'RSI', 'threshold': 1.0, 'params_json': '{"period": 14}'},
-    {'factor_name': 'BollingerBands', 'threshold': 0.5, 'params_json': '{"period": 20, "nb_std": 2.0}'},
+    # 注意：选低价股（如 sh601012 隆基绿能 ~15元），高价股（如茅台 sh600519 ~1400元）
+    # 100股起买，10万本金对高价股买不了1手导致0交易。
+    {
+        'factor_name': 'BollingerBands',
+        'threshold': 0.5,
+        'params_json': '{"period": 20, "nb_std": 2.0}',
+    },
+    {
+        'factor_name': 'MACD',
+        'threshold': 0.0,
+        'params_json': '{"fast": 12, "slow": 26, "signal": 9}',
+    },
 ])
 edited = st.data_editor(
     default_strategies, num_rows='dynamic', use_container_width=True,
