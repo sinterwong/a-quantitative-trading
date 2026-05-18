@@ -3,10 +3,9 @@
 > **Sprint 1 已完成**（commit 11b7e72 → ef10ed2）：G8 / G3 / G1 / G2 全部交付，
 > `gw.profile(symbol)` 已可用。详见各章节末尾的「✅ 已完成」标记。
 >
-> **Sprint 2 进行中**（commit 883f1dd → ...）：G4 已落地，
-> `ROUTING_POLICY` + `_route()` 统一分派器替代散在各 gw.* 方法里的
-> `_sequential_fetch` / `_merged_fetch` / `_merged_history_fetch` 调用。
-> G5 待启动（需先盘点 news 多源可行性）。
+> **Sprint 2 已完成**（commit 883f1dd → 43d5075）：G4 / G5 全部交付。
+> `ROUTING_POLICY` 元数据驱动 4 种 routing 策略；`gw.news_headlines` 现已
+> 走多源去重 + 时间倒序（EM kuaixun + AkShare 财联社电报）。
 
 ---
 
@@ -163,7 +162,7 @@ macro = {k: gw.macro(k).tail(1).iloc[0,0] for k in ('PMI','M2','CREDIT')}
 
 ---
 
-### G5 — news_headlines 多源归一去重
+### G5 — news_headlines 多源归一去重 + 时间排序
 
 **动机**：当前 NEWS_HEADLINES 只有 EastMoney 一源，且其接口是"全市场快讯"
 （symbol 参数被忽略）。引入第 2/3 源（如 Sina/Tencent 财经资讯）后，
@@ -172,25 +171,35 @@ macro = {k: gw.macro(k).tail(1).iloc[0,0] for k in ('PMI','M2','CREDIT')}
 - 标题归一化（去前后空白、全/半角统一、去常见前后缀如「【快讯】」）
 - 按归一标题 dedupe
 - 若 item 含时间戳按时间倒序；否则按 provider health 顺序
-- 截断到 n 条
 
 **范围**：
-- 先盘点：Sina/Tencent/AkShare 是否有可拉的财经新闻接口
-  - 若只 EastMoney 一源真有效，G5 简化为"基础设施就位但 policy 仍 FAILOVER"
-- 在 `gateway.py` 加 `_merged_list_fetch(capability, market, fn_name,
-  *args, **kwargs)`
-- `_route` 接入 `RoutingStrategy.MERGE_LISTS`，把 `NotImplementedError`
-  分支替换为实际实现
-- 把 `NEWS_HEADLINES` 的 policy 改为 `MERGE_LISTS`（前提是新源已接入）
-- provider 层补 2-3 个 news 源的 `fetch_news_headlines` 实现
+- 评估第 2/3 源（commit 1fc2537 前调研）：
+  - ✅ AkShare 财联社电报 `stock_info_global_cls` 可用（含发布日期/时间）
+  - ✗ AkShare `stock_news_em` 因 PyArrow regex bug 不可用
+  - 最终方案：EM kuaixun + AkShare 财联社电报 2 源
+- 新增 `schemas.NewsItem(title, timestamp, source, content)`，
+  `base.fetch_news_headlines` 返回类型升级到 `List[NewsItem]`
+- EM 重写：解析 showtime 字段写入 timestamp + source="eastmoney"
+- AkShareProvider 新增 NEWS_HEADLINES capability + fetch 财联社电报
+- gateway 加 `_merged_list_fetch`：并发拉所有候选源 → `_news_dedupe_key`
+  归一化标题（去 "【...】"/"[...]" ≤12 字前缀、全角空格转半角、多空白折叠、
+  末尾"。"/"."去除）→ 按 score 高的源先入 seen_keys → 有 ts 的按 ts 倒序、
+  缺 ts 的按 source health 紧随
+- `gw.news_headlines()` 公开签名 `(symbol, n) -> List[str]` 保留，
+  内部投影 NewsItem.title
+- ROUTING_POLICY 把 NEWS_HEADLINES 切到 MERGE_LISTS
 
 **验收**：
-- mock 多源给同事件不同标题写法（"【快讯】XXX" vs "XXX"），验证 dedupe
-- mock 同源单条重复，验证 dedupe
-- mock 含 timestamp 的 item，验证按时间排序
-- `news_headlines` 接口签名不变（仍 `(symbol, n) -> List[str]`）
+- _news_dedupe_key 参数化覆盖各归一化规则
+- 跨源同事件不同写法保留 score 高的那条
+- ts 倒序 + 缺 ts 排末尾
+- prov_dict 按"实际入选"条数计（去重失败的源不出现）
+- gw.news_headlines 出口仍 List[str]
+- 既有 EM news 测试全部不破
 
-⏳ 待启动。
+✅ 已完成：commit 3c473b7（G5-1 NewsItem + EM）+ 1fc2537（G5-2 AkShare
+财联社）+ 7969fe4（G5-3 _merged_list_fetch + policy 切换）+ 43d5075
+（G5-4 20 个直接单测）。数据网关 360 用例通过。
 
 ### Sprint 3：数据质量与可观测性
 - G6: 字段级矛盾检测（divergence_pct 超阈值告警）
