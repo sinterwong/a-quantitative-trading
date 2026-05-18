@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import threading
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 def _make_broker(cash: float = 1_000_000, max_pos_pct: float = 0.25):
@@ -25,16 +25,25 @@ def _make_broker(cash: float = 1_000_000, max_pos_pct: float = 0.25):
     b.connect()
     # 跳过外网行情:固定 ref_price
     b._fetch_market_price = lambda sym: 10.0
-    # 跳过 sleep
-    import backend.services.broker as br
-    br.time.sleep = lambda *_: None
     return b, svc
 
 
 class TestPaperBrokerThreadSafety(unittest.TestCase):
+    """跑全部测试时不要污染全局 time.sleep —— 走 patch 上下文,setUp/tearDown 自动恢复。"""
+
+    def setUp(self):
+        # _simulate_fill 里有 time.sleep(0.5) — 测试中 patch 成 no-op 加速,
+        # 必须用 patch 而不是直接给模块属性赋值,否则会泄漏到其他测试。
+        self._sleep_patcher = patch(
+            'backend.services.broker.time.sleep', lambda *_a, **_k: None,
+        )
+        self._sleep_patcher.start()
+
+    def tearDown(self):
+        self._sleep_patcher.stop()
 
     def test_concurrent_order_ids_unique(self):
-        """100 个线程同时下单,order_id 不重复。"""
+        """50 个线程同时下单,order_id 不重复。"""
         b, _svc = _make_broker()
         ids = []
         ids_lock = threading.Lock()

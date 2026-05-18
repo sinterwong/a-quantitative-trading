@@ -410,6 +410,7 @@ class DynamicWeightPipeline(FactorPipeline):
         self._decay_disabled: Dict[str, bool] = {}      # factor_name → 是否因衰减被禁用
         self._factor_status_log: List[Dict] = []        # 因子状态变更日志
 
+        self._persistence_load_ok: bool = True
         if persist:
             try:
                 from core.factor_pipeline_persistence import load_pipeline_state
@@ -420,9 +421,13 @@ class DynamicWeightPipeline(FactorPipeline):
                     self._decay_disabled = disabled
                     self._bars_since_update = bars
             except Exception as exc:  # noqa: BLE001
+                # error 而不是 warning:加载失败 == 静默回退到修复前的"空状态"
+                # 行为(63 天 IC 窗口重新攒),必须显式让 oncall 看到。
+                self._persistence_load_ok = False
                 import logging as _lg
-                _lg.getLogger('core.factor_pipeline').warning(
-                    '[DynamicWeightPipeline] 状态恢复失败,从空状态启动: %s', exc,
+                _lg.getLogger('core.factor_pipeline').error(
+                    '[DynamicWeightPipeline] 状态恢复失败,回退到空状态——'
+                    'IC 窗口和衰减保护将从零累计: %s', exc,
                 )
 
     # ------------------------------------------------------------------

@@ -74,44 +74,40 @@ def load_pipeline_state(
     返回 (ic_history, dynamic_weights, decay_disabled, bars_since_update)。
     任何错误都返回空状态(等价于全新启动),不会抛异常。
     """
-    empty = ({}, {}, {}, 0)
+    empty: Tuple[Dict[str, List[float]], Dict[str, float], Dict[str, bool], int] = ({}, {}, {}, 0)
     conn = _get_conn()
     if conn is None:
         return empty
     try:
-        _ensure_schema(conn)
-        rows = conn.execute(
-            'SELECT factor_name, ic_history, decay_disabled, current_weight,'
-            ' bars_since_update FROM factor_pipeline_state'
-            ' WHERE pipeline_id = ?',
-            (pipeline_id,),
-        ).fetchall()
+        with closing(conn):
+            _ensure_schema(conn)
+            rows = conn.execute(
+                'SELECT factor_name, ic_history, decay_disabled, current_weight,'
+                ' bars_since_update FROM factor_pipeline_state'
+                ' WHERE pipeline_id = ?',
+                (pipeline_id,),
+            ).fetchall()
+
+            ic_history: Dict[str, List[float]] = {}
+            weights: Dict[str, float] = {}
+            disabled: Dict[str, bool] = {}
+            bars: int = 0
+            for name, ic_json, dis, w, b in rows:
+                try:
+                    ic_history[name] = json.loads(ic_json or '[]')
+                except Exception:
+                    ic_history[name] = []
+                weights[name] = float(w or 0.0)
+                disabled[name] = bool(dis)
+                bars = max(bars, int(b or 0))
+            logger.info(
+                'factor_pipeline_state loaded: pipeline=%s n_factors=%d bars=%d',
+                pipeline_id, len(rows), bars,
+            )
+            return ic_history, weights, disabled, bars
     except Exception as exc:
         logger.warning('load_pipeline_state read failed: %s', exc)
-        conn.close()
         return empty
-    finally:
-        # 仅在没异常时保持 conn 可用
-        pass
-
-    ic_history: Dict[str, List[float]] = {}
-    weights: Dict[str, float] = {}
-    disabled: Dict[str, bool] = {}
-    bars: int = 0
-    for name, ic_json, dis, w, b in rows:
-        try:
-            ic_history[name] = json.loads(ic_json or '[]')
-        except Exception:
-            ic_history[name] = []
-        weights[name] = float(w or 0.0)
-        disabled[name] = bool(dis)
-        bars = max(bars, int(b or 0))
-    conn.close()
-    logger.info(
-        'factor_pipeline_state loaded: pipeline=%s n_factors=%d bars=%d',
-        pipeline_id, len(rows), bars,
-    )
-    return ic_history, weights, disabled, bars
 
 
 def save_pipeline_state(

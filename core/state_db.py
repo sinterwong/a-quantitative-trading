@@ -47,6 +47,18 @@ def _migrate_legacy_if_needed() -> None:
             return
         try:
             _CANONICAL_DB.parent.mkdir(parents=True, exist_ok=True)
+            # WAL checkpoint:把 -wal/-shm 中未 checkpoint 的事务刷进主库文件,
+            # 否则 shutil.copy2 只复制主文件 + .bak 改名后, WAL 中未落盘的写
+            # 就永远丢了。TRUNCATE 模式还会清空 WAL 文件,避免后续残留。
+            # 用 try/except 兜底:legacy 不是合法 SQLite(测试桩) 也要继续迁移,
+            # 让"复制 + 改名"行为保持幂等。
+            try:
+                with sqlite3.connect(str(_LEGACY_DB), timeout=10) as _ck:
+                    _ck.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            except sqlite3.DatabaseError as exc:
+                logger.warning(
+                    '[state_db] legacy WAL checkpoint 跳过(非合法 SQLite?): %s', exc,
+                )
             shutil.copy2(_LEGACY_DB, _CANONICAL_DB)
             ts = datetime.now().strftime('%Y%m%d%H%M%S')
             backup = _LEGACY_DB.with_name(f'portfolio.migrated-{ts}.bak')

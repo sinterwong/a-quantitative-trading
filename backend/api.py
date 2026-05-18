@@ -29,6 +29,7 @@ import os
 import sys
 import json
 import time
+import threading
 import traceback
 from datetime import datetime, date
 from functools import wraps
@@ -438,6 +439,10 @@ def _get_or_build_broker():
 
 
 _RISK_ENGINE = None
+# Flask 在多线程 WSGI 下两个请求会并发进入 _get_risk_engine 的懒建分支;
+# 没锁会创建两份 RiskEngine,如果其 __init__ 有副作用(打开 sqlite 句柄、
+# 注册回调) 就会泄漏。锁只保护懒建,共享 StrategyRunner 实例的路径无副作用。
+_RISK_ENGINE_LOCK = threading.Lock()
 
 
 def _get_risk_engine():
@@ -453,11 +458,13 @@ def _get_risk_engine():
     except Exception:
         pass
     if _RISK_ENGINE is None:
-        try:
-            from core.risk_engine import RiskEngine
-            _RISK_ENGINE = RiskEngine()
-        except Exception:
-            return None
+        with _RISK_ENGINE_LOCK:
+            if _RISK_ENGINE is None:
+                try:
+                    from core.risk_engine import RiskEngine
+                    _RISK_ENGINE = RiskEngine()
+                except Exception:
+                    return None
     return _RISK_ENGINE
 
 
@@ -485,6 +492,31 @@ def submit_order():
 
     symbol = body['symbol']
     price = float(body.get('price', 0))
+    price_type = body.get('price_type', 'market')
+
+    # 市价单调用方通常不带 price,但 RiskEngine 的多数规则(单笔金额、组合
+    # 占比、CVaR 估算)需要金额才能算。price=0 等于绕过这些规则 ⇒ 必须先
+    # 拿到一个参考价。复用 broker 的 _fetch_market_price(失败返回 0),
+    # 失败时直接拒单而不是用 0 通过风控。
+    broker = _get_or_build_broker()
+    if price <= 0:
+        ref = 0.0
+        try:
+            fetch = getattr(broker, '_fetch_market_price', None)
+            if fetch is not None:
+                ref = float(fetch(symbol) or 0.0)
+        except Exception:
+            ref = 0.0
+        if ref <= 0:
+            return jsonify({
+                'status': 'error',
+                'error': 'market order needs a reference price (broker fetch failed)',
+                'code': 'NO_REF_PRICE',
+                'timestamp': datetime.now().isoformat(),
+            }), 503
+        risk_price = ref
+    else:
+        risk_price = price
 
     # ── PreTrade 风控（与 IntradayMonitor 同一道门控）────────────
     re = _get_risk_engine()
@@ -493,7 +525,7 @@ def submit_order():
             from core.factors.base import Signal as _Sig
             sig = _Sig(
                 timestamp=datetime.now(), symbol=symbol, direction=direction,
-                strength=1.0, factor_name='API', price=price,
+                strength=1.0, factor_name='API', price=risk_price,
             )
             rr = re.check(sig)
             if not rr.passed:
@@ -513,10 +545,10 @@ def submit_order():
                 'timestamp': datetime.now().isoformat(),
             }), 503
 
-    result = _get_or_build_broker().submit_order(
+    result = broker.submit_order(
         symbol=symbol, direction=direction, shares=shares,
         price=price,
-        price_type=body.get('price_type', 'market'),
+        price_type=price_type,
     )
     return ok(
         order_id=result.order_id, status=result.status,

@@ -11,6 +11,7 @@ quant_app/run_worker.py — Scheduler + IntradayMonitor + StrategyRunner (P3-2)
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -39,7 +40,6 @@ def _save_trade_calendar_cache(dates: set) -> None:
     """成功从 AKShare 拿到日历时,把结果写到 data/trade_calendar.json。
     后续 AKShare 不可用时优先用这份缓存,而不是退化成"周一到周五"。"""
     try:
-        import json as _json
         os.makedirs(os.path.dirname(_TRADE_CAL_CACHE), exist_ok=True)
         payload = {
             'fetched_at': datetime.now().isoformat(timespec='seconds'),
@@ -47,7 +47,7 @@ def _save_trade_calendar_cache(dates: set) -> None:
         }
         tmp = _TRADE_CAL_CACHE + '.tmp'
         with open(tmp, 'w', encoding='utf-8') as f:
-            _json.dump(payload, f, ensure_ascii=False)
+            json.dump(payload, f, ensure_ascii=False)
         os.replace(tmp, _TRADE_CAL_CACHE)
     except Exception as exc:
         logging.getLogger('backend.scheduler').warning(
@@ -60,9 +60,8 @@ def _load_trade_calendar_cache():
     if not os.path.exists(_TRADE_CAL_CACHE):
         return None, None
     try:
-        import json as _json
         with open(_TRADE_CAL_CACHE, encoding='utf-8') as f:
-            data = _json.load(f)
+            data = json.load(f)
         dates = set(data.get('dates') or [])
         fetched_at = data.get('fetched_at')
         fetched_dt = datetime.fromisoformat(fetched_at) if fetched_at else None

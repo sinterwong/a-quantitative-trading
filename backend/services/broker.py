@@ -36,6 +36,7 @@ import time
 import random
 import sqlite3
 import logging
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, date
@@ -166,8 +167,7 @@ class PaperBroker(BrokerBase):
         #   - "查现金 → 下单 → 写持仓" 三步在 broker 视角是原子的
         #     (PortfolioService 内有 _WRITE_LOCK,但跨多步不够)
         #   - _orders 列表迭代/追加不冲突
-        import threading as _threading
-        self._lock = _threading.RLock()
+        self._lock = threading.RLock()
 
     def connect(self) -> bool:
         logger.info('PaperBroker: connected (no-op)')
