@@ -27,7 +27,7 @@ import pandas as pd
 
 from ..capabilities import Capability, Market, ProviderCapability
 from ..http import HttpClient, HttpError, get_http_client
-from ..schemas import MarketIndexSnapshot, Quote, SectorRanking
+from ..schemas import MarketIndexSnapshot, Quote, SectorConstituent, SectorRanking
 from ..symbols import detect_market, normalize_to_sina, safe_float
 from .base import Provider, ProviderError
 
@@ -35,6 +35,10 @@ logger = logging.getLogger("data_gateway.sina")
 
 _QUOTE_URL = "https://hq.sinajs.cn/list="
 _SINA_SECTORS_URL = "https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php"
+_SINA_CONSTITUENTS_URL = (
+    "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php"
+    "/Market_Center.getHQNodeData"
+)
 _KLINE_URL = (
     "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php"
     "/CN_MarketData.getKLineData"
@@ -153,8 +157,9 @@ class SinaProvider(Provider):
                 Capability.QUOTE,
                 Capability.KLINE_DAILY,
                 Capability.KLINE_MINUTE,
-                Capability.MARKET_INDEX,   # 新浪 hq.sinajs.cn/list=s_sh000001 指数接口
-                Capability.SECTOR_RANKING,  # 新浪行业板块（东方财富断连时备用）
+                Capability.MARKET_INDEX,       # 新浪 hq.sinajs.cn/list=s_sh000001 指数接口
+                Capability.SECTOR_RANKING,     # 新浪行业板块（东方财富断连时备用）
+                Capability.SECTOR_CONSTITUENTS, # 新浪 Market_Center.getHQNodeData 板块成分股
             }),
             markets=frozenset({Market.A, Market.INDEX, Market.HK}),
             priority_hint=0.80,
@@ -174,6 +179,10 @@ class SinaProvider(Provider):
         # MARKET_INDEX 不支持美股（新浪美股指数接口不同）
         if capability == Capability.MARKET_INDEX and market == Market.US:
             return False
+        # SECTOR_CONSTITUENTS / SECTOR_RANKING 支持 GLOBAL market（板块代码与A股市场无关）
+        if capability in (Capability.SECTOR_CONSTITUENTS, Capability.SECTOR_RANKING):
+            if market == Market.GLOBAL:
+                return True
         return super().supports(capability, market)
 
     def field_authority(self) -> Dict[Capability, Dict[str, float]]:
@@ -408,6 +417,67 @@ class SinaProvider(Provider):
                 rank_flow=0,
             ))
         return result[:limit]
+
+    # ── SECTOR_CONSTITUENTS ───────────────────────────────────────────────────
+
+    def fetch_sector_constituents(
+        self,
+        code: str,
+        limit: int = 20,
+    ) -> List[SectorConstituent]:
+        """新浪行业板块成分股（Market_Center.getHQNodeData）。
+
+        code 格式支持:
+          - 'SINA_new_xxx'  → strip 前缀后得 'new_xxx'
+          - 'new_xxx'       → 直接使用
+        """
+        # 剥离 SINA_ 前缀（gateway 传入的 sector code 带此前缀）
+        node_code = code
+        if node_code.startswith("SINA_"):
+            node_code = node_code.split("_", 1)[1]
+
+        params = {
+            "num": limit,
+            "sort": "change",     # 按涨幅排序
+            "asc": 0,             # 降序
+            "node": node_code,
+            "_s_r_a": "page",
+        }
+        try:
+            text = self._http.get_text(
+                _SINA_CONSTITUENTS_URL,
+                params=params,
+                headers={"Referer": "https://finance.sina.com.cn/"},
+                encoding="utf-8",
+            )
+        except HttpError as exc:
+            raise ProviderError(f"sina.fetch_sector_constituents({code}): {exc}") from exc
+
+        try:
+            records = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ProviderError(
+                f"sina.fetch_sector_constituents({code}): JSON 解析失败: {exc}"
+            ) from exc
+
+        if not isinstance(records, list):
+            return []
+
+        result: List[SectorConstituent] = []
+        for rec in records:
+            sym = str(rec.get("symbol", ""))
+            name = str(rec.get("name", ""))
+            if not sym or not name:
+                continue
+            result.append(SectorConstituent(
+                symbol=sym,                     # e.g. 'sh600176'
+                name=name,
+                price=float(rec.get("trade") or 0),
+                change_pct=float(rec.get("changepercent") or 0),
+                amount=float(rec.get("amount") or 0),
+                volume=float(rec.get("volume") or 0),
+            ))
+        return result
 
 
 __all__ = ["SinaProvider"]
