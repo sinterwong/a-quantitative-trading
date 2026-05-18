@@ -11,7 +11,9 @@ akshare 实测稳定性差,只在无替代方案的数据类型上保留:
 
 from __future__ import annotations
 
+import json
 import logging
+import random
 import re
 
 import pandas as pd
@@ -734,42 +736,71 @@ class AkshareProvider(Provider):
     # ─── NEWS_HEADLINES ──────────────────────────────────────────────────────
 
     def fetch_news_headlines(self, symbol: str, n: int = 20) -> list:
-        """通过 AkShare stock_news_em 获取个股新闻标题列表(最新在前)。
+        """通过 EastMoney 快讯接口获取实时财经资讯列表（最新在前）。
+
+        注意：东方财富无免费个股新闻 API，本接口返回全市场快讯，
+        不是真正的个股新闻。这是数据层已知缺口，调用方应将此视为
+        宽泛财经舆情而非精准个股事件。
+
+        数据源：https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_{pagesize}_{page}_.html
 
         Returns
         -------
         List[str]
-            最多 n 条新闻标题。空列表表示无数据。
+            最多 n 条财经快讯标题。空列表表示网络失败。
         """
         try:
-            import akshare as ak
+            import requests as _requests
         except ImportError:
-            logger.debug("akshare 未安装,跳过 news_headlines 请求")
+            logger.debug("requests 未安装,跳过 news_headlines 请求")
             return []
 
-        # 去掉后缀,接口接受 6 位代码
-        code = symbol.split(".")[0]
-        if code.lower().startswith(("sh", "sz")):
-            code = code[2:]
+        page_size = min(n, 20)
+        url = f"https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_{page_size}_1_.html"
 
         try:
-            df = ak.stock_news_em(symbol=code)
+            r = _requests.get(url, timeout=8, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://www.eastmoney.com/",
+            })
+            raw = r.text
         except Exception as exc:
             raise ProviderError(f"akshare.fetch_news_headlines({symbol}): {exc}") from exc
 
-        if df is None or df.empty:
+        if not raw:
             return []
 
-        title_col = None
-        for col in ("标题", "title", "新闻标题", "news_title"):
-            if col in df.columns:
-                title_col = col
+        # 解析 JSONP：var ajaxResult={...}
+        import re as _re
+
+        m = _re.search(r"\{.*\}", raw, _re.DOTALL)
+        if m is None:
+            return []
+
+        try:
+            data = json.loads(m.group())
+        except Exception:
+            return []
+
+        lives = data.get("LivesList", [])
+        if not isinstance(lives, list):
+            return []
+
+        titles = []
+        for item in lives:
+            # 优先取 title，其次 content（content 是完整段落，截取前50字）
+            title = item.get("title", "") or item.get("content", "")
+            title = str(title).strip()
+            if not title:
+                continue
+            # content 段落过长时截断
+            if item.get("title") is None and len(title) > 60:
+                title = title[:57] + "..."
+            titles.append(title)
+            if len(titles) >= n:
                 break
-        if title_col is None:
-            return []
 
-        headlines = df[title_col].dropna().tolist()[:n]
-        return [str(h).strip() for h in headlines if h]
+        return titles
 
 
 __all__ = ["AkshareProvider"]
