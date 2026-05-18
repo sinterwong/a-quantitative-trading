@@ -524,10 +524,8 @@ class DataGateway:
             return cached
 
         market = detect_market(symbol)
-        merged, prov = self._merged_fetch(
-            Capability.QUOTE, market, "fetch_quote",
-            ("symbol", "code", "market", "name", "currency"),
-            symbol,
+        merged, prov = self._route(
+            Capability.QUOTE, market, "fetch_quote", symbol,
         )
         if merged is not None:
             self._cache.set(cache_key, merged, _DEFAULT_TTL[Capability.QUOTE])
@@ -581,12 +579,13 @@ class DataGateway:
                         Candidate(provider.name, q, health=score, authority=authority)
                     )
 
+            quotes_skip = get_policy(
+                Capability.QUOTE, "fetch_quotes",
+            ).skip_fields
             for s, cands in buckets.items():
                 if not cands:
                     continue
-                merged, prov = merge_field_level(
-                    cands, skip_fields=("symbol", "code", "market", "name", "currency"),
-                )
+                merged, prov = merge_field_level(cands, skip_fields=quotes_skip)
                 if merged is None:
                     continue
                 result[s] = merged
@@ -619,21 +618,20 @@ class DataGateway:
 
         # G1: K 线走多源列级合并(腾讯/新浪/Baostock OHLCV 互补 + 高分胜出)
         # G3: 首次拉取时用"宽窗口"，覆盖未来其他窗口请求
+        # G4: 策略 (MERGE_FRAMES, ffill=False) 由 ROUTING_POLICY 声明
         wide = _WIDE_FETCH.get(cap, {})
         if is_minute:
             fetch_limit = max(limit, wide.get("limit", limit))
-            merged, prov = self._merged_history_fetch(
+            merged, prov = self._route(
                 cap, market, "fetch_kline_minute",
                 symbol, interval=interval, limit=fetch_limit,
-                ffill=False,    # K 线缺失多为停牌，不应 ffill
             )
         else:
             fetch_days = max(days, wide.get("days", days))
             fetch_limit = max(limit, wide.get("limit", limit))
-            merged, prov = self._merged_history_fetch(
+            merged, prov = self._route(
                 cap, market, "fetch_kline_daily",
                 symbol, days=fetch_days, adjust=adjust, limit=fetch_limit,
-                ffill=False,
             )
         if not merged.empty:
             ttl = 60.0 if is_minute else 300.0
@@ -649,10 +647,8 @@ class DataGateway:
             return cached
 
         market = Market.GLOBAL  # 基本面数据跨市场统一，用 GLOBAL 查所有 provider
-        merged, prov = self._merged_fetch(
-            Capability.FUNDAMENTALS, market, "fetch_fundamentals",
-            ("symbol", "name", "industry", "sector"),
-            symbol,
+        merged, prov = self._route(
+            Capability.FUNDAMENTALS, market, "fetch_fundamentals", symbol,
         )
         if merged is not None:
             # PE/PB 由腾讯实时行情补充（akshare 财报接口不含此字段）
@@ -672,12 +668,13 @@ class DataGateway:
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
-        result, _ = self._sequential_fetch(
+        result, prov = self._route(
             Capability.SECTOR_RANKING, Market.A, "fetch_sectors", limit,
         )
         out = result or []
         if out:
             self._cache.set(cache_key, out, _DEFAULT_TTL[Capability.SECTOR_RANKING])
+            self._last_provenance[cache_key] = prov
         return out
 
     def sector_constituents(
@@ -689,13 +686,14 @@ class DataGateway:
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
-        result, _ = self._sequential_fetch(
+        result, prov = self._route(
             Capability.SECTOR_CONSTITUENTS, Market.GLOBAL,
             "fetch_sector_constituents", code, limit,
         )
         out = result or []
         if out:
             self._cache.set(cache_key, out, _DEFAULT_TTL[Capability.SECTOR_CONSTITUENTS])
+            self._last_provenance[cache_key] = prov
         return out
 
     def north_flow(self) -> Optional[NorthFlow]:
@@ -703,11 +701,12 @@ class DataGateway:
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
-        result, _ = self._sequential_fetch(
+        result, prov = self._route(
             Capability.NORTH_FLOW, Market.GLOBAL, "fetch_north_flow",
         )
         if result is not None:
             self._cache.set(cache_key, result, _DEFAULT_TTL[Capability.NORTH_FLOW])
+            self._last_provenance[cache_key] = prov
         return result
 
     def north_flow_history(self, days: int = 252) -> pd.DataFrame:
@@ -727,11 +726,11 @@ class DataGateway:
 
         # G1: 走列级合并(north / south 两列可能来自不同源)
         # 拉取时用最宽窗口，覆盖未来 days 请求
+        # G4: 策略 (MERGE_FRAMES, ffill=False) 由 ROUTING_POLICY 声明
         wide_days = max(days, _WIDE_FETCH.get(Capability.NORTH_FLOW, {}).get("days", days))
-        merged, prov = self._merged_history_fetch(
+        merged, prov = self._route(
             Capability.NORTH_FLOW, Market.GLOBAL,
             "fetch_north_flow_history", wide_days,
-            ffill=False,
         )
         if not merged.empty:
             # 历史数据 4h 缓存(每日收盘后更新)
@@ -746,16 +745,17 @@ class DataGateway:
             return cached
         # 指数市场:腾讯支持 usSPY/hkHSI(对应 US/HK),其他归 GLOBAL
         market = detect_market(code)
-        result, _ = self._sequential_fetch(
+        result, prov = self._route(
             Capability.MARKET_INDEX, market, "fetch_market_index", code,
         )
         if result is None:
             # 兜底:用 GLOBAL 路由(yfinance)
-            result, _ = self._sequential_fetch(
+            result, prov = self._route(
                 Capability.MARKET_INDEX, Market.GLOBAL, "fetch_market_index", code,
             )
         if result is not None:
             self._cache.set(cache_key, result, _DEFAULT_TTL[Capability.MARKET_INDEX])
+            self._last_provenance[cache_key] = prov
         return result
 
     def macro(self, indicator: MacroIndicator) -> pd.DataFrame:
@@ -764,12 +764,13 @@ class DataGateway:
         cached = self._cache_get(Capability.MACRO, cache_key)
         if cached is not None:
             return cached
-        result, _ = self._sequential_fetch(
+        result, prov = self._route(
             Capability.MACRO, Market.GLOBAL, "fetch_macro", indicator,
         )
         df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
         if not df.empty:
             self._cache_set(Capability.MACRO, cache_key, df)
+            self._last_provenance[cache_key] = prov
         return df
 
     def balance_sheet(self, symbol: str) -> Optional[BalanceSheet]:
@@ -785,10 +786,8 @@ class DataGateway:
             return cached
 
         market = detect_market(symbol)
-        merged, prov = self._merged_fetch(
-            Capability.BALANCE_SHEET, market, "fetch_balance_sheet",
-            ("symbol",),
-            symbol,
+        merged, prov = self._route(
+            Capability.BALANCE_SHEET, market, "fetch_balance_sheet", symbol,
         )
         if merged is not None:
             self._cache.set(cache_key, merged, _DEFAULT_TTL[Capability.BALANCE_SHEET])
@@ -811,13 +810,14 @@ class DataGateway:
         if cached is not None:
             return cached
 
-        result, _ = self._sequential_fetch(
+        result, prov = self._route(
             Capability.MARGIN_FLOW, Market.GLOBAL,
             "fetch_margin_flow", symbol, start, end,
         )
         df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
         if not df.empty:
             self._cache_set(Capability.MARGIN_FLOW, cache_key, df)
+            self._last_provenance[cache_key] = prov
         return df
 
     def news_headlines(self, symbol: str, n: int = 20) -> list:
@@ -833,13 +833,14 @@ class DataGateway:
         if cached is not None:
             return cached
 
-        result, _ = self._sequential_fetch(
+        result, prov = self._route(
             Capability.NEWS_HEADLINES, Market.GLOBAL,
             "fetch_news_headlines", symbol, n,
         )
         headlines = result if isinstance(result, list) else []
         if headlines:
             self._cache.set(cache_key, headlines, _DEFAULT_TTL[Capability.NEWS_HEADLINES])
+            self._last_provenance[cache_key] = prov
         return headlines
 
     def fund_flow(
@@ -861,10 +862,10 @@ class DataGateway:
 
         # G1: 走列级合并(为未来接入第二个资金流源做准备)
         # 拉取时不传 start/end，让 provider 给最长可得序列
-        merged, prov = self._merged_history_fetch(
+        # G4: 策略 (MERGE_FRAMES, ffill=False) 由 ROUTING_POLICY 声明
+        merged, prov = self._route(
             Capability.FUND_FLOW, Market.GLOBAL,
             "fetch_fund_flow", symbol, None, None,
-            ffill=False,
         )
         if not merged.empty:
             self._cache_set(Capability.FUND_FLOW, cache_key, merged)
@@ -892,10 +893,10 @@ class DataGateway:
 
         # G1: 用 _merged_history_fetch 统一处理多源列级合并
         # G3: 拉取时不传 start/end，让 provider 给出可得的最长序列
-        merged, prov = self._merged_history_fetch(
+        # G4: 策略 (MERGE_FRAMES, ffill=True) 由 ROUTING_POLICY 声明
+        merged, prov = self._route(
             Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
             "fetch_fundamentals_history", symbol, None, None,
-            ffill=True,    # 季报稀疏 → 日频前向填充
         )
         if merged.empty:
             return pd.DataFrame()
@@ -1092,16 +1093,17 @@ class DataGateway:
         if prof.balance_sheet is not None:
             out["balance_sheet"] = primary(self.provenance(f"balance_sheet:{symbol}"))
         if prof.margin is not None:
-            # margin_flow 当前用 _sequential_fetch（单源）不写 provenance，
-            # 这里 best-effort
+            # G4 起 FAILOVER 也写 {"_provider": name}，primary 可正确返回源
             out["margin"] = primary(self.provenance(f"margin_flow:{symbol}:None:None"))
         if prof.fund_flow_latest is not None:
             out["fund_flow"] = primary(self.provenance(f"fund_flow:{symbol}"))
         if prof.headlines:
-            # news_headlines 也未写 provenance，留空字符串
+            # headlines / macro 的 cache_key 还含运行时参数 (n / indicator)，
+            # _collect_profile_provenance 拿不到 → 暂留空，后续若需要可改
+            # 让 profile() 把 cache_key 显式传进来。
             out["headlines"] = ""
         if prof.macro is not None:
-            out["macro"] = ""    # macro 单源，留空
+            out["macro"] = ""
         return {k: v for k, v in out.items() if v or k in ("headlines", "macro")}
 
     # ── 监控 / 调试 ──────────────────────────────────────────────────────────
