@@ -38,10 +38,10 @@ slip = c3.number_input('滑点 bps', min_value=0.0, max_value=100.0,
 
 st.markdown('#### 策略列表(`st.data_editor` 内联编辑)')
 st.caption('factor_name 可填 RSI / MACDTrend / Bollinger / ATR 等(由 backend FactorRegistry 决定);'
-           'params_json 是合法 JSON,如 `{"window": 14}`。')
+           ' params_json 是合法 JSON,如 `{"period": 14}`。')
 
 default_strategies = pd.DataFrame([
-    {'factor_name': 'RSI', 'threshold': 1.0, 'params_json': '{"window": 14}'},
+    {'factor_name': 'RSI', 'threshold': 1.0, 'params_json': '{"period": 14}'},
 ])
 edited = st.data_editor(
     default_strategies, num_rows='dynamic', use_container_width=True,
@@ -53,7 +53,7 @@ edited = st.data_editor(
     },
 )
 
-run_btn = st.button('🚀 运行回测', type='primary', disabled=not sym)
+run_btn = st.button('🚀 运行回测', type='primary', disabled=not sym or len(edited) == 0)
 st.markdown('---')
 
 if run_btn:
