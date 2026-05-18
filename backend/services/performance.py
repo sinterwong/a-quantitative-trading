@@ -313,7 +313,9 @@ def generate_monthly_report(
     realized_pnl = summary.get('realized_pnl', 0)
 
     # ── 收益率 ──
-    returns = compute_returns(total_equity)
+    # 用实际初始资金（来自 cash 表）而非硬编码 INITIAL_CAPITAL
+    initial_cash = summary.get('cash', INITIAL_CAPITAL)  # cash 表的 initial_cash
+    returns = compute_returns(total_equity, initial=initial_cash)
 
     # ── 交易统计 ──
     trades = svc.get_orders(status='filled', limit=500)
