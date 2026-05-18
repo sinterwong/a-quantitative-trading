@@ -99,11 +99,20 @@ if run_btn:
 res = st.session_state.get('_bt_result')
 if res:
     st.markdown('#### 结果')
+    _tr = res.get('total_return')
+    _ar = res.get('annual_return')
+    _dd = res.get('max_drawdown_pct')
     kpi_row([
-        {'label': '累计收益', 'value': fmt_pct(res.get('total_return'), signed=True)},
-        {'label': '年化收益', 'value': fmt_pct(res.get('annual_return'), signed=True)},
+        {'label': '累计收益',
+         'value': fmt_pct(_tr, signed=True) if _tr is not None else '—',
+         'raw': f'{_tr*100:.2f}%' if isinstance(_tr, (int, float)) else '—'},
+        {'label': '年化收益',
+         'value': fmt_pct(_ar, signed=True) if _ar is not None else '—',
+         'raw': f'{_ar*100:.2f}%' if isinstance(_ar, (int, float)) else '—'},
         {'label': '夏普', 'value': fmt_num(res.get('sharpe'), decimals=2)},
-        {'label': '最大回撤', 'value': fmt_pct(res.get('max_drawdown_pct'))},
+        {'label': '最大回撤',
+         'value': fmt_pct(_dd) if _dd is not None else '—',
+         'raw': f'{_dd*100:.2f}%' if isinstance(_dd, (int, float)) else '—'},
         {'label': '胜率', 'value': fmt_pct(res.get('win_rate'))},
     ])
     kpi_row([
