@@ -1149,6 +1149,46 @@ def test_merged_history_fetch_no_candidates_returns_empty(gw):
     assert prov == {}
 
 
+def test_merged_history_fetch_object_column_does_not_raise(gw):
+    """pandas ≥ 2.2 移除了 pd.to_numeric(errors='ignore')，旧代码在 object
+    列上会抛 ValueError。本回归保证：
+
+      - 列里混入字符串（如 'N/A'）时合并不抛异常
+      - 该列保持 object dtype（无法整体转 numeric，按"保留原状"语义处理）
+      - 邻近的纯数值列被合并后仍是 numeric dtype
+    """
+    idx = pd.to_datetime(["2024-03-31", "2024-06-30"])
+    df_a = pd.DataFrame(
+        {"roe_ttm": [10.0, 11.0], "note": ["A", "N/A"]}, index=idx,
+    )
+    df_b = pd.DataFrame(
+        {"roe_ttm": [9.5, None], "note": [None, "B"]}, index=idx,
+    )
+    a = _FakeProvider("a", priority_hint=0.9,
+                      capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                      markets=(Market.GLOBAL,),
+                      fundamentals_history_value=df_a)
+    b = _FakeProvider("b", priority_hint=0.3,
+                      capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                      markets=(Market.GLOBAL,),
+                      fundamentals_history_value=df_b)
+    gw.register_provider(a)
+    gw.register_provider(b)
+
+    merged, _ = gw._merged_history_fetch(
+        Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
+        "fetch_fundamentals_history", "sh600519", None, None,
+        ffill=False,
+    )
+    # 关键：不抛异常即过；下面只做轻量结构断言
+    assert "roe_ttm" in merged.columns
+    assert "note" in merged.columns
+    # roe_ttm 仍是 numeric，note 保留 non-numeric（object 或 pandas 3.0
+    # 的 StringDtype 均可，反正不是数值列）
+    assert pd.api.types.is_numeric_dtype(merged["roe_ttm"])
+    assert not pd.api.types.is_numeric_dtype(merged["note"])
+
+
 def test_kline_daily_persists_kline_minute_does_not(tmp_path):
     """KLINE_DAILY 在白名单内落盘；KLINE_MINUTE 不在白名单不落盘。"""
     cache_dir = str(tmp_path / "gw_cache")

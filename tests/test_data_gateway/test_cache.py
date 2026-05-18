@@ -215,8 +215,3 @@ def test_tiered_without_disk_degrades_to_memory_only(tmp_path):
     assert c.get("k", disk_ttl=86400) is None
 
 
-def test_tiered_exposes_store_for_backward_compat(tiered):
-    """gateway.invalidate_fundamentals_history 直接戳 _store / _lock，需要 expose。"""
-    tiered.set("foo:bar", pd.DataFrame({"x": [1]}), ttl=10)
-    assert "foo:bar" in tiered._store
-    assert tiered._lock is not None

@@ -93,6 +93,9 @@ _WIDE_FETCH = {
     Capability.KLINE_DAILY: {"days": 730, "limit": 730},          # 2 年
     Capability.KLINE_MINUTE: {"limit": 500},                       # 500 根
     Capability.NORTH_FLOW: {"days": 1825},                         # 5 年
+    # G3: news 也走"全量缓存 + 出口切片"——同 symbol 不同 n 共享同一缓存。
+    # EM kuaixun 单页上限 20，AkShare 财联社可给更多，50 已足够日常显示需求。
+    Capability.NEWS_HEADLINES: {"n": 50},
 }
 
 
@@ -236,6 +239,11 @@ class DataGateway:
         self._executor = ThreadPoolExecutor(
             max_workers=max_parallel, thread_name_prefix="gw"
         )
+        # profile() 用的独立池：与 self._executor 分离以避免嵌套提交死锁
+        # （外层切片任务又会向 _executor 提交内层 fan-out 调用）。
+        # 懒创建，避免不调 profile() 的场景白白占线程。
+        self._profile_executor: Optional[ThreadPoolExecutor] = None
+        self._profile_executor_lock = threading.Lock()
 
     # ── 缓存读写辅助(自动应用 L2 落盘白名单) ──────────────────────────────
 
@@ -478,11 +486,15 @@ class DataGateway:
         if ffill:
             merged = merged.ffill()
 
-        # 尽量保持数值列的 numeric dtype（reindex/combine_first 可能引入 object）
+        # 尽量保持数值列的 numeric dtype（reindex/combine_first 可能引入 object）。
+        # pandas ≥ 2.2 起 errors='ignore' 已移除（3.0 直接抛 ValueError），
+        # 改用 try/except 保留"能转就转、转不了就保留 object"的旧语义。
         for col in merged.columns:
             if merged[col].dtype == object:
-                converted = pd.to_numeric(merged[col], errors="ignore")
-                merged[col] = converted
+                try:
+                    merged[col] = pd.to_numeric(merged[col], errors="raise")
+                except (ValueError, TypeError):
+                    pass
 
         return merged, provenance
 
@@ -946,7 +958,13 @@ class DataGateway:
         return df
 
     def news_headlines(self, symbol: str, n: int = 20) -> List[str]:
-        """新闻标题列表（FAILOVER；G5-3 切到 MERGE_LISTS 多源去重+时间排序）。
+        """新闻标题列表（MERGE_LISTS：EM kuaixun + AkShare 财联社电报多源
+        去重 + 时间倒序）。
+
+        ⚠️ 当前两个 provider（EM kuaixun、AkShare 财联社电报）都是**全市场
+        快讯**接口，symbol 参数被它们忽略——任何 symbol 都会拿到相同结果。
+        保留 symbol 入参是为未来接入个股粒度新闻源（如腾讯个股资讯）留口子，
+        缓存键仍按 symbol 分桶。
 
         Returns
         -------
@@ -957,14 +975,17 @@ class DataGateway:
         投影为 title 字符串列表，保持调用方签名不变。
         """
         from .schemas import NewsItem
-        cache_key = f"news_headlines:{symbol}:{n}"
+        # G3: cache key 不含 n，缓存最大量列表，出口处 [:n] 切片
+        cache_key = f"news_headlines:{symbol}"
         cached = self._cache.get(cache_key)
         if cached is not None:
-            return cached
+            return cached[:n]
 
+        # G3: 首次 miss 时按"宽 n"拉，让后续不同 n 共享同一缓存
+        wide_n = max(n, _WIDE_FETCH.get(Capability.NEWS_HEADLINES, {}).get("n", n))
         result, prov = self._route(
             Capability.NEWS_HEADLINES, Market.GLOBAL,
-            "fetch_news_headlines", symbol, n,
+            "fetch_news_headlines", symbol, wide_n,
         )
         items = result if isinstance(result, list) else []
         # 兜底：旧 fixture / 第三方 mock 可能还返回 List[str]
@@ -974,7 +995,7 @@ class DataGateway:
         if headlines:
             self._cache.set(cache_key, headlines, _DEFAULT_TTL[Capability.NEWS_HEADLINES])
             self._last_provenance[cache_key] = prov
-        return headlines
+        return headlines[:n]
 
     def fund_flow(
         self, symbol: str, start: str | None = None, end: str | None = None,
@@ -1041,6 +1062,20 @@ class DataGateway:
 
     # ── G2: 聚合视图 profile() ──────────────────────────────────────────────
 
+    def _get_profile_executor(self) -> ThreadPoolExecutor:
+        """懒创建并复用 profile 专用线程池。
+
+        与 self._executor 物理隔离避免嵌套提交死锁；workers=9 对应当前
+        profile() 切片数（保持每次调用都能完全并发，不串行任何切片）。
+        """
+        if self._profile_executor is None:
+            with self._profile_executor_lock:
+                if self._profile_executor is None:
+                    self._profile_executor = ThreadPoolExecutor(
+                        max_workers=9, thread_name_prefix="gw_profile",
+                    )
+        return self._profile_executor
+
     def profile(self, symbol: str, *, headlines_n: int = 10) -> StockProfile:
         """聚合所有 capability 的"信息包"：一次调用拿到该标的当前已知全部信息。
 
@@ -1057,37 +1092,33 @@ class DataGateway:
         Returns:
             StockProfile，含 completeness（0-1）和 provenance（每切片主源）。
         """
-        # 并发触发所有切片
-        # 用独立 executor 避免与 self._executor 嵌套提交导致的死锁：
-        # 主执行器在多个 profile 切片内继续 fan-out 到 _merged_fetch /
-        # _merged_history_fetch，如果它们共享同一池，外层任务会占满 worker，
-        # 内层任务永远等不到空闲槽位 → deadlock。
+        # 并发触发所有切片，复用 self._profile_executor（与 self._executor
+        # 物理隔离，避免外层切片任务占满槽位、内层 _merged_fetch fan-out
+        # 永远等不到 worker → deadlock）。
         ind_pmi = MacroIndicator.PMI
         ind_m2 = MacroIndicator.M2
         ind_credit = MacroIndicator.CREDIT
 
+        pool = self._get_profile_executor()
         results: Dict[str, Any] = {}
-        with ThreadPoolExecutor(
-            max_workers=9, thread_name_prefix="gw_profile",
-        ) as pool:
-            futures: Dict[Any, str] = {
-                pool.submit(self._safe_call, self.quote, symbol): "quote",
-                pool.submit(self._safe_call, self.fundamentals, symbol): "fundamentals",
-                pool.submit(self._safe_call, self.balance_sheet, symbol): "balance_sheet",
-                pool.submit(self._safe_call, self.margin_flow, symbol): "margin_df",
-                pool.submit(self._safe_call, self.fund_flow, symbol): "fund_df",
-                pool.submit(self._safe_call, self.news_headlines, symbol, headlines_n): "headlines",
-                pool.submit(self._safe_call, self.macro, ind_pmi): "macro_pmi",
-                pool.submit(self._safe_call, self.macro, ind_m2): "macro_m2",
-                pool.submit(self._safe_call, self.macro, ind_credit): "macro_credit",
-            }
-            for fut in as_completed(futures):
-                slot = futures[fut]
-                try:
-                    results[slot] = fut.result()
-                except Exception as exc:
-                    logger.debug("profile slot %s 失败: %s", slot, exc)
-                    results[slot] = None
+        futures: Dict[Any, str] = {
+            pool.submit(self._safe_call, self.quote, symbol): "quote",
+            pool.submit(self._safe_call, self.fundamentals, symbol): "fundamentals",
+            pool.submit(self._safe_call, self.balance_sheet, symbol): "balance_sheet",
+            pool.submit(self._safe_call, self.margin_flow, symbol): "margin_df",
+            pool.submit(self._safe_call, self.fund_flow, symbol): "fund_df",
+            pool.submit(self._safe_call, self.news_headlines, symbol, headlines_n): "headlines",
+            pool.submit(self._safe_call, self.macro, ind_pmi): "macro_pmi",
+            pool.submit(self._safe_call, self.macro, ind_m2): "macro_m2",
+            pool.submit(self._safe_call, self.macro, ind_credit): "macro_credit",
+        }
+        for fut in as_completed(futures):
+            slot = futures[fut]
+            try:
+                results[slot] = fut.result()
+            except Exception as exc:
+                logger.debug("profile slot %s 失败: %s", slot, exc)
+                results[slot] = None
 
         prof = StockProfile(symbol=symbol)
         prof.quote = results.get("quote")
@@ -1209,7 +1240,11 @@ class DataGateway:
     def _collect_profile_provenance(
         self, symbol: str, prof: StockProfile,
     ) -> Dict[str, str]:
-        """从 _last_provenance 抽取每个切片的主源(出现频率最高的 provider)。"""
+        """从 _last_provenance 抽取每个切片的主源(出现频率最高的 provider)。
+
+        仅返回成功查到源的切片：未命中 / 无 provenance 的不出现，调用方
+        可以放心地以 `provenance.get(slot)` 判断"是否知道这个切片来自哪"。
+        """
         from collections import Counter
 
         def primary(prov_dict: Dict[str, str]) -> str:
@@ -1218,26 +1253,38 @@ class DataGateway:
             counts = Counter(prov_dict.values())
             return counts.most_common(1)[0][0]
 
-        out: Dict[str, str] = {}
+        candidates: Dict[str, str] = {}
         if prof.quote is not None:
-            out["quote"] = primary(self.provenance(f"quote:{symbol}"))
+            candidates["quote"] = primary(self.provenance(f"quote:{symbol}"))
         if prof.fundamentals is not None:
-            out["fundamentals"] = primary(self.provenance(f"fundamentals:{symbol}"))
+            candidates["fundamentals"] = primary(
+                self.provenance(f"fundamentals:{symbol}")
+            )
         if prof.balance_sheet is not None:
-            out["balance_sheet"] = primary(self.provenance(f"balance_sheet:{symbol}"))
+            candidates["balance_sheet"] = primary(
+                self.provenance(f"balance_sheet:{symbol}")
+            )
         if prof.margin is not None:
             # G4 起 FAILOVER 也写 {"_provider": name}，primary 可正确返回源
-            out["margin"] = primary(self.provenance(f"margin_flow:{symbol}:None:None"))
+            candidates["margin"] = primary(
+                self.provenance(f"margin_flow:{symbol}:None:None")
+            )
         if prof.fund_flow_latest is not None:
-            out["fund_flow"] = primary(self.provenance(f"fund_flow:{symbol}"))
+            candidates["fund_flow"] = primary(self.provenance(f"fund_flow:{symbol}"))
         if prof.headlines:
-            # headlines / macro 的 cache_key 还含运行时参数 (n / indicator)，
-            # _collect_profile_provenance 拿不到 → 暂留空，后续若需要可改
-            # 让 profile() 把 cache_key 显式传进来。
-            out["headlines"] = ""
+            # G3 后 news_headlines cache_key 不再含 n，可直接定位
+            candidates["headlines"] = primary(
+                self.provenance(f"news_headlines:{symbol}")
+            )
         if prof.macro is not None:
-            out["macro"] = ""
-        return {k: v for k, v in out.items() if v or k in ("headlines", "macro")}
+            # macro 一次调用按 indicator 分桶（macro:PMI/M2/CREDIT 各一条），
+            # 把三条 provenance 的源汇总取众数作为主源
+            macro_keys = ("macro:PMI", "macro:M2", "macro:CREDIT")
+            combined: Dict[str, str] = {}
+            for k in macro_keys:
+                combined.update(self.provenance(k))
+            candidates["macro"] = primary(combined)
+        return {k: v for k, v in candidates.items() if v}
 
     # ── 监控 / 调试 ──────────────────────────────────────────────────────────
 

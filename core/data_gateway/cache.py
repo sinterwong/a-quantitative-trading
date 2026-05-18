@@ -212,16 +212,6 @@ class TieredCache:
         if self._disk is not None:
             self._disk.clear()
 
-    # ── 兼容 MemoryCache 内部属性访问(gateway.invalidate_fundamentals_history 用到) ──
-
-    @property
-    def _store(self) -> Dict[str, Any]:
-        return self._memory._store
-
-    @property
-    def _lock(self) -> threading.Lock:
-        return self._memory._lock
-
     def __len__(self) -> int:
         return len(self._memory)
 
