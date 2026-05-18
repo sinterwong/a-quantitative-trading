@@ -24,7 +24,10 @@ from typing import Any, Dict, List, Optional
 
 from ..capabilities import Capability, Market, ProviderCapability
 from ..http import HttpClient, HttpError, get_http_client, parse_jsonp
-from ..schemas import MarketIndexSnapshot, NorthFlow, SectorConstituent, SectorRanking, Quote
+from ..schemas import (
+    MarketIndexSnapshot, NewsItem, NorthFlow, Quote, SectorConstituent,
+    SectorRanking,
+)
 from ..symbols import normalize_to_sina, detect_market
 from .base import Provider, ProviderError
 
@@ -49,6 +52,16 @@ _NEWS_BASE_URL = "https://newsapi.eastmoney.com/kuaixun/v1"
 _NEWS_HEADERS = {"Referer": "https://www.eastmoney.com/"}
 _NEWS_TITLE_TRUNCATE = 57   # content 段落截断到 60 字（含省略号）
 _NEWS_TITLE_MAX_LEN = 60
+
+
+def _parse_em_showtime(raw) -> Optional[datetime]:
+    """EM 快讯的 showtime 形如 '2026-05-18 21:40:43'；非法 → None。"""
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(str(raw).strip(), "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return None
 
 _FIELDS = (
     "f2,f3,f4,f5,f6,f7,f8,f10,f12,f14,f15,f16,f17,f18,f20,f21,"
@@ -495,8 +508,8 @@ class EastmoneyProvider(Provider):
 
     # ── NEWS_HEADLINES ───────────────────────────────────────────────────────
 
-    def fetch_news_headlines(self, symbol: str, n: int = 20) -> List[str]:
-        """通过 EastMoney 快讯接口（kuaixun/v1/getlist_102_*）获取财经资讯标题。
+    def fetch_news_headlines(self, symbol: str, n: int = 20) -> List[NewsItem]:
+        """通过 EastMoney 快讯接口（kuaixun/v1/getlist_102_*）获取财经资讯。
 
         ⚠️ 语义说明：
           东方财富免费接口**没有个股粒度新闻**，本方法返回**全市场快讯**，
@@ -506,8 +519,9 @@ class EastmoneyProvider(Provider):
 
         Returns
         -------
-        List[str]
-            最多 n 条快讯标题（最新在前），空列表表示无数据。
+        List[NewsItem]
+            最多 n 条条目（最新在前）。timestamp 从原始 `showtime` 字段
+            （形如 '2026-05-18 21:40:43'）解析，解析失败留 None。
             HTTP/解析失败抛 ProviderError 触发 gateway 健康度记录。
         """
         page_size = max(1, min(n, 20))
@@ -537,28 +551,31 @@ class EastmoneyProvider(Provider):
         if not isinstance(lives, list):
             return []
 
-        titles: List[str] = []
-        for item in lives:
-            if not isinstance(item, dict):
+        items: List[NewsItem] = []
+        for raw in lives:
+            if not isinstance(raw, dict):
                 continue
             # 优先 title；缺失时降级到 content 并截断
-            raw_title = item.get("title")
+            raw_title = raw.get("title")
             title = str(raw_title).strip() if raw_title else ""
-            if not title:
-                content = item.get("content")
-                if content:
-                    content_str = str(content).strip()
-                    if len(content_str) > _NEWS_TITLE_MAX_LEN:
-                        title = content_str[:_NEWS_TITLE_TRUNCATE] + "..."
-                    else:
-                        title = content_str
+            content = str(raw.get("content") or "").strip()
+            if not title and content:
+                if len(content) > _NEWS_TITLE_MAX_LEN:
+                    title = content[:_NEWS_TITLE_TRUNCATE] + "..."
+                else:
+                    title = content
             if not title:
                 continue
-            titles.append(title)
-            if len(titles) >= n:
+            items.append(NewsItem(
+                title=title,
+                timestamp=_parse_em_showtime(raw.get("showtime")),
+                source="eastmoney",
+                content=content,
+            ))
+            if len(items) >= n:
                 break
 
-        return titles
+        return items
 
     # ── MARKET_INDEX ─────────────────────────────────────────────────────────
 

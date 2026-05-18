@@ -21,6 +21,7 @@ from ..schemas import (
     BalanceSheet,
     Fundamentals,
     MarketIndexSnapshot,
+    NewsItem,
     NorthFlow,
     Quote,
     SectorConstituent,
@@ -194,16 +195,23 @@ class Provider(ABC):
         """
         return pd.DataFrame()
 
-    def fetch_news_headlines(self, symbol: str, n: int = 20) -> list:
-        """新闻标题列表。
+    def fetch_news_headlines(self, symbol: str, n: int = 20) -> List[NewsItem]:
+        """新闻标题列表（G5 起返回 List[NewsItem] 以支持时间排序）。
 
         语义约定：通常按 symbol 返回个股相关新闻；若 provider 文档明示
         "全市场快讯"，调用方应理解为宽泛财经舆情。
 
         Returns
         -------
-        List[str]
-            最多 n 条标题（最新在前），空列表表示本源无数据。
+        List[NewsItem]
+            最多 n 条条目（最新在前）。NewsItem 含 title / timestamp /
+            source / content：
+              - timestamp 由 provider 从原始字段（如 EM 的 showtime、
+                AkShare 的 发布日期+发布时间）解析；无法解析时留 None，
+                gateway 合并时该条会排在有 ts 的条目之后。
+              - source 由 provider 标注自家名字（"eastmoney" /
+                "akshare" 等），便于 provenance 复盘。
+            空列表表示本源无数据。
         """
         return []
 

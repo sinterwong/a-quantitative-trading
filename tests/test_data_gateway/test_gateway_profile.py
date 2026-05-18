@@ -79,7 +79,12 @@ class _AllInOneProvider(Provider):
         return self._f.get("fund_df", pd.DataFrame())
 
     def fetch_news_headlines(self, symbol, n=20):
-        return self._f.get("headlines", [])[:n]
+        from core.data_gateway.schemas import NewsItem as _NI
+        raw = self._f.get("headlines", [])[:n]
+        return [
+            it if isinstance(it, _NI) else _NI(title=str(it), source=self.name)
+            for it in raw
+        ]
 
     def fetch_macro(self, indicator):
         return self._f.get(f"macro_{indicator.value.lower()}", pd.DataFrame())

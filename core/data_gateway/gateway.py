@@ -820,14 +820,18 @@ class DataGateway:
             self._last_provenance[cache_key] = prov
         return df
 
-    def news_headlines(self, symbol: str, n: int = 20) -> list:
-        """个股新闻标题列表（顺序 failover）。
+    def news_headlines(self, symbol: str, n: int = 20) -> List[str]:
+        """新闻标题列表（FAILOVER；G5-3 切到 MERGE_LISTS 多源去重+时间排序）。
 
         Returns
         -------
         List[str]
             最多 n 条标题（最新在前），空列表表示无数据。
+
+        Provider 内部约定返回 List[NewsItem]（G5-1）；gateway 在出口
+        投影为 title 字符串列表，保持调用方签名不变。
         """
+        from .schemas import NewsItem
         cache_key = f"news_headlines:{symbol}:{n}"
         cached = self._cache.get(cache_key)
         if cached is not None:
@@ -837,7 +841,11 @@ class DataGateway:
             Capability.NEWS_HEADLINES, Market.GLOBAL,
             "fetch_news_headlines", symbol, n,
         )
-        headlines = result if isinstance(result, list) else []
+        items = result if isinstance(result, list) else []
+        # 兜底：旧 fixture / 第三方 mock 可能还返回 List[str]
+        headlines: List[str] = [
+            it.title if isinstance(it, NewsItem) else str(it) for it in items
+        ]
         if headlines:
             self._cache.set(cache_key, headlines, _DEFAULT_TTL[Capability.NEWS_HEADLINES])
             self._last_provenance[cache_key] = prov

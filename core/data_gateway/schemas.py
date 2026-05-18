@@ -294,6 +294,31 @@ class StockProfile:
         )
 
 
+@dataclass
+class NewsItem:
+    """单条新闻/快讯条目（G5）。
+
+    `_merged_list_fetch` 在多源 List[NewsItem] 上做"标题归一去重 + 时间倒序"，
+    保留首次出现的条目。timestamp 缺失时该条排在末尾（按 source 顺序）。
+
+    Attributes:
+        title: 标题（已去前后空白，但未归一化前缀）。
+        timestamp: 发布时间；若 provider 无法提取则为 None。
+        source: 数据源标记（"eastmoney" / "akshare" 等），便于调试与
+            provenance 复盘。provider 不强制写，gateway 在 merge 阶段
+            可补上。
+        content: 正文/摘要（可选）；当前主要供调试，不参与 dedupe。
+    """
+    title: str = ""
+    timestamp: Optional[datetime] = None
+    source: str = ""
+    content: str = ""
+
+    @property
+    def has_timestamp(self) -> bool:
+        return self.timestamp is not None
+
+
 __all__ = [
     "Quote",
     "Fundamentals",
@@ -305,5 +330,6 @@ __all__ = [
     "MarginSnapshot",
     "FundFlowSnapshot",
     "MacroSnapshot",
+    "NewsItem",
     "StockProfile",
 ]

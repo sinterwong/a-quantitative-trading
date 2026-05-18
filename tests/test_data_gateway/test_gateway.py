@@ -16,8 +16,8 @@ from core.data_gateway.gateway import DataGateway
 from core.data_gateway.health import HealthTracker
 from core.data_gateway.providers.base import Provider, ProviderError
 from core.data_gateway.schemas import (
-    BalanceSheet, Fundamentals, MarketIndexSnapshot, NorthFlow, Quote,
-    SectorConstituent, SectorRanking,
+    BalanceSheet, Fundamentals, MarketIndexSnapshot, NewsItem, NorthFlow,
+    Quote, SectorConstituent, SectorRanking,
 )
 
 
@@ -158,7 +158,15 @@ class _FakeProvider(Provider):
     def fetch_news_headlines(self, symbol, n=20):
         self.call_log.append(f"fetch_news_headlines:{symbol}:{n}")
         self._maybe_raise("fetch_news_headlines")
-        return self._news
+        # G5：base 接口已升级到 List[NewsItem]。允许测试传入 List[str]
+        # 字面量以保持表达精简，这里 best-effort 包装一下。
+        out = []
+        for it in self._news:
+            if isinstance(it, NewsItem):
+                out.append(it)
+            else:
+                out.append(NewsItem(title=str(it), source=self.name))
+        return out
 
 
 @pytest.fixture
