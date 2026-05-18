@@ -105,8 +105,9 @@ def test_llm_review_auto_approves_when_no_llm(monitor):
     assert conf == 0.5
 
 
-def test_llm_review_swallows_inner_exceptions(monitor):
-    """LLM provider 抛异常 → 自动放行,不传播。"""
+def test_llm_review_rejects_on_inner_exception(monitor, monkeypatch):
+    """LLM provider 抛异常 → fail-closed(拒单),不传播。"""
+    monkeypatch.delenv('LLM_REVIEW_FAIL_OPEN', raising=False)
     monitor._llm = MagicMock()
     monitor._llm.provider.chat.side_effect = RuntimeError('LLM API down')
     monitor._get_params = MagicMock(return_value={'name': 'X'})
@@ -120,11 +121,35 @@ def test_llm_review_swallows_inner_exceptions(monitor):
     alert.price = 100.0
     alert.reason = 'test'
     alert.prev_rsi = 25
-    approved, reason, conf, _ = AlertsMixin._llm_review_signal(
+    approved, reason, _conf, size_rec = AlertsMixin._llm_review_signal(
+        monitor, alert, 'BUY',
+    )
+    assert approved is False
+    assert size_rec == 'skip'
+    assert 'LLM' in reason or '异常' in reason
+
+
+def test_llm_review_fail_open_env_restores_legacy_behavior(monitor, monkeypatch):
+    """LLM_REVIEW_FAIL_OPEN=1 时,LLM 异常退回旧的自动放行行为(应急用)。"""
+    monkeypatch.setenv('LLM_REVIEW_FAIL_OPEN', '1')
+    monitor._llm = MagicMock()
+    monitor._llm.provider.chat.side_effect = RuntimeError('LLM API down')
+    monitor._get_params = MagicMock(return_value={'name': 'X'})
+    monitor._svc.get_cash.return_value = 10000
+    monitor._svc.get_positions.return_value = []
+    monitor._svc.get_position.return_value = None
+
+    alert = MagicMock()
+    alert.symbol = 'X'
+    alert.signal = 'BUY'
+    alert.price = 100.0
+    alert.reason = 'test'
+    alert.prev_rsi = 25
+    approved, _reason, _conf, size_rec = AlertsMixin._llm_review_signal(
         monitor, alert, 'BUY',
     )
     assert approved is True
-    assert 'LLM' in reason or 'auto' in reason.lower() or '异常' in reason
+    assert size_rec == 'full'
 
 
 # ── _deliver_alert 不配置时静默跳过 ─────────────────────

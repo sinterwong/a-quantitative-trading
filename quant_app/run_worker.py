@@ -11,6 +11,7 @@ quant_app/run_worker.py — Scheduler + IntradayMonitor + StrategyRunner (P3-2)
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -30,20 +31,81 @@ BACKEND_DIR = os.path.join(PROJ_DIR, 'backend')
 _trade_calendar: set = set()
 _trade_calendar_date: str = ''
 
+_TRADE_CAL_CACHE = os.path.join(PROJ_DIR, 'data', 'trade_calendar.json')
+# 缓存超过这么久就视为"过期",仍可作为 last-resort 降级使用,但会同时打 warning
+_TRADE_CAL_CACHE_STALE_DAYS = 30
+
+
+def _save_trade_calendar_cache(dates: set) -> None:
+    """成功从 AKShare 拿到日历时,把结果写到 data/trade_calendar.json。
+    后续 AKShare 不可用时优先用这份缓存,而不是退化成"周一到周五"。"""
+    try:
+        os.makedirs(os.path.dirname(_TRADE_CAL_CACHE), exist_ok=True)
+        payload = {
+            'fetched_at': datetime.now().isoformat(timespec='seconds'),
+            'dates': sorted(dates),
+        }
+        tmp = _TRADE_CAL_CACHE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, _TRADE_CAL_CACHE)
+    except Exception as exc:
+        logging.getLogger('backend.scheduler').warning(
+            'trade_calendar cache save failed: %s', exc,
+        )
+
+
+def _load_trade_calendar_cache():
+    """读缓存。返回 (dates_set, fetched_at_datetime) 或 (None, None)。"""
+    if not os.path.exists(_TRADE_CAL_CACHE):
+        return None, None
+    try:
+        with open(_TRADE_CAL_CACHE, encoding='utf-8') as f:
+            data = json.load(f)
+        dates = set(data.get('dates') or [])
+        fetched_at = data.get('fetched_at')
+        fetched_dt = datetime.fromisoformat(fetched_at) if fetched_at else None
+        return dates, fetched_dt
+    except Exception:
+        return None, None
+
 
 def _build_trade_calendar() -> set:
-    """从 AKShare 获取 A 股交易日历,返回 'YYYY-MM-DD' 字符串集合。失败返回空集合。"""
+    """从 AKShare 拉 A 股交易日历;成功 → 写缓存;失败 → 读缓存兜底。
+    缓存也没有时返回空集合(由 is_trading_day 再降级为工作日判断)。"""
     try:
         import akshare as ak
         df = ak.tool_trade_date_hist_sina()
-        dates = df.iloc[:, 0]
-        return {str(d)[:10] for d in dates}
-    except Exception:
-        return set()
+        dates = {str(d)[:10] for d in df.iloc[:, 0]}
+        if dates:
+            _save_trade_calendar_cache(dates)
+            return dates
+    except Exception as exc:
+        logging.getLogger('backend.scheduler').warning(
+            'AKShare trade_calendar fetch failed (%s),尝试本地缓存', exc,
+        )
+
+    cached, fetched_at = _load_trade_calendar_cache()
+    if cached:
+        if fetched_at is not None:
+            age = (datetime.now() - fetched_at).days
+            if age > _TRADE_CAL_CACHE_STALE_DAYS:
+                logging.getLogger('backend.scheduler').warning(
+                    'trade_calendar 缓存已 %d 天未刷新,可能漏新公布的节假日', age,
+                )
+        return cached
+    return set()
 
 
 def is_trading_day() -> bool:
-    """是否为 A 股交易日。AKShare 不可用时降级为周一~周五判断。"""
+    """是否为 A 股交易日。
+
+    优先级:
+      1. AKShare 拉到的最新日历(并落地缓存)
+      2. 本地 data/trade_calendar.json 缓存(网络挂掉时兜底)
+      3. 都没有 → 工作日(Mon-Fri)
+         注意第 3 层会在节假日误判,只能作为最坏情况的回退。
+    """
     global _trade_calendar, _trade_calendar_date
     today_str = datetime.now().strftime('%Y-%m-%d')
 
@@ -55,6 +117,11 @@ def is_trading_day() -> bool:
 
     if _trade_calendar:
         return today_str in _trade_calendar
+
+    logging.getLogger('backend.scheduler').warning(
+        'trade_calendar 不可用(AKShare 失败 + 无本地缓存),退化为工作日判断,'
+        '可能在法定节假日误触发任务',
+    )
     return datetime.now().weekday() < 5
 
 

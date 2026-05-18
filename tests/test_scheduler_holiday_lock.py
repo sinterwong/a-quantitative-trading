@@ -56,6 +56,62 @@ class TestIsTradingDay(unittest.TestCase):
             self.assertEqual(bm.is_trading_day(), expected)
 
 
+class TestTradeCalendarCache(unittest.TestCase):
+    """AKShare 失败时优先用本地缓存,而不是退化为"周一到周五"。"""
+
+    def setUp(self):
+        import quant_app.run_worker as bm
+        import tempfile, json
+        self._tmp = tempfile.NamedTemporaryFile(suffix='.json', delete=False)
+        self._tmp.close()
+        self._orig_path = bm._TRADE_CAL_CACHE
+        bm._TRADE_CAL_CACHE = self._tmp.name
+        bm._trade_calendar = set()
+        bm._trade_calendar_date = ''
+        self._bm = bm
+        self._json = json
+
+    def tearDown(self):
+        self._bm._TRADE_CAL_CACHE = self._orig_path
+        os.unlink(self._tmp.name)
+
+    def _seed_cache(self, dates, age_days=0):
+        from datetime import datetime, timedelta
+        fetched_at = datetime.now() - timedelta(days=age_days)
+        with open(self._tmp.name, 'w') as f:
+            self._json.dump({
+                'fetched_at': fetched_at.isoformat(timespec='seconds'),
+                'dates': sorted(dates),
+            }, f)
+
+    def test_uses_cache_when_akshare_fails(self):
+        from datetime import datetime
+        bm = self._bm
+        today = datetime.now().strftime('%Y-%m-%d')
+        self._seed_cache({today, '2099-01-02'}, age_days=2)
+        # 强制让 import akshare 抛 ImportError 模拟"AKShare 全挂"
+        with patch.dict('sys.modules', {'akshare': None}):
+            self.assertTrue(bm.is_trading_day())
+
+    def test_cache_excludes_today_returns_false(self):
+        bm = self._bm
+        self._seed_cache({'2099-01-02', '2099-01-03'}, age_days=2)
+        with patch.dict('sys.modules', {'akshare': None}):
+            self.assertFalse(bm.is_trading_day())
+
+    def test_successful_akshare_writes_cache(self):
+        bm = self._bm
+        with patch.object(bm, '_build_trade_calendar') as mock_build:
+            mock_build.side_effect = (
+                lambda: bm._save_trade_calendar_cache({'2026-05-18'}) or {'2026-05-18'}
+            )
+            bm.is_trading_day()
+        # 缓存有内容
+        with open(self._tmp.name) as f:
+            data = self._json.load(f)
+        self.assertIn('2026-05-18', data['dates'])
+
+
 class TestSecondsUntilNextCheck(unittest.TestCase):
 
     def test_returns_seconds_to_tomorrow_0825(self):

@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -139,6 +139,45 @@ class TestCalibration(unittest.TestCase):
         if cal is not None:
             self.assertLessEqual(cal['permanent'], 50.0)
             self.assertLessEqual(cal['temporary'], 50.0)
+
+
+class TestCalibrationHotReload(unittest.TestCase):
+
+    def test_maybe_calibrate_reloads_impact_estimator(self):
+        """_maybe_calibrate 写文件后,应立即热加载到 ImpactEstimator,
+        而不是等下次进程重启。"""
+        import tempfile, json as _json
+        from scripts.daily_tca import _maybe_calibrate
+        from core.execution.impact_estimator import ImpactEstimator
+
+        original_perm = ImpactEstimator.PERMANENT_COEFF
+        original_temp = ImpactEstimator.TEMPORARY_COEFF
+        cal_path = Path(__file__).resolve().parent.parent / 'outputs' / 'tca_calibration.json'
+        backup = cal_path.read_text(encoding='utf-8') if cal_path.exists() else None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            # 造 5 个 daily TCA 历史记录,IS 均 30bps(远高于 baseline)
+            target_date = date(2026, 5, 18)
+            for i in range(5):
+                d = (target_date - timedelta(days=i + 1)).isoformat()
+                (tmp / f'tca_{d}.json').write_text(_json.dumps({
+                    'date': d, 'n_trades': 10, 'avg_is_bps': 30.0,
+                }), encoding='utf-8')
+            try:
+                _maybe_calibrate(target_date, output_dir=tmp)
+                # baseline=5×sqrt(0.01)+5×0.01≈0.55,rolling 30 → ratio≫1.5 → 触发
+                self.assertNotAlmostEqual(
+                    ImpactEstimator.PERMANENT_COEFF, original_perm,
+                    msg='ImpactEstimator 未被热加载更新',
+                )
+            finally:
+                if backup is not None:
+                    cal_path.write_text(backup, encoding='utf-8')
+                else:
+                    cal_path.unlink(missing_ok=True)
+                ImpactEstimator.PERMANENT_COEFF = original_perm
+                ImpactEstimator.TEMPORARY_COEFF = original_temp
 
 
 class TestImpactEstimatorCalibrationFile(unittest.TestCase):

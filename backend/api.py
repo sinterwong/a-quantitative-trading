@@ -29,6 +29,7 @@ import os
 import sys
 import json
 import time
+import threading
 import traceback
 from datetime import datetime, date
 from functools import wraps
@@ -437,10 +438,44 @@ def _get_or_build_broker():
     return b
 
 
+_RISK_ENGINE = None
+# Flask 在多线程 WSGI 下两个请求会并发进入 _get_risk_engine 的懒建分支;
+# 没锁会创建两份 RiskEngine,如果其 __init__ 有副作用(打开 sqlite 句柄、
+# 注册回调) 就会泄漏。锁只保护懒建,共享 StrategyRunner 实例的路径无副作用。
+_RISK_ENGINE_LOCK = threading.Lock()
+
+
+def _get_risk_engine():
+    """共享 RiskEngine：优先复用 StrategyRunner 的实例，否则懒建一个本地 singleton。"""
+    global _RISK_ENGINE
+    try:
+        from main import get_monitor
+        m = get_monitor()
+        if m is not None and getattr(m, '_strategy_runner', None) is not None:
+            re = getattr(m._strategy_runner, 'risk_engine', None)
+            if re is not None:
+                return re
+    except Exception:
+        pass
+    if _RISK_ENGINE is None:
+        with _RISK_ENGINE_LOCK:
+            if _RISK_ENGINE is None:
+                try:
+                    from core.risk_engine import RiskEngine
+                    _RISK_ENGINE = RiskEngine()
+                except Exception:
+                    return None
+    return _RISK_ENGINE
+
+
 @app.route('/orders/submit', methods=['POST'])
 @rate_limit(max_per_window=10, window_seconds=60)
 def submit_order():
-    """POST /orders/submit — 通过共享 broker 提交订单(simulation 模式下 PaperBroker 即时撮合)。"""
+    """POST /orders/submit — 通过共享 broker 提交订单(simulation 模式下 PaperBroker 即时撮合)。
+
+    所有外部下单(UI / 脚本 / 第三方)都必须先过 PreTrade 风控，与
+    IntradayMonitor 的内部下单链路保持同一道门控。
+    """
     if (e := require_json()):
         return e
     body = request.json
@@ -455,14 +490,69 @@ def submit_order():
     if shares <= 0:
         return err("shares must be positive")
 
-    result = _get_or_build_broker().submit_order(
-        symbol=body['symbol'], direction=direction, shares=shares,
-        price=float(body.get('price', 0)),
-        price_type=body.get('price_type', 'market'),
+    symbol = body['symbol']
+    price = float(body.get('price', 0))
+    price_type = body.get('price_type', 'market')
+
+    # 市价单调用方通常不带 price,但 RiskEngine 的多数规则(单笔金额、组合
+    # 占比、CVaR 估算)需要金额才能算。price=0 等于绕过这些规则 ⇒ 必须先
+    # 拿到一个参考价。复用 broker 的 _fetch_market_price(失败返回 0),
+    # 失败时直接拒单而不是用 0 通过风控。
+    broker = _get_or_build_broker()
+    if price <= 0:
+        ref = 0.0
+        try:
+            fetch = getattr(broker, '_fetch_market_price', None)
+            if fetch is not None:
+                ref = float(fetch(symbol) or 0.0)
+        except Exception:
+            ref = 0.0
+        if ref <= 0:
+            return jsonify({
+                'status': 'error',
+                'error': 'market order needs a reference price (broker fetch failed)',
+                'code': 'NO_REF_PRICE',
+                'timestamp': datetime.now().isoformat(),
+            }), 503
+        risk_price = ref
+    else:
+        risk_price = price
+
+    # ── PreTrade 风控（与 IntradayMonitor 同一道门控）────────────
+    re = _get_risk_engine()
+    if re is not None:
+        try:
+            from core.factors.base import Signal as _Sig
+            sig = _Sig(
+                timestamp=datetime.now(), symbol=symbol, direction=direction,
+                strength=1.0, factor_name='API', price=risk_price,
+            )
+            rr = re.check(sig)
+            if not rr.passed:
+                return jsonify({
+                    'status': 'error',
+                    'error': f'PreTrade rejected: {rr.reason}',
+                    'code': 'RISK_REJECTED',
+                    'details': rr.details,
+                    'timestamp': datetime.now().isoformat(),
+                }), 403
+        except Exception as exc:
+            # 风控自身异常不应放行：宁可保守拒单
+            return jsonify({
+                'status': 'error',
+                'error': f'PreTrade check raised: {exc}',
+                'code': 'RISK_ERROR',
+                'timestamp': datetime.now().isoformat(),
+            }), 503
+
+    result = broker.submit_order(
+        symbol=symbol, direction=direction, shares=shares,
+        price=price,
+        price_type=price_type,
     )
     return ok(
         order_id=result.order_id, status=result.status,
-        symbol=body['symbol'], direction=direction, shares=shares,
+        symbol=symbol, direction=direction, shares=shares,
         filled_shares=result.filled_shares, avg_price=result.avg_price,
         reason=result.reason,
         submitted_at=result.submitted_at, filled_at=result.filled_at,

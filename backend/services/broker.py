@@ -36,6 +36,7 @@ import time
 import random
 import sqlite3
 import logging
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, date
@@ -160,6 +161,13 @@ class PaperBroker(BrokerBase):
         self._orders: List[OrderResult] = []
         # Backup DB path (set by test)
         self._db_backup: str = ''
+        # API 线程 / IntradayMonitor 线程 / StrategyRunner 线程会并发调
+        # submit_order/_next_order_id/_orders。RLock 保护:
+        #   - 计数器递增不丢
+        #   - "查现金 → 下单 → 写持仓" 三步在 broker 视角是原子的
+        #     (PortfolioService 内有 _WRITE_LOCK,但跨多步不够)
+        #   - _orders 列表迭代/追加不冲突
+        self._lock = threading.RLock()
 
     def connect(self) -> bool:
         logger.info('PaperBroker: connected (no-op)')
@@ -201,8 +209,9 @@ class PaperBroker(BrokerBase):
         ]
 
     def _next_order_id(self) -> str:
-        self._order_id_counter += 1
-        return f'PAPER_{int(time.time()*1000)}_{self._order_id_counter}'
+        with self._lock:
+            self._order_id_counter += 1
+            return f'PAPER_{int(time.time()*1000)}_{self._order_id_counter}'
 
     def _simulate_fill(self, symbol: str, direction: str, shares: int,
                        price: float, price_type: str,
@@ -248,7 +257,8 @@ class PaperBroker(BrokerBase):
             submitted_at=now_str,
             filled_at=datetime.now().isoformat(),
         )
-        self._orders.append(order)
+        with self._lock:
+            self._orders.append(order)
         return order
 
     def _fetch_market_price(self, symbol: str) -> float:
@@ -279,7 +289,18 @@ class PaperBroker(BrokerBase):
         Submit a paper order.
         Phase 1: immediately fills (market + limit).
         Phase 2: will call parent class for real broker.
+
+        线程安全: 整个 submit_order 在 self._lock 内串行化。理由是
+        "查现金/持仓 → 撮合 → 写持仓/现金/成交" 这三步必须原子,
+        否则两个线程同时进入会导致重复扣 / 持仓上限击穿。
         """
+        with self._lock:
+            return self._submit_order_locked(
+                symbol, direction, shares, price, price_type,
+            )
+
+    def _submit_order_locked(self, symbol: str, direction: str, shares: int,
+                             price: float, price_type: str) -> OrderResult:
         if not self._connected:
             self.connect()
 
@@ -386,18 +407,20 @@ class PaperBroker(BrokerBase):
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel a pending order (paper broker: reject immediately)."""
-        for order in self._orders:
-            if order.order_id == order_id and order.status == 'submitted':
-                order.status = 'cancelled'
-                order.reason = 'Cancelled by user (paper broker)'
-                logger.info('PaperBroker: order %s cancelled', order_id)
-                return True
+        with self._lock:
+            for order in self._orders:
+                if order.order_id == order_id and order.status == 'submitted':
+                    order.status = 'cancelled'
+                    order.reason = 'Cancelled by user (paper broker)'
+                    logger.info('PaperBroker: order %s cancelled', order_id)
+                    return True
         return False
 
     def get_order(self, order_id: str) -> Optional[OrderResult]:
-        for o in self._orders:
-            if o.order_id == order_id:
-                return o
+        with self._lock:
+            for o in self._orders:
+                if o.order_id == order_id:
+                    return o
         return None
 
 

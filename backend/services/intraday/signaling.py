@@ -40,6 +40,20 @@ class SignalingMixin:
             )
             return
 
+        # 15:30 daily_risk_report 的硬闸门:CVaR / MC / 回撤 breach 触发后,
+        # IntradayMonitor 在 ttl_hours 内禁止任何新仓,只允许持仓监控 + 平仓。
+        try:
+            from core.risk_state import is_new_buys_halted
+            halted, reason = is_new_buys_halted()
+            if halted:
+                logger.warning(
+                    '_check_new_positions: risk_state HALT_NEW_BUYS active — %s',
+                    reason,
+                )
+                return
+        except Exception as exc:  # noqa: BLE001
+            logger.debug('risk_state check failed (treat as not halted): %s', exc)
+
         from services.signals import confirm_signal_minute, fetch_realtime
         from core.use_cases.intraday_signals import (
             IntradaySignalRequest, generate_intraday_signals,

@@ -267,6 +267,17 @@ def _maybe_calibrate(target_date: date, output_dir: Optional[Path] = None) -> No
         cal['rolling_is_bps'], cal['baseline_is_bps'],
     )
 
+    # 立即热加载到当前进程的 ImpactEstimator,避免要等下次进程重启才生效。
+    # Scheduler 在长跑进程内调 daily_tca,这里同步刷新 VWAP/TWAP 用的系数。
+    try:
+        reloaded = ImpactEstimator.load_from_config()
+        logger.info(
+            'calibration: ImpactEstimator reloaded=%s perm=%.2f temp=%.2f',
+            reloaded, ImpactEstimator.PERMANENT_COEFF, ImpactEstimator.TEMPORARY_COEFF,
+        )
+    except Exception as exc:
+        logger.warning('ImpactEstimator reload after calibration failed: %s', exc)
+
 
 def _maybe_alert(report) -> None:
     """avg_is_bps 超过 30 bps（明显异常）→ 推送 WARNING。"""

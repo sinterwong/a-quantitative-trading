@@ -260,7 +260,19 @@ def build_closing_report(snapshot: dict, return_info: dict) -> str:
 # ─── 推送飞书 ────────────────────────────────────────────────────────────
 
 def feishu_push(text: str):
-    """推送文本到飞书。"""
+    """推送文本到飞书。
+
+    默认不推:15:00 afternoon_report 与 16:00 daily_ops_report 内容高度重
+    叠,过去会一天给用户推两条几乎一样的报告。现在 afternoon_report 改成
+    只生成文件 + 落 daily_meta,完整报告由 daily_ops_reporter 统一推。
+    需要旧行为(15:00 也推)可显式设 QUANT_AFTERNOON_REPORT_PUSH=1。
+    """
+    if os.environ.get('QUANT_AFTERNOON_REPORT_PUSH', '0').strip() != '1':
+        _log.info(
+            'afternoon_report 飞书推送默认关闭(避免与 daily_ops 重复),'
+            '需要打开请设 QUANT_AFTERNOON_REPORT_PUSH=1'
+        )
+        return
     app_id     = os.environ.get('FEISHU_APP_ID', '')
     app_secret = os.environ.get('FEISHU_APP_SECRET', '')
     if not app_id or not app_secret:
@@ -321,9 +333,23 @@ def run():
     _log.info('[Step3] Recording daily_meta...')
     record_daily_meta(snapshot, return_info)
 
-    # Step 4: 生成晚报 + 推送
+    # Step 4: 生成晚报 + 落盘(默认不推,详见 feishu_push)
     _log.info('[Step4] Building closing report...')
     report_text = build_closing_report(snapshot, return_info)
+
+    try:
+        out_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            '..', 'outputs', 'closing_reports',
+        )
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, f'closing_{date.today().isoformat()}.txt')
+        with open(out_path, 'w', encoding='utf-8') as f:
+            f.write(report_text)
+        _log.info('Closing report saved to %s', out_path)
+    except Exception as e:
+        _log.warning('Closing report save failed: %s', e)
+
     feishu_push(report_text)
     _log.info('Closing report:\n%s', report_text)
 

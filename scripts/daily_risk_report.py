@@ -355,7 +355,15 @@ def run_report(
     except Exception as exc:
         logger.debug('metrics push failed: %s', exc)
 
-    # 8. 告警
+    # 8. 写"风险闸门"状态供 IntradayMonitor 读取(无论有无 breach 都写,
+    #    解除时也要主动覆盖)
+    try:
+        from core.risk_state import write_risk_state
+        write_risk_state(summary.get('breach', []), summary=summary)
+    except Exception as exc:
+        logger.warning('risk_state write failed: %s', exc)
+
+    # 9. 告警
     if enable_alert:
         _maybe_alert(summary)
 

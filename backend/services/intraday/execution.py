@@ -79,6 +79,37 @@ class ExecutionMixin:
         """检查是否允许执行实单(Broker下单)。simulation 模式返回 False。"""
         return self._trading_mode == 'live'
 
+    # ── 算法单逐 slice 复检 ─────────────────────────────────
+
+    def _get_pretrade_risk_engine(self):
+        """返回 StrategyRunner 上的 RiskEngine,无则 None(降级:不校验)。"""
+        try:
+            sr = getattr(self, '_strategy_runner', None)
+            return getattr(sr, 'risk_engine', None) if sr is not None else None
+        except Exception:
+            return None
+
+    def _check_slice_pretrade(self, risk_engine, symbol: str, direction: str,
+                              price: float):
+        """对每个 slice 重做一次 PreTrade,返回 (passed, reason)。
+
+        前几个 slice 成交后头寸/账面权益已变,母单时的校验失效。
+        这里构造同样的 Signal 重新走 risk_engine.check() —— 复用风控配置,
+        避免规则散落在两处。任何检查异常一律视为拒绝(保守)。
+        """
+        try:
+            from core.factors.base import Signal as _Sig
+            sig = _Sig(
+                timestamp=datetime.now(), symbol=symbol, direction=direction,
+                strength=1.0, factor_name='AlgoSlice', price=price,
+            )
+            rr = risk_engine.check(sig)
+            if rr.passed:
+                return True, ''
+            return False, rr.reason
+        except Exception as exc:
+            return False, f'PreTrade raised: {exc}'
+
     # ── 算法路由（P1-7）─────────────────────────────────────
 
     def _algo_config(self):
@@ -157,14 +188,33 @@ class ExecutionMixin:
                 shares=shares, price=price, price_type=price_type,
             )
 
-        # 同步执行子单（PaperBroker 即时撮合）
+        # 同步执行子单（PaperBroker 即时撮合）。
+        # 每个 slice 前重新走一次 PreTrade —— 前几个 slice 成交后头寸已变化,
+        # 必须重新校验,否则就会出现"父单通过但后续 slice 越限"的场景。
         children = []
         total_filled = 0
         total_value = 0.0
+        # getattr 兜底:部分单元测试用 _MockMonitor 只复制了 _submit_with_routing,
+        # 没有挂载新加的 helper。生产路径(走 ExecutionMixin)正常拿到。
+        get_re = getattr(self, '_get_pretrade_risk_engine', lambda: None)
+        check_slice = getattr(self, '_check_slice_pretrade', None)
+        risk_engine = get_re()
         for sl in slices:
             sl_shares = (sl.target_shares // 100) * 100
             if sl_shares < 100:
                 continue
+
+            if risk_engine is not None and check_slice is not None:
+                passed, reason = check_slice(
+                    risk_engine, symbol, direction, price,
+                )
+                if not passed:
+                    logger.warning(
+                        'algo slice PreTrade rejected %s slice=%d: %s — stop emitting further slices',
+                        symbol, len(children), reason,
+                    )
+                    break
+
             try:
                 r = self._broker.submit_order(
                     symbol=symbol, direction=direction,
