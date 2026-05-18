@@ -127,6 +127,18 @@ def main():
     except Exception:
         pass
 
+    # ImpactEstimator 热加载 TCA 校准 — 之前 load_from_config 没人调,
+    # daily_tca 的反馈系数永远不会进生产路径,VWAP/TWAP 一直用初值 5.0。
+    try:
+        from core.execution.impact_estimator import ImpactEstimator
+        ok_ = ImpactEstimator.load_from_config()
+        logger.info(
+            '[ImpactEstimator] load_from_config: ok=%s perm=%.2f temp=%.2f',
+            ok_, ImpactEstimator.PERMANENT_COEFF, ImpactEstimator.TEMPORARY_COEFF,
+        )
+    except Exception as e:
+        logger.warning('ImpactEstimator load_from_config failed (non-fatal): %s', e)
+
     # ── Worker 子系统 ────────────────────────────────────────
     from quant_app.run_worker import Scheduler, build_intraday_monitor, start_strategy_runner_thread
 
