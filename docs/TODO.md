@@ -1,7 +1,12 @@
 # 数据层重构路线图
 
-> **Sprint 1 已完成**（commit 11b7e72 → ...）：G8 / G3 / G1 / G2 全部交付，
+> **Sprint 1 已完成**（commit 11b7e72 → ef10ed2）：G8 / G3 / G1 / G2 全部交付，
 > `gw.profile(symbol)` 已可用。详见各章节末尾的「✅ 已完成」标记。
+>
+> **Sprint 2 进行中**（commit 883f1dd → ...）：G4 已落地，
+> `ROUTING_POLICY` + `_route()` 统一分派器替代散在各 gw.* 方法里的
+> `_sequential_fetch` / `_merged_fetch` / `_merged_history_fetch` 调用。
+> G5 待启动（需先盘点 news 多源可行性）。
 
 ---
 
@@ -127,11 +132,65 @@ macro = {k: gw.macro(k).tail(1).iloc[0,0] for k in ('PMI','M2','CREDIT')}
 
 ---
 
-## 后续 Sprint（暂未启动，按需展开）
+## Sprint 2：CapabilityPolicy 路由统一 + news 多源去重
 
-### Sprint 2：CapabilityPolicy 路由统一 + news 多源去重
-- G4: 用 `CapabilityPolicy` 元数据声明 routing 策略（failover / merge_fields / merge_frames / merge_lists）
-- G5: news_headlines 引入第 2/3 源后做 title 归一去重 + 时间排序
+### G4 — CapabilityPolicy 元数据声明 routing 策略
+
+**动机**：G1 之后 gateway 有三个并列原语
+（`_sequential_fetch` / `_merged_fetch` / `_merged_history_fetch`），但选用
+哪个原语 + 是否 ffill + 哪些字段当作"标识列"，全部硬编码在
+`gw.quote()` / `gw.kline()` 等公开方法里。新增数据类型时要手动复制
+这套样板，且不同方法路由参数不一致很难一眼看清全貌。
+
+**范围**：
+- `capabilities.py` 新增 `RoutingStrategy` 枚举（failover / merge_fields /
+  merge_frames / merge_lists）+ `CapabilityPolicy(strategy, skip_fields,
+  ffill)` + `ROUTING_POLICY: {(Capability, fn_name): CapabilityPolicy}`
+- `DataGateway._route(cap, market, fn_name, *args, **kwargs)` 统一分派器，
+  根据 ROUTING_POLICY 查表后调对应底层原语；统一返回 `(value, prov_dict)`
+- 所有 gw.* 公开方法把直接调用 `_sequential_fetch` / `_merged_fetch` /
+  `_merged_history_fetch` 改为 `_route(...)`
+- `MERGE_LISTS` 在 G4 里只占位（raise NotImplementedError），G5 实现
+
+**验收**：
+- 路由表覆盖完整：每个 (cap, fn) 都有 policy；未登记 → KeyError
+- 改 policy 即改路由：monkeypatch policy.strategy 后底层原语切换
+- FAILOVER 也写 `{"_provider": name}` 到 _last_provenance（弥补 G2 缺口）
+- 数据网关全套 335 passed（324 旧 + 11 新），无回归
+
+✅ 已完成：commit 883f1dd（policy 元数据）+ 811f710（_route 分派器）+
+522d844（gw.* 全部切换）+ 9e91b50（11 个测试）。
+
+---
+
+### G5 — news_headlines 多源归一去重
+
+**动机**：当前 NEWS_HEADLINES 只有 EastMoney 一源，且其接口是"全市场快讯"
+（symbol 参数被忽略）。引入第 2/3 源（如 Sina/Tencent 财经资讯）后，
+需要在 `_merged_list_fetch` 里：
+
+- 标题归一化（去前后空白、全/半角统一、去常见前后缀如「【快讯】」）
+- 按归一标题 dedupe
+- 若 item 含时间戳按时间倒序；否则按 provider health 顺序
+- 截断到 n 条
+
+**范围**：
+- 先盘点：Sina/Tencent/AkShare 是否有可拉的财经新闻接口
+  - 若只 EastMoney 一源真有效，G5 简化为"基础设施就位但 policy 仍 FAILOVER"
+- 在 `gateway.py` 加 `_merged_list_fetch(capability, market, fn_name,
+  *args, **kwargs)`
+- `_route` 接入 `RoutingStrategy.MERGE_LISTS`，把 `NotImplementedError`
+  分支替换为实际实现
+- 把 `NEWS_HEADLINES` 的 policy 改为 `MERGE_LISTS`（前提是新源已接入）
+- provider 层补 2-3 个 news 源的 `fetch_news_headlines` 实现
+
+**验收**：
+- mock 多源给同事件不同标题写法（"【快讯】XXX" vs "XXX"），验证 dedupe
+- mock 同源单条重复，验证 dedupe
+- mock 含 timestamp 的 item，验证按时间排序
+- `news_headlines` 接口签名不变（仍 `(symbol, n) -> List[str]`）
+
+⏳ 待启动。
 
 ### Sprint 3：数据质量与可观测性
 - G6: 字段级矛盾检测（divergence_pct 超阈值告警）
