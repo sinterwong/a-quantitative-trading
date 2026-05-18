@@ -1746,7 +1746,7 @@ def wfa_history():
     strategy = request.args.get('strategy')
     limit    = int(request.args.get('limit', 30))
 
-    from services.wfa_history import get_wfa_history
+    from services.walkforward_persistence import get_wfa_history
     try:
         records = get_wfa_history(symbol=symbol, strategy=strategy, limit=limit)
         return ok(records=records, count=len(records))

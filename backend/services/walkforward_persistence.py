@@ -190,3 +190,8 @@ def get_wf_summary(symbol: str = None) -> Dict:
             {where}
         """).fetchone()
     return dict(row) if row else {}
+
+
+# ─── API 层别名（兼容旧的 import 路径）──────────────────────────────
+get_wfa_history = get_wf_history
+get_wfa_summary = get_wf_summary
