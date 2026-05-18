@@ -16,8 +16,8 @@ from core.data_gateway.gateway import DataGateway
 from core.data_gateway.health import HealthTracker
 from core.data_gateway.providers.base import Provider, ProviderError
 from core.data_gateway.schemas import (
-    BalanceSheet, Fundamentals, MarketIndexSnapshot, NorthFlow, Quote,
-    SectorConstituent, SectorRanking,
+    BalanceSheet, Fundamentals, MarketIndexSnapshot, NewsItem, NorthFlow,
+    Quote, SectorConstituent, SectorRanking,
 )
 
 
@@ -46,6 +46,7 @@ class _FakeProvider(Provider):
         balance_value: Optional[BalanceSheet] = None,
         margin_flow_value: Optional[pd.DataFrame] = None,
         north_history_value: Optional[pd.DataFrame] = None,
+        fundamentals_history_value: Optional[pd.DataFrame] = None,
         news_value: Optional[List[str]] = None,
         raise_on: Optional[str] = None,
         field_authorities: Optional[Dict[Capability, Dict[str, float]]] = None,
@@ -66,6 +67,7 @@ class _FakeProvider(Provider):
         self._balance = balance_value
         self._margin = margin_flow_value if margin_flow_value is not None else pd.DataFrame()
         self._north_history = north_history_value if north_history_value is not None else pd.DataFrame()
+        self._fund_history = fundamentals_history_value if fundamentals_history_value is not None else pd.DataFrame()
         self._news = news_value if news_value is not None else []
         self._raise_on = raise_on
         self._authority = field_authorities or {}
@@ -148,18 +150,35 @@ class _FakeProvider(Provider):
         self._maybe_raise("fetch_north_flow_history")
         return self._north_history
 
+    def fetch_fundamentals_history(self, symbol, start=None, end=None):
+        self.call_log.append(f"fetch_fundamentals_history:{symbol}")
+        self._maybe_raise("fetch_fundamentals_history")
+        return self._fund_history
+
     def fetch_news_headlines(self, symbol, n=20):
         self.call_log.append(f"fetch_news_headlines:{symbol}:{n}")
         self._maybe_raise("fetch_news_headlines")
-        return self._news
+        # G5：base 接口已升级到 List[NewsItem]。允许测试传入 List[str]
+        # 字面量以保持表达精简，这里 best-effort 包装一下。
+        out = []
+        for it in self._news:
+            if isinstance(it, NewsItem):
+                out.append(it)
+            else:
+                out.append(NewsItem(title=str(it), source=self.name))
+        return out
 
 
 @pytest.fixture
 def gw():
-    """全新 gateway + 重置健康度。"""
+    """全新 gateway + 重置健康度（不启用 L2 落盘，避免测试间互相污染）。"""
     from core.circuit_breaker import reset_all
     reset_all()
-    return DataGateway(health=HealthTracker(warmup_count=1), max_parallel=4)
+    return DataGateway(
+        health=HealthTracker(warmup_count=1),
+        max_parallel=4,
+        enable_disk_cache=False,
+    )
 
 
 # ── 注册 / 列出 provider ────────────────────────────────────────────────────
@@ -256,24 +275,63 @@ def test_quote_all_providers_fail_returns_none(gw):
     assert gw.quote("sh600519") is None
 
 
-# ── 不可合并: kline 顺序 failover ─────────────────────────────────────────────
+# ── G1: kline 多源列级合并 ─────────────────────────────────────────────────
 
 
-def test_kline_sequential_first_success_wins(gw):
-    """K 线第一个成功源即返回,其余不调用。"""
-    df1 = pd.DataFrame({"date": ["2026-05-08"], "close": [100]})
+def test_kline_merges_multiple_sources_high_score_wins_overlap(gw):
+    """K 线并发问多源；重叠日期/列由 score(priority_hint) 高的源胜出。"""
+    df_a = pd.DataFrame(
+        {"close": [100], "volume": [1000]},
+        index=pd.to_datetime(["2026-05-08"]),
+    )
+    df_b = pd.DataFrame(
+        {"close": [200], "volume": [2000]},
+        index=pd.to_datetime(["2026-05-08"]),
+    )
     a = _FakeProvider("A", priority_hint=0.9,
                       capabilities=(Capability.KLINE_DAILY,),
-                      kline_value=df1)
+                      kline_value=df_a)
     b = _FakeProvider("B", priority_hint=0.8,
                       capabilities=(Capability.KLINE_DAILY,),
-                      kline_value=pd.DataFrame({"date": ["2026-05-08"], "close": [200]}))
+                      kline_value=df_b)
     gw.register_provider(a)
     gw.register_provider(b)
     df = gw.kline("sh600519")
+    # 重叠列：高分 A 胜出
     assert df["close"].iloc[0] == 100
-    # B 因 A 已成功而未被调用
-    assert len(b.call_log) == 0
+    assert df["volume"].iloc[0] == 1000
+    # 两源都被并发调用(G1 行为)
+    assert len(b.call_log) >= 1
+
+
+def test_kline_merges_complementary_dates_and_columns(gw):
+    """A 提供 OHLCV，B 提供 turnover_rate；合并后列并集 + 索引并集。"""
+    df_a = pd.DataFrame(
+        {"open": [10, 11], "close": [11, 12], "volume": [100, 200]},
+        index=pd.to_datetime(["2026-05-08", "2026-05-09"]),
+    )
+    df_b = pd.DataFrame(
+        {"turnover_rate": [1.5, 2.0, 2.5]},
+        index=pd.to_datetime(["2026-05-09", "2026-05-10", "2026-05-11"]),
+    )
+    a = _FakeProvider("A", priority_hint=0.9,
+                      capabilities=(Capability.KLINE_DAILY,),
+                      kline_value=df_a)
+    b = _FakeProvider("B", priority_hint=0.8,
+                      capabilities=(Capability.KLINE_DAILY,),
+                      kline_value=df_b)
+    gw.register_provider(a)
+    gw.register_provider(b)
+    df = gw.kline("sh600519")
+    # 列并集：OHLCV + turnover_rate
+    assert "open" in df.columns
+    assert "turnover_rate" in df.columns
+    # 索引并集：2026-05-08 ~ 2026-05-11
+    assert len(df) == 4
+    # A 没有 2026-05-10 的 close，应为 NaN（kline ffill=False）
+    assert pd.isna(df.loc["2026-05-10", "close"])
+    # B 没有 2026-05-08 的 turnover，应为 NaN
+    assert pd.isna(df.loc["2026-05-08", "turnover_rate"])
 
 
 def test_kline_minute_routes_to_minute_capability(gw):
@@ -342,7 +400,7 @@ def test_quotes_merges_across_providers(gw):
 
 
 def test_quotes_empty_input():
-    gw = DataGateway()
+    gw = DataGateway(enable_disk_cache=False)
     assert gw.quotes([]) == {}
 
 
@@ -390,7 +448,7 @@ def test_market_index_falls_back_to_global(gw):
 def test_unhealthy_provider_loses_to_healthy(gw):
     """连续失败的 provider 健康度下降,后续被排到后面。"""
     health = HealthTracker(warmup_count=1)
-    gw = DataGateway(health=health, max_parallel=2)
+    gw = DataGateway(health=health, max_parallel=2, enable_disk_cache=False)
 
     bad = _FakeProvider("bad", priority_hint=0.9, raise_on="fetch_quote")
     good = _FakeProvider("good", priority_hint=0.1,
@@ -684,3 +742,473 @@ def test_get_gateway_registers_default_providers():
     names = {p.name for p in gw.providers()}
     assert names == {"tencent", "sina", "eastmoney", "yfinance", "baostock", "akshare"}
     reset_gateway(None)
+
+
+# ── G8: L2 落盘缓存集成 ────────────────────────────────────────────────────
+
+
+def test_default_gateway_enables_disk_cache(tmp_path):
+    """默认构造启用 TieredCache，cache_dir 可由参数指定。"""
+    from core.data_gateway.cache import TieredCache
+    gw = DataGateway(cache_dir=str(tmp_path / "gw_cache"))
+    assert isinstance(gw._cache, TieredCache)
+    assert gw._cache._disk is not None
+
+
+def test_disk_cache_can_be_disabled():
+    from core.data_gateway.cache import MemoryCache
+    gw = DataGateway(enable_disk_cache=False)
+    assert isinstance(gw._cache, MemoryCache)
+
+
+def test_fundamentals_history_survives_l1_purge_via_l2(tmp_path):
+    """fundamentals_history 走 L2 落盘：L1 清掉后仍能从 disk 回填，不再调 provider。"""
+    cache_dir = str(tmp_path / "gw_cache")
+    df_mock = pd.DataFrame(
+        {"roe_ttm": [10.0, 11.0], "eps_ttm": [0.5, 0.6]},
+        index=pd.to_datetime(["2024-03-31", "2024-06-30"]),
+    )
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+        markets=(Market.GLOBAL,), fundamentals_history_value=df_mock,
+    )
+
+    # 第一个 gateway：拉数据 + 落盘
+    gw1 = DataGateway(
+        health=HealthTracker(warmup_count=1), max_parallel=2,
+        cache_dir=cache_dir,
+    )
+    gw1.register_provider(p)
+    out1 = gw1.fundamentals_history("sh600519")
+    assert not out1.empty
+    n_calls_1 = len([c for c in p.call_log if "fetch_fundamentals_history" in c])
+    assert n_calls_1 == 1
+
+    # 第二个 gateway（模拟进程重启）：清掉 L1 但 L2 文件还在
+    gw2 = DataGateway(
+        health=HealthTracker(warmup_count=1), max_parallel=2,
+        cache_dir=cache_dir,
+    )
+    p2 = _FakeProvider(
+        "ak", capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+        markets=(Market.GLOBAL,), fundamentals_history_value=df_mock,
+    )
+    gw2.register_provider(p2)
+    out2 = gw2.fundamentals_history("sh600519")
+    assert not out2.empty
+    # 关键断言：新 gateway 一次都没调 provider，全部走 L2
+    assert len([c for c in p2.call_log if "fetch_fundamentals_history" in c]) == 0
+
+
+def test_quote_does_not_persist_to_disk(tmp_path):
+    """Quote 不在持久化白名单，即使 disk cache 开启也不应落盘。"""
+    cache_dir = str(tmp_path / "gw_cache")
+    p = _FakeProvider(
+        "p", quote_value=Quote(symbol="sh600519", price=100),
+    )
+    gw = DataGateway(
+        health=HealthTracker(warmup_count=1), max_parallel=2,
+        cache_dir=cache_dir,
+    )
+    gw.register_provider(p)
+    gw.quote("sh600519")
+    # disk cache 目录应该不存在或为空(quote 不落盘)
+    import os
+    if os.path.exists(cache_dir):
+        files = [f for f in os.listdir(cache_dir) if f.endswith(".parquet")]
+        assert len(files) == 0
+
+
+# ── G3: 时序缓存全量+切片 ────────────────────────────────────────────────
+
+
+def test_fundamentals_history_caches_full_serves_slices(gw):
+    """同一 symbol 不同时间窗口请求共享缓存：第 2 次起不再调 provider。"""
+    full_df = pd.DataFrame(
+        {"roe_ttm": [8.0, 9.0, 10.0, 11.0, 12.0]},
+        index=pd.to_datetime(["2023-01-01", "2023-04-01", "2023-07-01",
+                              "2023-10-01", "2024-01-01"]),
+    )
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+        markets=(Market.GLOBAL,), fundamentals_history_value=full_df,
+    )
+    gw.register_provider(p)
+
+    # 第一次 miss：拉全量
+    out1 = gw.fundamentals_history("sh600519", "2023-01-01", "2023-12-31")
+    assert len(out1) == 4    # 2023 内 4 个季报点
+
+    # 第二次完全不同的窗口：应命中缓存，provider 0 次额外调用
+    out2 = gw.fundamentals_history("sh600519", "2023-07-01", "2024-12-31")
+    assert len(out2) == 3
+    n_calls = len([c for c in p.call_log if "fetch_fundamentals_history" in c])
+    assert n_calls == 1     # 仍是首次的那 1 次
+
+
+def test_fundamentals_history_fetch_ignores_start_end(gw):
+    """G3: 拉取 provider 时不再传 start/end，让 provider 给最长可得序列。"""
+    captured = {"args": None}
+
+    class _SpyProvider(Provider):
+        name = "spy"
+        def declare(self):
+            return ProviderCapability(
+                capabilities=frozenset({Capability.FUNDAMENTALS_HISTORY}),
+                markets=frozenset({Market.GLOBAL}),
+                priority_hint=0.5,
+            )
+        def fetch_fundamentals_history(self, symbol, start=None, end=None):
+            captured["args"] = (symbol, start, end)
+            return pd.DataFrame(
+                {"roe_ttm": [10.0]},
+                index=pd.to_datetime(["2024-01-01"]),
+            )
+
+    gw.register_provider(_SpyProvider())
+    gw.fundamentals_history("sh600519", start="2024-06-01", end="2024-12-31")
+    assert captured["args"] == ("sh600519", None, None)
+
+
+def test_kline_caches_wide_serves_narrow(gw):
+    """kline 缓存"宽窗口"，多次窄请求共享。"""
+    wide_df = pd.DataFrame(
+        {"open": list(range(100)), "close": list(range(1, 101)),
+         "high": list(range(2, 102)), "low": list(range(100)),
+         "volume": list(range(100))},
+        index=pd.date_range("2024-01-01", periods=100, freq="B"),
+    )
+    p = _FakeProvider(
+        "p", capabilities=(Capability.KLINE_DAILY,),
+        markets=(Market.A,), kline_value=wide_df,
+    )
+    gw.register_provider(p)
+
+    out1 = gw.kline("sh600519", interval="daily", days=30)
+    assert len(out1) == 30
+    out2 = gw.kline("sh600519", interval="daily", days=50)
+    assert len(out2) == 50
+
+    # 两次 kline 调用，provider 只被命中 1 次
+    assert len([c for c in p.call_log if "fetch_kline_daily" in c]) == 1
+
+
+def test_kline_first_fetch_widens_to_default(gw):
+    """首次 miss 时 days/limit 被放宽到 _WIDE_FETCH 默认值。"""
+    captured = {"kw": None}
+
+    class _SpyP(Provider):
+        name = "spy"
+        def declare(self):
+            return ProviderCapability(
+                capabilities=frozenset({Capability.KLINE_DAILY}),
+                markets=frozenset({Market.A}),
+                priority_hint=0.5,
+            )
+        def fetch_kline_daily(self, symbol, **kw):
+            captured["kw"] = kw
+            return pd.DataFrame(
+                {"close": list(range(50))},
+                index=pd.date_range("2024-01-01", periods=50, freq="B"),
+            )
+
+    gw.register_provider(_SpyP())
+    gw.kline("sh600519", interval="daily", days=20)
+    # _WIDE_FETCH[KLINE_DAILY] = {"days": 730, "limit": 730}
+    assert captured["kw"]["days"] == 730
+
+
+def test_fund_flow_caches_full_serves_slices(gw):
+    """fund_flow 缓存全量，按 start/end 切片。"""
+    full_df = pd.DataFrame(
+        {"main_net_inflow": list(range(60))},
+        index=pd.date_range("2024-01-01", periods=60, freq="B"),
+    )
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.FUND_FLOW,),
+        markets=(Market.GLOBAL,),
+    )
+    p._fund_flow = full_df    # 通过实例变量直接注入(FakeProvider 字段命名问题)
+
+    # FakeProvider 用 margin_flow_value=... 兼容 fund_flow？让我们直接给一个适配
+    # 简单点：mock fetch_fund_flow
+    class _FFProvider(Provider):
+        name = "ff"
+        call_log: List[str] = []
+        def declare(self):
+            return ProviderCapability(
+                capabilities=frozenset({Capability.FUND_FLOW}),
+                markets=frozenset({Market.GLOBAL}),
+                priority_hint=0.5,
+            )
+        def fetch_fund_flow(self, symbol, start=None, end=None):
+            self.call_log.append(f"fetch_fund_flow:{symbol}:{start}:{end}")
+            return full_df
+
+    ff = _FFProvider()
+    gw.register_provider(ff)
+
+    out1 = gw.fund_flow("sh600519", start="2024-01-15", end="2024-02-15")
+    assert (out1.index >= pd.Timestamp("2024-01-15")).all()
+    assert (out1.index <= pd.Timestamp("2024-02-15")).all()
+
+    out2 = gw.fund_flow("sh600519", start="2024-02-20", end="2024-03-31")
+    assert (out2.index >= pd.Timestamp("2024-02-20")).all()
+    # provider 只调用 1 次
+    assert len(ff.call_log) == 1
+    # 拉取时不传 start/end
+    assert ff.call_log[0].endswith(":None:None")
+
+
+def test_north_flow_history_caches_full_serves_tail(gw):
+    """north_flow_history 缓存全量，按 days 取末尾。"""
+    full_df = pd.DataFrame(
+        {"north_flow": list(range(500))},
+        index=pd.date_range("2023-01-01", periods=500, freq="B"),
+    )
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.NORTH_FLOW,), markets=(Market.GLOBAL,),
+        north_history_value=full_df,
+    )
+    gw.register_provider(p)
+
+    out1 = gw.north_flow_history(days=30)
+    assert len(out1) == 30
+    out2 = gw.north_flow_history(days=100)
+    assert len(out2) == 100
+    out3 = gw.north_flow_history(days=500)
+    assert len(out3) == 500
+
+    # 3 次请求，provider 只被命中 1 次
+    assert len([c for c in p.call_log if "fetch_north_flow_history" in c]) == 1
+
+
+def test_north_flow_history_first_fetch_widens(gw):
+    """首次 miss 时 days 放宽到 5 年。"""
+    captured = {"days": None}
+
+    class _SpyP(Provider):
+        name = "spy"
+        def declare(self):
+            return ProviderCapability(
+                capabilities=frozenset({Capability.NORTH_FLOW}),
+                markets=frozenset({Market.GLOBAL}),
+                priority_hint=0.5,
+            )
+        def fetch_north_flow_history(self, days=252):
+            captured["days"] = days
+            return pd.DataFrame(
+                {"north_flow": [1.0]},
+                index=pd.to_datetime(["2024-01-01"]),
+            )
+
+    gw.register_provider(_SpyP())
+    gw.north_flow_history(days=30)
+    # _WIDE_FETCH[NORTH_FLOW] = {"days": 1825}
+    assert captured["days"] == 1825
+
+
+def test_invalidate_fundamentals_history_precise(gw):
+    """G3 后缓存键只有 symbol，精确 invalidate 即可。"""
+    df = pd.DataFrame(
+        {"roe_ttm": [10.0]}, index=pd.to_datetime(["2024-01-01"]),
+    )
+    p = _FakeProvider(
+        "ak", capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+        markets=(Market.GLOBAL,), fundamentals_history_value=df,
+    )
+    gw.register_provider(p)
+
+    gw.fundamentals_history("sh600519")
+    gw.fundamentals_history("sh000001")
+    gw.invalidate_fundamentals_history("sh600519")
+
+    # sh600519 被清，再请求会触发 provider
+    gw.fundamentals_history("sh600519")
+    n_calls_a = len([c for c in p.call_log if "fetch_fundamentals_history:sh600519" in c])
+    assert n_calls_a == 2
+    # sh000001 仍命中缓存
+    gw.fundamentals_history("sh000001")
+    n_calls_b = len([c for c in p.call_log if "fetch_fundamentals_history:sh000001" in c])
+    assert n_calls_b == 1
+
+
+# ── G1: _merged_history_fetch helper 直接测试 ─────────────────────────────
+
+
+def test_merged_history_fetch_complementary_columns(gw):
+    """两源贡献不同列 → 合并后列并集，每列 provenance 正确。"""
+    df_a = pd.DataFrame(
+        {"roe_ttm": [10.0, 11.0]},
+        index=pd.to_datetime(["2024-03-31", "2024-06-30"]),
+    )
+    df_b = pd.DataFrame(
+        {"eps_yoy": [20.0, 25.0]},
+        index=pd.to_datetime(["2024-03-31", "2024-06-30"]),
+    )
+    a = _FakeProvider("baostock", priority_hint=0.9,
+                      capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                      markets=(Market.GLOBAL,),
+                      fundamentals_history_value=df_a)
+    b = _FakeProvider("akshare", priority_hint=0.5,
+                      capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                      markets=(Market.GLOBAL,),
+                      fundamentals_history_value=df_b)
+    gw.register_provider(a)
+    gw.register_provider(b)
+
+    merged, prov = gw._merged_history_fetch(
+        Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
+        "fetch_fundamentals_history", "sh600519", None, None,
+    )
+    assert "roe_ttm" in merged.columns
+    assert "eps_yoy" in merged.columns
+    assert prov["roe_ttm"] == "baostock"
+    assert prov["eps_yoy"] == "akshare"
+
+
+def test_merged_history_fetch_overlap_high_score_wins(gw):
+    """同列重叠值 → 高 score 源胜出。"""
+    idx = pd.to_datetime(["2024-01-01", "2024-04-01"])
+    df_hi = pd.DataFrame({"roe_ttm": [12.0, 13.0]}, index=idx)
+    df_lo = pd.DataFrame({"roe_ttm": [8.0, 9.0]}, index=idx)
+    hi = _FakeProvider("hi", priority_hint=0.95,
+                       capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                       markets=(Market.GLOBAL,),
+                       fundamentals_history_value=df_hi)
+    lo = _FakeProvider("lo", priority_hint=0.20,
+                       capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                       markets=(Market.GLOBAL,),
+                       fundamentals_history_value=df_lo)
+    gw.register_provider(hi)
+    gw.register_provider(lo)
+
+    merged, prov = gw._merged_history_fetch(
+        Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
+        "fetch_fundamentals_history", "sh600519", None, None,
+    )
+    assert merged["roe_ttm"].tolist() == [12.0, 13.0]
+    assert prov["roe_ttm"] == "hi"
+
+
+def test_merged_history_fetch_low_score_fills_high_score_gap(gw):
+    """高 score 源缺某行 → 低 score 源补缺。"""
+    df_hi = pd.DataFrame(
+        {"roe_ttm": [10.0]},
+        index=pd.to_datetime(["2024-01-01"]),
+    )
+    df_lo = pd.DataFrame(
+        {"roe_ttm": [8.0, 9.0]},
+        index=pd.to_datetime(["2024-01-01", "2024-04-01"]),
+    )
+    hi = _FakeProvider("hi", priority_hint=0.95,
+                       capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                       markets=(Market.GLOBAL,),
+                       fundamentals_history_value=df_hi)
+    lo = _FakeProvider("lo", priority_hint=0.20,
+                       capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                       markets=(Market.GLOBAL,),
+                       fundamentals_history_value=df_lo)
+    gw.register_provider(hi)
+    gw.register_provider(lo)
+
+    merged, _ = gw._merged_history_fetch(
+        Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
+        "fetch_fundamentals_history", "sh600519", None, None,
+        ffill=False,
+    )
+    # 索引并集 [2024-01-01, 2024-04-01]
+    assert len(merged) == 2
+    # 2024-01-01：hi 有值（10），用 hi
+    assert merged.loc["2024-01-01", "roe_ttm"] == 10.0
+    # 2024-04-01：hi 缺，用 lo 的 9
+    assert merged.loc["2024-04-01", "roe_ttm"] == 9.0
+
+
+def test_merged_history_fetch_all_empty_returns_empty(gw):
+    a = _FakeProvider("a", priority_hint=0.5,
+                      capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                      markets=(Market.GLOBAL,),
+                      fundamentals_history_value=pd.DataFrame())
+    gw.register_provider(a)
+    merged, prov = gw._merged_history_fetch(
+        Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
+        "fetch_fundamentals_history", "sh600519", None, None,
+    )
+    assert merged.empty
+    assert prov == {}
+
+
+def test_merged_history_fetch_no_candidates_returns_empty(gw):
+    """无声明该 capability 的 provider → 空。"""
+    merged, prov = gw._merged_history_fetch(
+        Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
+        "fetch_fundamentals_history", "sh600519", None, None,
+    )
+    assert merged.empty
+    assert prov == {}
+
+
+def test_merged_history_fetch_object_column_does_not_raise(gw):
+    """pandas ≥ 2.2 移除了 pd.to_numeric(errors='ignore')，旧代码在 object
+    列上会抛 ValueError。本回归保证：
+
+      - 列里混入字符串（如 'N/A'）时合并不抛异常
+      - 该列保持 object dtype（无法整体转 numeric，按"保留原状"语义处理）
+      - 邻近的纯数值列被合并后仍是 numeric dtype
+    """
+    idx = pd.to_datetime(["2024-03-31", "2024-06-30"])
+    df_a = pd.DataFrame(
+        {"roe_ttm": [10.0, 11.0], "note": ["A", "N/A"]}, index=idx,
+    )
+    df_b = pd.DataFrame(
+        {"roe_ttm": [9.5, None], "note": [None, "B"]}, index=idx,
+    )
+    a = _FakeProvider("a", priority_hint=0.9,
+                      capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                      markets=(Market.GLOBAL,),
+                      fundamentals_history_value=df_a)
+    b = _FakeProvider("b", priority_hint=0.3,
+                      capabilities=(Capability.FUNDAMENTALS_HISTORY,),
+                      markets=(Market.GLOBAL,),
+                      fundamentals_history_value=df_b)
+    gw.register_provider(a)
+    gw.register_provider(b)
+
+    merged, _ = gw._merged_history_fetch(
+        Capability.FUNDAMENTALS_HISTORY, Market.GLOBAL,
+        "fetch_fundamentals_history", "sh600519", None, None,
+        ffill=False,
+    )
+    # 关键：不抛异常即过；下面只做轻量结构断言
+    assert "roe_ttm" in merged.columns
+    assert "note" in merged.columns
+    # roe_ttm 仍是 numeric，note 保留 non-numeric（object 或 pandas 3.0
+    # 的 StringDtype 均可，反正不是数值列）
+    assert pd.api.types.is_numeric_dtype(merged["roe_ttm"])
+    assert not pd.api.types.is_numeric_dtype(merged["note"])
+
+
+def test_kline_daily_persists_kline_minute_does_not(tmp_path):
+    """KLINE_DAILY 在白名单内落盘；KLINE_MINUTE 不在白名单不落盘。"""
+    cache_dir = str(tmp_path / "gw_cache")
+    kline_df = pd.DataFrame(
+        {"open": [10], "close": [11], "high": [11.5], "low": [9.8], "volume": [1000]},
+        index=pd.to_datetime(["2024-01-02"]),
+    )
+    p = _FakeProvider(
+        "p", capabilities=(Capability.KLINE_DAILY, Capability.KLINE_MINUTE),
+        markets=(Market.A, Market.HK), kline_value=kline_df,
+    )
+    gw = DataGateway(
+        health=HealthTracker(warmup_count=1), max_parallel=2,
+        cache_dir=cache_dir,
+    )
+    gw.register_provider(p)
+    gw.kline("sh600519", interval="daily")
+    gw.kline("hk00700", interval="5m")
+
+    import os
+    files = [f for f in os.listdir(cache_dir) if f.endswith(".parquet")]
+    # 只有 1 个 parquet 文件（daily 的），minute 的不落盘
+    assert len(files) == 1

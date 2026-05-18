@@ -114,9 +114,18 @@ Provider 注册表
 
 ### 选源策略
 
-- **可合并字段**(Quote / Fundamentals):并发问 top-K provider,字段级互补合并。
-  评分 `provider_health × field_authority`。
-- **不可合并**(K 线 / 板块 / 北向):按健康度降序逐个尝试,首个成功返回。
+G4 后由 `capabilities.ROUTING_POLICY` 集中声明，`DataGateway._route()`
+查表分派到对应底层原语：
+
+| 策略 | 适用场景 | 底层原语 |
+|---|---|---|
+| `FAILOVER` | 单点快照 / list 类（sectors / market_index / macro / margin / news_headlines）| `_sequential_fetch` 按健康度逐个尝试，首个成功返回 |
+| `MERGE_FIELDS` | dataclass 多源字段互补（quote / fundamentals / balance_sheet）| `_merged_fetch` 并发 top-K，按 `provider_health × field_authority` 字段级胜出 |
+| `MERGE_FRAMES` | 时序 DataFrame 列级互补（kline / north_flow_history / fund_flow / fundamentals_history）| `_merged_history_fetch` 行索引并集 + 列级 score 胜出 |
+| `MERGE_LISTS` | 多源 list 归一去重（news_headlines）| `_merged_list_fetch` 并发拉所有源 → 归一标题 dedupe（去 "【...】"/末尾"。"/全角空格转半角）→ 按 ts 倒序、缺 ts 排末尾 |
+
+新增数据类型时在 `ROUTING_POLICY` 加一行 `(Capability, fetch_*) → CapabilityPolicy(strategy, skip_fields, ffill)` 即可；
+未登记的 (cap, fn) 调用 `_route` 直接 KeyError，杜绝静默走默认分支。
 
 ### 字段权威权重
 
@@ -147,16 +156,52 @@ Provider 注册表
 from core.data_gateway import get_gateway
 
 gw = get_gateway()
-gw.quote('600519.SH')                           # 实时行情
-gw.kline('600519.SH', interval='daily', days=120)
+gw.quote('600519.SH')                           # 实时行情(字段级多源合并)
+gw.kline('600519.SH', interval='daily', days=120)  # 日K(G1 列级合并)
 gw.kline('00700.HK', interval='5m', limit=100)  # 分钟 K(仅 HK)
 gw.market_index('sh000001')
 gw.sectors(limit=50)
 gw.north_flow()
 gw.macro('PMI')                                  # MacroIndicator.PMI
 gw.fundamentals('600519.SH')
-gw.fundamentals_history('600519.SH')
+gw.fundamentals_history('600519.SH')              # 时序(G1+G3 全量缓存)
+gw.profile('600519.SH')                          # G2 聚合信息包，一次拿到所有切片
 ```
+
+### Sprint 1 重构(2026-05 落地)
+
+- **G8 TieredCache**: L1 内存 + L2 ParquetDiskCache，进程重启不丢，
+  跨进程共享。受益能力(白名单)：KLINE_DAILY / FUNDAMENTALS_HISTORY /
+  BALANCE_SHEET / MARGIN_FLOW / FUND_FLOW / NORTH_FLOW / MACRO。
+  路径：`data/cache/data_gateway/`（`TRADING_DATA_GATEWAY_CACHE_DIR` 覆盖）。
+- **G3 时序缓存全量化**: 缓存键去掉 start/end/days/limit 等切片参数，
+  内部存"已知最长时序"，出口处切片。同 symbol 不同窗口共享同一缓存。
+- **G1 时序数据列级合并**: `_merged_history_fetch` 通用 helper，
+  并发拉多源、行索引并集 + 列级 score 胜出。kline / fund_flow /
+  north_flow_history / fundamentals_history 统一走它。
+- **G2 StockProfile 聚合视图**: `gw.profile(symbol)` 一次并发触发
+  quote / fundamentals / balance_sheet / margin / fund_flow /
+  headlines / macro 全部切片，组装 `StockProfile`（含 completeness +
+  provenance）。任意切片失败不阻塞，由独立 executor 避免与
+  `self._executor` 嵌套提交死锁。
+
+### Sprint 2 重构(2026-05 落地)
+
+- **G4 CapabilityPolicy 路由元数据**: 把硬编码在各 gw.* 方法里的
+  `_sequential_fetch / _merged_fetch / _merged_history_fetch` 分派
+  + `skip_fields` + `ffill` 抽到 `ROUTING_POLICY` 声明表，
+  `DataGateway._route()` 单点查表分派。副作用：FAILOVER 现在也把源名
+  写入 `_last_provenance[key] = {"_provider": name}`，G2 的 margin /
+  news 的 best-effort 注释作废。
+- **G5 news 多源归一去重**: 新增 `schemas.NewsItem(title, timestamp,
+  source, content)`，`base.fetch_news_headlines` 升级到 `List[NewsItem]`。
+  EM 解析 showtime 写入 timestamp；AkshareProvider 新增 NEWS_HEADLINES
+  capability，通过 `ak.stock_info_global_cls` 拉财联社电报作第二源。
+  gateway `_merged_list_fetch` 并发拉所有候选源，按归一标题
+  （去 "【...】"/末尾"。"/全角空格转半角）去重 + 按 timestamp 倒序排序；
+  缺 ts 条目排末尾。`gw.news_headlines(symbol, n) -> List[str]` 公开
+  签名不变，内部投影 NewsItem.title。
+- 详细路线图见 `docs/TODO.md`。
 
 ## 因子流水线
 
