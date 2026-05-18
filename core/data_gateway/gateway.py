@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from time import perf_counter
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -38,8 +39,9 @@ from .health import HealthTracker, get_health_tracker
 from .merge import Candidate, merge_field_level
 from .providers.base import Provider, ProviderError
 from .schemas import (
-    BalanceSheet, Fundamentals, MarketIndexSnapshot, NorthFlow,
-    Quote, SectorConstituent, SectorRanking,
+    BalanceSheet, Fundamentals, FundFlowSnapshot, MacroSnapshot,
+    MarginSnapshot, MarketIndexSnapshot, NorthFlow,
+    Quote, SectorConstituent, SectorRanking, StockProfile,
 )
 from .symbols import detect_market
 
@@ -853,6 +855,205 @@ class DataGateway:
         self._cache_set(Capability.FUNDAMENTALS_HISTORY, cache_key, merged)
         self._last_provenance[cache_key] = prov
         return _slice_by_range(merged, start, end)
+
+    # ── G2: 聚合视图 profile() ──────────────────────────────────────────────
+
+    def profile(self, symbol: str, *, headlines_n: int = 10) -> StockProfile:
+        """聚合所有 capability 的"信息包"：一次调用拿到该标的当前已知全部信息。
+
+        并发触发以下切片拉取，任意切片失败不阻塞主流程：
+          - quote / fundamentals / balance_sheet（dataclass）
+          - margin_flow / fund_flow 时序末行 → MarginSnapshot / FundFlowSnapshot
+          - news_headlines 列表（全市场快讯，n 条）
+          - macro PMI/M2/CREDIT 末值 → MacroSnapshot
+
+        Args:
+            symbol: 标的代码（如 'sh600519'）
+            headlines_n: 快讯条数上限
+
+        Returns:
+            StockProfile，含 completeness（0-1）和 provenance（每切片主源）。
+        """
+        # 并发触发所有切片
+        # 用独立 executor 避免与 self._executor 嵌套提交导致的死锁：
+        # 主执行器在多个 profile 切片内继续 fan-out 到 _merged_fetch /
+        # _merged_history_fetch，如果它们共享同一池，外层任务会占满 worker，
+        # 内层任务永远等不到空闲槽位 → deadlock。
+        ind_pmi = MacroIndicator.PMI
+        ind_m2 = MacroIndicator.M2
+        ind_credit = MacroIndicator.CREDIT
+
+        results: Dict[str, Any] = {}
+        with ThreadPoolExecutor(
+            max_workers=9, thread_name_prefix="gw_profile",
+        ) as pool:
+            futures: Dict[Any, str] = {
+                pool.submit(self._safe_call, self.quote, symbol): "quote",
+                pool.submit(self._safe_call, self.fundamentals, symbol): "fundamentals",
+                pool.submit(self._safe_call, self.balance_sheet, symbol): "balance_sheet",
+                pool.submit(self._safe_call, self.margin_flow, symbol): "margin_df",
+                pool.submit(self._safe_call, self.fund_flow, symbol): "fund_df",
+                pool.submit(self._safe_call, self.news_headlines, symbol, headlines_n): "headlines",
+                pool.submit(self._safe_call, self.macro, ind_pmi): "macro_pmi",
+                pool.submit(self._safe_call, self.macro, ind_m2): "macro_m2",
+                pool.submit(self._safe_call, self.macro, ind_credit): "macro_credit",
+            }
+            for fut in as_completed(futures):
+                slot = futures[fut]
+                try:
+                    results[slot] = fut.result()
+                except Exception as exc:
+                    logger.debug("profile slot %s 失败: %s", slot, exc)
+                    results[slot] = None
+
+        prof = StockProfile(symbol=symbol)
+        prof.quote = results.get("quote")
+        prof.fundamentals = results.get("fundamentals")
+        prof.balance_sheet = results.get("balance_sheet")
+        prof.headlines = results.get("headlines") or []
+
+        margin_df = results.get("margin_df")
+        if isinstance(margin_df, pd.DataFrame) and not margin_df.empty:
+            prof.margin = self._df_to_margin_snapshot(margin_df)
+
+        fund_df = results.get("fund_df")
+        if isinstance(fund_df, pd.DataFrame) and not fund_df.empty:
+            prof.fund_flow_latest = self._df_to_fund_flow_snapshot(fund_df)
+
+        pmi_df = results.get("macro_pmi")
+        m2_df = results.get("macro_m2")
+        credit_df = results.get("macro_credit")
+        macro_snapshot = self._build_macro_snapshot(pmi_df, m2_df, credit_df)
+        if macro_snapshot is not None:
+            prof.macro = macro_snapshot
+
+        # provenance：从 _last_provenance 中各切片缓存键提取首要源
+        prof.provenance = self._collect_profile_provenance(symbol, prof)
+
+        # completeness：7 个切片(headlines 用是否非空计) 平均
+        slots_filled = [
+            prof.quote is not None,
+            prof.fundamentals is not None,
+            prof.balance_sheet is not None,
+            prof.margin is not None,
+            prof.fund_flow_latest is not None,
+            bool(prof.headlines),
+            prof.macro is not None,
+        ]
+        prof.completeness = sum(slots_filled) / len(slots_filled)
+
+        return prof
+
+    @staticmethod
+    def _safe_call(fn, *args, **kw):
+        """profile 内并发切片包装：单切片异常不阻塞其他切片。"""
+        try:
+            return fn(*args, **kw)
+        except Exception as exc:
+            logger.debug("profile slice %s 失败: %s", fn.__name__, exc)
+            return None
+
+    @staticmethod
+    def _df_to_margin_snapshot(df: pd.DataFrame) -> MarginSnapshot:
+        last = df.iloc[-1]
+        idx = df.index[-1]
+        ts = idx.to_pydatetime() if hasattr(idx, "to_pydatetime") else datetime.now()
+        def f(col):
+            if col not in df.columns:
+                return 0.0
+            try:
+                v = float(last[col])
+                return v if v == v else 0.0
+            except (TypeError, ValueError):
+                return 0.0
+        return MarginSnapshot(
+            date=ts,
+            margin_balance=f("margin_balance"),
+            net_buy=f("net_buy"),
+            short_balance=f("short_balance"),
+        )
+
+    @staticmethod
+    def _df_to_fund_flow_snapshot(df: pd.DataFrame) -> FundFlowSnapshot:
+        last = df.iloc[-1]
+        idx = df.index[-1]
+        ts = idx.to_pydatetime() if hasattr(idx, "to_pydatetime") else datetime.now()
+        def f(col):
+            if col not in df.columns:
+                return 0.0
+            try:
+                v = float(last[col])
+                return v if v == v else 0.0
+            except (TypeError, ValueError):
+                return 0.0
+        return FundFlowSnapshot(
+            date=ts,
+            main_net_inflow=f("main_net_inflow"),
+            super_net_inflow=f("super_net_inflow"),
+            large_net_inflow=f("large_net_inflow"),
+            medium_net_inflow=f("medium_net_inflow"),
+            small_net_inflow=f("small_net_inflow"),
+            main_net_ratio=f("main_net_ratio"),
+        )
+
+    @staticmethod
+    def _build_macro_snapshot(
+        pmi_df: Optional[pd.DataFrame],
+        m2_df: Optional[pd.DataFrame],
+        credit_df: Optional[pd.DataFrame],
+    ) -> Optional[MacroSnapshot]:
+        def _last_numeric(df: Optional[pd.DataFrame], preferred_col: str) -> float:
+            if not isinstance(df, pd.DataFrame) or df.empty:
+                return 0.0
+            col = preferred_col if preferred_col in df.columns else (
+                df.columns[0] if len(df.columns) else None
+            )
+            if col is None:
+                return 0.0
+            try:
+                v = float(df[col].iloc[-1])
+                return v if v == v else 0.0
+            except (TypeError, ValueError, IndexError):
+                return 0.0
+
+        pmi = _last_numeric(pmi_df, "pmi")
+        m2 = _last_numeric(m2_df, "m2_yoy")
+        credit = _last_numeric(credit_df, "credit_yoy")
+        if pmi == 0 and m2 == 0 and credit == 0:
+            return None
+        return MacroSnapshot(pmi=pmi, m2_yoy=m2, credit_yoy=credit)
+
+    def _collect_profile_provenance(
+        self, symbol: str, prof: StockProfile,
+    ) -> Dict[str, str]:
+        """从 _last_provenance 抽取每个切片的主源(出现频率最高的 provider)。"""
+        from collections import Counter
+
+        def primary(prov_dict: Dict[str, str]) -> str:
+            if not prov_dict:
+                return ""
+            counts = Counter(prov_dict.values())
+            return counts.most_common(1)[0][0]
+
+        out: Dict[str, str] = {}
+        if prof.quote is not None:
+            out["quote"] = primary(self.provenance(f"quote:{symbol}"))
+        if prof.fundamentals is not None:
+            out["fundamentals"] = primary(self.provenance(f"fundamentals:{symbol}"))
+        if prof.balance_sheet is not None:
+            out["balance_sheet"] = primary(self.provenance(f"balance_sheet:{symbol}"))
+        if prof.margin is not None:
+            # margin_flow 当前用 _sequential_fetch（单源）不写 provenance，
+            # 这里 best-effort
+            out["margin"] = primary(self.provenance(f"margin_flow:{symbol}:None:None"))
+        if prof.fund_flow_latest is not None:
+            out["fund_flow"] = primary(self.provenance(f"fund_flow:{symbol}"))
+        if prof.headlines:
+            # news_headlines 也未写 provenance，留空字符串
+            out["headlines"] = ""
+        if prof.macro is not None:
+            out["macro"] = ""    # macro 单源，留空
+        return {k: v for k, v in out.items() if v or k in ("headlines", "macro")}
 
     # ── 监控 / 调试 ──────────────────────────────────────────────────────────
 

@@ -15,12 +15,16 @@ from .capabilities import Capability, Market, ProviderCapability
 from .gateway import DataGateway, get_gateway, reset_gateway
 from .schemas import (
     BalanceSheet,
+    FundFlowSnapshot,
     Fundamentals,
+    MacroSnapshot,
+    MarginSnapshot,
     MarketIndexSnapshot,
     NorthFlow,
     Quote,
     SectorConstituent,
     SectorRanking,
+    StockProfile,
 )
 from .symbols import (
     detect_market,
@@ -48,6 +52,10 @@ __all__ = [
     "SectorConstituent",
     "NorthFlow",
     "MarketIndexSnapshot",
+    "MarginSnapshot",
+    "FundFlowSnapshot",
+    "MacroSnapshot",
+    "StockProfile",
     # capabilities
     "Capability",
     "Market",

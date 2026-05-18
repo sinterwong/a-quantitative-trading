@@ -147,16 +147,35 @@ Provider 注册表
 from core.data_gateway import get_gateway
 
 gw = get_gateway()
-gw.quote('600519.SH')                           # 实时行情
-gw.kline('600519.SH', interval='daily', days=120)
+gw.quote('600519.SH')                           # 实时行情(字段级多源合并)
+gw.kline('600519.SH', interval='daily', days=120)  # 日K(G1 列级合并)
 gw.kline('00700.HK', interval='5m', limit=100)  # 分钟 K(仅 HK)
 gw.market_index('sh000001')
 gw.sectors(limit=50)
 gw.north_flow()
 gw.macro('PMI')                                  # MacroIndicator.PMI
 gw.fundamentals('600519.SH')
-gw.fundamentals_history('600519.SH')
+gw.fundamentals_history('600519.SH')              # 时序(G1+G3 全量缓存)
+gw.profile('600519.SH')                          # G2 聚合信息包，一次拿到所有切片
 ```
+
+### Sprint 1 重构(2026-05 落地)
+
+- **G8 TieredCache**: L1 内存 + L2 ParquetDiskCache，进程重启不丢，
+  跨进程共享。受益能力(白名单)：KLINE_DAILY / FUNDAMENTALS_HISTORY /
+  BALANCE_SHEET / MARGIN_FLOW / FUND_FLOW / NORTH_FLOW / MACRO。
+  路径：`data/cache/data_gateway/`（`TRADING_DATA_GATEWAY_CACHE_DIR` 覆盖）。
+- **G3 时序缓存全量化**: 缓存键去掉 start/end/days/limit 等切片参数，
+  内部存"已知最长时序"，出口处切片。同 symbol 不同窗口共享同一缓存。
+- **G1 时序数据列级合并**: `_merged_history_fetch` 通用 helper，
+  并发拉多源、行索引并集 + 列级 score 胜出。kline / fund_flow /
+  north_flow_history / fundamentals_history 统一走它。
+- **G2 StockProfile 聚合视图**: `gw.profile(symbol)` 一次并发触发
+  quote / fundamentals / balance_sheet / margin / fund_flow /
+  headlines / macro 全部切片，组装 `StockProfile`（含 completeness +
+  provenance）。任意切片失败不阻塞，由独立 executor 避免与
+  `self._executor` 嵌套提交死锁。
+- 详细路线图见 `docs/TODO.md`。
 
 ## 因子流水线
 

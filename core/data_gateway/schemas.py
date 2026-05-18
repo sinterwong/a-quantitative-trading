@@ -11,6 +11,7 @@ data_gateway.merge 维护的旁路记录。这避免数据类知道数据源。
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -210,6 +211,89 @@ class MarketIndexSnapshot:
         return self.price > 0
 
 
+@dataclass
+class MarginSnapshot:
+    """单日融资融券快照（取自 margin_flow 时序末行）。"""
+
+    date: datetime = field(default_factory=datetime.now)
+    margin_balance: float = 0.0       # 融资余额(元)
+    net_buy: float = 0.0              # 融资净买入(元)
+    short_balance: float = 0.0        # 融券余额(元)
+
+    @property
+    def is_valid(self) -> bool:
+        return self.margin_balance > 0 or self.short_balance > 0
+
+
+@dataclass
+class FundFlowSnapshot:
+    """单日资金流快照（取自 fund_flow 时序末行）。"""
+
+    date: datetime = field(default_factory=datetime.now)
+    main_net_inflow: float = 0.0      # 主力净流入(元)
+    super_net_inflow: float = 0.0     # 超大单
+    large_net_inflow: float = 0.0     # 大单
+    medium_net_inflow: float = 0.0    # 中单
+    small_net_inflow: float = 0.0     # 小单
+    main_net_ratio: float = 0.0       # 主力净占比(%)
+
+    @property
+    def is_valid(self) -> bool:
+        return any([
+            self.main_net_inflow, self.super_net_inflow,
+            self.large_net_inflow, self.medium_net_inflow, self.small_net_inflow,
+        ])
+
+
+@dataclass
+class MacroSnapshot:
+    """宏观指标当前最新值集合（取自 macro 各序列的末行）。"""
+
+    pmi: float = 0.0                  # 制造业 PMI
+    m2_yoy: float = 0.0               # M2 同比 %
+    credit_yoy: float = 0.0           # 社融存量同比 %
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    @property
+    def is_valid(self) -> bool:
+        return self.pmi > 0 or self.m2_yoy > 0 or self.credit_yoy > 0
+
+
+@dataclass
+class StockProfile:
+    """聚合视图：一次 gw.profile(symbol) 返回的"信息包"。
+
+    G2 设计核心：调用方不需要关心数据从哪来——任何切片可能来自不同 provider，
+    任何切片缺失都不阻塞主流程，只反映在 completeness 上。
+
+    切片来源由 provenance 字典披露（{slice_name: primary_provider}）。
+    """
+
+    symbol: str = ""
+    as_of: datetime = field(default_factory=datetime.now)
+
+    # 切片(任意一个为 None 表示该源不可用)
+    quote: Optional[Quote] = None
+    fundamentals: Optional[Fundamentals] = None
+    balance_sheet: Optional[BalanceSheet] = None
+    margin: Optional[MarginSnapshot] = None
+    fund_flow_latest: Optional[FundFlowSnapshot] = None
+    headlines: List[str] = field(default_factory=list)
+    macro: Optional[MacroSnapshot] = None
+
+    # 元数据
+    completeness: float = 0.0                          # 0-1，已填充切片占比
+    provenance: Dict[str, str] = field(default_factory=dict)  # slice → primary provider
+
+    @property
+    def is_valid(self) -> bool:
+        """至少有 quote 或 fundamentals 才视为有效。"""
+        return (
+            (self.quote is not None and self.quote.is_valid)
+            or (self.fundamentals is not None and self.fundamentals.is_valid)
+        )
+
+
 __all__ = [
     "Quote",
     "Fundamentals",
@@ -218,4 +302,8 @@ __all__ = [
     "SectorConstituent",
     "NorthFlow",
     "MarketIndexSnapshot",
+    "MarginSnapshot",
+    "FundFlowSnapshot",
+    "MacroSnapshot",
+    "StockProfile",
 ]

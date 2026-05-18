@@ -1,5 +1,12 @@
 # 数据层重构路线图
 
+> **Sprint 1 已完成**（commit 11b7e72 → ...）：G8 / G3 / G1 / G2 全部交付，
+> `gw.profile(symbol)` 已可用。详见各章节末尾的「✅ 已完成」标记。
+
+---
+
+
+
 > **核心目标**：让 `core/data_gateway/` 从「多源 failover 网关」升级为
 > 「多源冗余聚合 + 信息包合一」的数据层。最终调用方只需要：
 > ```python
@@ -31,6 +38,8 @@
 - DataGateway 集成测试：重启后 disk cache 命中、L1 失效后从 L2 回填
 - 全套既有测试通过
 
+✅ 已完成：commit 99e742c，+9 cache 单元测试 + 4 gateway 集成测试。
+
 ---
 
 ### G3 — 时序缓存改"全量+切片"
@@ -55,6 +64,8 @@ cache_key = f"kline:{symbol}:{interval}:{days}:{adjust}:{limit}"
 - 切片正确：返回的 DataFrame 索引在用户请求的 [start, end] 区间内
 - 不破坏现有 `MarginDataStore` / 因子层调用兼容性
 
+✅ 已完成：commit 5954279，+7 切片复用 / 宽抓取 / 精确 invalidate 测试。
+
 ---
 
 ### G1 — K 线字段级合并（抽 _merged_history_fetch）
@@ -76,6 +87,9 @@ Baostock 复权更权威、yfinance 美股延迟更低）。
 - mock 多个 provider 给同 symbol 不同部分列的 K 线，验证合并后字段并集
 - mock 多个 provider 同列不同值，验证按 health 选源
 - 既有 `fundamentals_history` 测试不回归
+
+✅ 已完成：commit 37167d2，+5 _merged_history_fetch 直接测试 + 2 kline
+重构后语义验证测试。
 
 ---
 
@@ -107,6 +121,9 @@ macro = {k: gw.macro(k).tail(1).iloc[0,0] for k in ('PMI','M2','CREDIT')}
 - mock 全部 capability 返回，验证 StockProfile 字段填充正确
 - mock 部分 capability 失败，验证 completeness < 1 且 provenance 记录正确
 - `tests/test_data_gateway/test_gateway_profile.py` 新文件
+
+✅ 已完成：commit TBD（本 commit），+11 集成测试。注意：profile() 使用
+独立 ThreadPoolExecutor，避免与 self._executor 嵌套提交导致的死锁。
 
 ---
 
