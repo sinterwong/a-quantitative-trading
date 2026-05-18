@@ -41,18 +41,71 @@ st.caption('factor_name 可填 RSI / MACDTrend / Bollinger / ATR 等(由 backend
            ' params_json 是合法 JSON,如 `{"period": 14}`。')
 
 default_strategies = pd.DataFrame([
-    # ✅ 直接点击"运行回测"即可执行的示例策略
-    # 注意：选低价股（如 sh601012 隆基绿能 ~15元），高价股（如茅台 sh600519 ~1400元）
-    # 100股起买，10万本金对高价股买不了1手导致0交易。
+    # ── 技术面（趋势/动量）──────────────────────────────
     {
-        'factor_name': 'BollingerBands',
-        'threshold': 0.5,
-        'params_json': '{"period": 20, "nb_std": 2.0}',
+        'factor_name': 'RSI',
+        'threshold': 1.0,        # z < -1.0 即 RSI<30 视为超卖
+        'params_json': '{"period": 14}',
     },
     {
         'factor_name': 'MACD',
         'threshold': 0.0,
         'params_json': '{"fast": 12, "slow": 26, "signal": 9}',
+    },
+    {
+        'factor_name': 'BollingerBands',
+        'threshold': 0.5,
+        'params_json': '{"period": 20, "nb_std": 2.0}',
+    },
+    # ── 技术面（成交量/订单簿）─────────────────────────
+    {
+        'factor_name': 'OrderImbalance',
+        'threshold': 1.0,
+        'params_json': '{"window": 10}',
+    },
+    {
+        'factor_name': 'BuyingPressure',
+        'threshold': 0.5,
+        'params_json': '{"window": 10}',
+    },
+    # ── 技术面（波动率/通道）───────────────────────────
+    {
+        'factor_name': 'VolAcceleration',
+        'threshold': 1.0,
+        'params_json': '{"short_window": 5, "long_window": 20}',
+    },
+    {
+        'factor_name': 'OpenGap',
+        'threshold': 1.5,
+        'params_json': '{"window": 20}',
+    },
+    # ── 资金流 ────────────────────────────────────────
+    {
+        'factor_name': 'NorthboundFlow',
+        'threshold': 1.0,
+        'params_json': '{"window": 5}',
+    },
+    {
+        'factor_name': 'SectorMomentum',
+        'threshold': 1.0,
+        'params_json': '{"momentum_window": 20}',
+    },
+    # ── 基本面 ────────────────────────────────────────
+    {
+        'factor_name': 'ROEMomentum',
+        'threshold': 0.5,
+        'params_json': '{"diff_days": 252}',
+    },
+    {
+        'factor_name': 'RevenueGrowth',
+        'threshold': 0.5,
+        'params_json': '{"accel_window": 60}',
+    },
+    # ── 相对强弱 ──────────────────────────────────────
+    {
+        'factor_name': 'IndexRelativeStrength',
+        'threshold': 1.0,
+        'params_json': '{"window": 20}',
     },
 ])
 edited = st.data_editor(
