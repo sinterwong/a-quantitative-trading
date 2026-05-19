@@ -875,155 +875,7 @@ def portfolio_compose():
 # Data fetch endpoints (多源兜底路由)
 # ============================================================
 
-_DATA_NOT_FOUND_MARKERS = (
-    '所有数据源均失败',   # FetcherManager 所有 fetcher 都失败
-    '未获取到数据',
-    '空数据',
-    'no data',
-)
-
-
-def _is_symbol_not_found(err_msg: str) -> bool:
-    """根据 fetcher 错误消息判断是否属于"无此 symbol",而非内部异常。"""
-    s = str(err_msg)
-    return any(m in s for m in _DATA_NOT_FOUND_MARKERS)
-
-
-@app.route('/data/daily/<code>', methods=['GET'])
-def data_daily(code):
-    """
-    GET /data/daily/<code>
-    Query params:
-        days     — int, number of trading days (default 30, max 2000)
-        start    — str, start date YYYY-MM-DD (optional)
-        end      — str, end date YYYY-MM-DD (optional)
-
-    Returns:
-        Standardized OHLCV daily data with MA5/MA10/MA20/volume_ratio.
-        Multi-source failover: Tencent → Sina → AkShare(熔断器保护)。
-
-    Status:
-        200 - 数据正常返回
-        404 - 全部 fetcher 都报"无该 symbol 数据",视为标的不存在
-        500 - 内部错误(网络全断 / fetcher_manager 加载失败 / 等)
-    """
-    try:
-        from services.fetcher_manager import get_fetcher_manager
-        days = int(request.args.get('days', 30))
-        days = min(days, 2000)
-        start = request.args.get('start') or None
-        end = request.args.get('end') or None
-
-        fm = get_fetcher_manager()
-        df = fm.get_daily_data(code, start_date=start, end_date=end, days=days)
-    except Exception as exc:
-        app.logger.exception('data_daily(%s) failed', code)
-        if _is_symbol_not_found(exc):
-            return err(f'无该标的的行情数据: {code}', 404)
-        return err(f'数据获取失败: {exc}', 500)
-
-    records = []
-    for _, row in df.iterrows():
-        rec = {}
-        for col, val in row.items():
-            if col == 'date':
-                rec[col] = str(val)[:10] if val else None
-            elif val is not None:
-                rec[col] = round(float(val), 4) if isinstance(val, (int, float)) else val
-        records.append(rec)
-
-    return ok(
-        code=code,
-        rows=len(records),
-        columns=list(df.columns),
-        data=records,
-        fetcher_status=fm.get_fetcher_status(),
-    )
-
-
-@app.route('/data/status', methods=['GET'])
-def data_status():
-    """
-    GET /data/status
-    Returns the current status of all registered fetchers
-    (circuit breaker state, failure count, availability).
-    """
-    from services.fetcher_manager import get_fetcher_manager
-    fm = get_fetcher_manager()
-    return ok(
-        fetchers=[f.name for f in fm.fetchers],
-        status=fm.get_fetcher_status(),
-    )
-
-
-@app.route('/data/fund_flow', methods=['GET'])
-def data_fund_flow():
-    """
-    GET /data/fund_flow
-    Query params:
-        source  — 'market' / 'top' / stock code (e.g. '600900')
-        period  — '5日排行' (default) / '3日排行' / '10日排行'
-        top     — int, number of top stocks to return (default 20, only for source='top')
-
-    Returns:
-        market (source=market): 大盘资金流汇总（两市合计主力净流入）
-            - sh_close, sh_change: 上证指数收盘/涨跌幅
-            - sz_close, sz_change: 深证成指收盘/涨跌幅
-            - main_net: 主力净流入（亿元）
-            - main_pct: 主力净流入占成交额百分比
-
-        stock (source=<code>): 个股资金流（来自同花顺5日排行）
-            - code, name, date, close, change_pct, turnover_rate
-            - main_net: 资金流入净额（元）
-            - main_net_yi: 资金流入净额（亿元）
-            - signal: strong_inflow / inflow / neutral / outflow / strong_outflow
-
-        top (source=top): 资金流入TOP排名（来自同花顺全市场）
-            - List of StockFundFlow records sorted by main_net descending
-    """
-    source = request.args.get('source', 'market')
-    period = request.args.get('period', '5日排行')
-    top_n = int(request.args.get('top', 20))
-
-    try:
-        from services.fund_flow import FundFlowService
-        svc = FundFlowService()
-
-        if source == 'market':
-            result = svc.get_market_fund_flow()
-            return ok(type='market', **result)
-
-        elif source == 'top':
-            tops = svc.get_top_fund_flow_stocks(period=period, top_n=top_n)
-            return ok(
-                type='top',
-                period=period,
-                count=len(tops),
-                stocks=[t.to_dict() for t in tops],
-            )
-
-        else:
-            summary = svc.get_main_net_summary(source, period=period)
-            return ok(type='stock', source=source, **summary)
-
-    except ImportError:
-        return err('FundFlowService not available (AkShare missing)', 500)
-    except Exception as e:
-        app.logger.exception('fund_flow failed')
-        return err(f'资金流获取失败: {e}', 500)
-
-
-@app.route('/data/realtime/<symbol>', methods=['GET'])
-def data_realtime(symbol):
-    """
-    GET /data/realtime/<symbol> — 轻量实时行情接口。
-    包一层 fetch_realtime()，返回最新价、涨跌幅、成交量等。
-    """
-    from services.signals import fetch_realtime
-    quote = fetch_realtime(symbol)
-    if not quote:
-        return err(f'Realtime data unavailable for {symbol}', 502)
-    return ok(symbol=symbol, quote=quote)
+# R2-4 续集：/data/* 4 个端点已拆到 backend/api_routes/data.py
 
 
 # ============================================================
@@ -1404,10 +1256,12 @@ def server_error(e):
 # R2-4: Blueprint 注册。必须放在所有 helper 定义之后，否则 blueprint 模块
 # `from backend.api import ...` 拿不到符号。未来新增 blueprint 都在这一段
 # 集中注册，方便审计 URL 命名空间冲突。
+from backend.api_routes.data import data_bp  # noqa: E402
 from backend.api_routes.orders import orders_bp  # noqa: E402
 from backend.api_routes.portfolio import portfolio_bp  # noqa: E402
 from backend.api_routes.trades_signals_params import trades_signals_params_bp  # noqa: E402
 from backend.api_routes.watchlist_alerts import watchlist_alerts_bp  # noqa: E402
+app.register_blueprint(data_bp)
 app.register_blueprint(orders_bp)
 app.register_blueprint(portfolio_bp)
 app.register_blueprint(trades_signals_params_bp)
