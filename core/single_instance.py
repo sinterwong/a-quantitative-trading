@@ -2,7 +2,7 @@
 core/single_instance.py — OS 级单实例锁 (P3-1)
 
 产品定位:本系统约束"单 OS 单进程,不可多开"。本模块提供统一的 PID 文件锁,
-所有进程入口(backend/main.py / 未来的 worker / cli)调用 acquire_singleton()
+所有进程入口(quant_app/main.py / 未来的 worker / cli)调用 acquire_singleton()
 以确保同时只有一个实例在跑。
 
 实现:

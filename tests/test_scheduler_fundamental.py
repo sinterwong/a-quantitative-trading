@@ -22,20 +22,13 @@ from unittest.mock import MagicMock, patch, call
 
 
 # ---------------------------------------------------------------------------
-# 注入最小可用的 backend.main 依赖（避免真实 Flask / AKShare 加载）
+# 保证项目根在 sys.path（R2-2: backend/main.py shim 已删除，直接走 quant_app）
 # ---------------------------------------------------------------------------
 
-def _make_main_module():
-    """动态构造足够运行 Scheduler 的 backend.main 模块。"""
-    import importlib.util, os
-    proj = os.path.dirname(os.path.dirname(__file__))
-    # 在 sys.path 中保证项目根可见
-    if proj not in sys.path:
-        sys.path.insert(0, proj)
-    return proj
-
-
-PROJ_DIR = _make_main_module()
+import os
+PROJ_DIR = os.path.dirname(os.path.dirname(__file__))
+if PROJ_DIR not in sys.path:
+    sys.path.insert(0, PROJ_DIR)
 
 
 class TestRefreshFundamentals(unittest.TestCase):
@@ -43,17 +36,8 @@ class TestRefreshFundamentals(unittest.TestCase):
 
     def _make_scheduler(self, api_port=5555):
         """构造一个 Scheduler 实例，不启动线程。"""
-        import importlib, os, sys
-        backend_dir = os.path.join(PROJ_DIR, 'backend')
-        if backend_dir not in sys.path:
-            sys.path.insert(0, backend_dir)
-        if PROJ_DIR not in sys.path:
-            sys.path.insert(0, PROJ_DIR)
-
-        # 以最小方式 import backend.main
-        import backend.main as bm
-        sched = bm.Scheduler(api_port=api_port)
-        return sched
+        from quant_app.run_worker import Scheduler
+        return Scheduler(api_port=api_port)
 
     # ------------------------------------------------------------------
     # 正常流程

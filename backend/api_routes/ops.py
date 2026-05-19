@@ -70,7 +70,7 @@ def set_trading_mode():
 @ops_bp.route('/monitor/status', methods=['GET'])
 def monitor_status():
     """GET /monitor/status — IntradayMonitor 实时运行状态。"""
-    from main import get_monitor
+    from quant_app.main import get_monitor
     monitor = get_monitor()
     if monitor is None:
         return err('Monitor not initialized', 503)
@@ -80,7 +80,7 @@ def monitor_status():
 @ops_bp.route('/risk/status', methods=['GET'])
 def risk_status():
     """GET /risk/status — 风控快照（组合敞口、板块集中度、回撤、Kelly）。"""
-    from main import get_monitor
+    from quant_app.main import get_monitor
     from core.use_cases.risk_snapshot import get_risk_snapshot
     snap = get_risk_snapshot(get_svc(), monitor=get_monitor())
     return ok(**snap.to_dict())

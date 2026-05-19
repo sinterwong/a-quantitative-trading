@@ -4,7 +4,7 @@ core/pipeline_factory.py — 生产用因子流水线工厂
 
 提供 ``build_pipeline()`` 工厂函数，供以下入口统一调用：
   - backend/api.py（HTTP 请求驱动的信号端点）
-  - backend/main.py（启动时创建 StrategyRunner 后台线程）
+  - quant_app/run_worker.py（启动时创建 StrategyRunner 后台线程）
   - streamlit_app.py（交互式分析面板）
 
 因子构成 (W5-2 重平衡后，按权重降序)：

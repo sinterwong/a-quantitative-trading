@@ -269,8 +269,8 @@ def cancel_order(order_id):
     if order.get('status') not in ('pending', 'partial'):
         return err(f'Cannot cancel order in status "{order.get("status")}"', 422)
 
-    # Use the shared broker instance from main(), not a new one
-    from main import get_broker, get_monitor
+    # Use the shared broker instance from quant_app.main(), not a new one
+    from quant_app.main import get_broker, get_monitor
     broker = get_broker()
     trading_mode = monitor.trading_mode() if (monitor := get_monitor()) else 'simulation'
 

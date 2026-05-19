@@ -5,12 +5,10 @@ HTTP API + 持久化服务。
 ## 运行
 
 ```bash
-python backend/main.py --mode all      # API + Scheduler + Monitor + Runner
-python backend/main.py --mode api      # 仅 HTTP API
-python backend/main.py --mode worker   # 仅 Scheduler / Monitor / Runner
+python -m quant_app.main --mode all      # API + Scheduler + Monitor + Runner
+python -m quant_app.main --mode api      # 仅 HTTP API
+python -m quant_app.main --mode worker   # 仅 Scheduler / Monitor / Runner
 ```
-
-`backend/main.py` 是 shim,真实启动器在 `quant_app/main.py`。
 
 进程层防多开:`backend/.quant-backend.pid` 文件锁,已有实例运行时新进程
 直接退出(OS 级 `fcntl.flock`)。

@@ -10,7 +10,8 @@
 | `api` | 只起 HTTP API |
 | `worker` | 只起 Scheduler / Monitor / Runner |
 
-`backend/main.py` 是 56 行 shim,转发 `quant_app` 的符号以兼容旧调用。
+启动命令: `python -m quant_app.main --mode all`。
+（旧 `backend/main.py` shim 在 R2-2 后已删除，所有 import 改走 `quant_app`。）
 
 OS 级单实例锁在 `core/single_instance.py`(`fcntl.flock` + PID 文件),
 同一机器同时跑两个 mode=all 会被拒。

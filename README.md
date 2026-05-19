@@ -17,13 +17,13 @@ cp config/trading.yaml.example config/trading.yaml
 
 ```bash
 # 一次进程跑全部:API + Scheduler + IntradayMonitor + StrategyRunner
-python backend/main.py --mode all
+python -m quant_app.main --mode all
 
 # 只起 HTTP API
-python backend/main.py --mode api --port 5555
+python -m quant_app.main --mode api --port 5555
 
 # 只起 Scheduler / Monitor / Runner
-python backend/main.py --mode worker
+python -m quant_app.main --mode worker
 
 # Streamlit UI(默认连本机 5555 端口的 backend)
 streamlit run streamlit_app.py --server.port 8501

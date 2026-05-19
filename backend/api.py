@@ -289,9 +289,9 @@ def docs():
 # ============================================================
 
 def _get_or_build_broker():
-    """复用 main.get_broker() 的共享实例；测试/无 monitor 场景回退到新建 PaperBroker。"""
+    """复用 quant_app.main.get_broker() 的共享实例；测试/无 monitor 场景回退到新建 PaperBroker。"""
     try:
-        from main import get_broker
+        from quant_app.main import get_broker
         b = get_broker()
         if b is not None:
             return b
@@ -318,7 +318,7 @@ _risk_engine_singleton: LockedSingleton = LockedSingleton(
 def _get_risk_engine():
     """共享 RiskEngine：优先复用 StrategyRunner 的实例，否则懒建一个本地 singleton。"""
     try:
-        from main import get_monitor
+        from quant_app.main import get_monitor
         m = get_monitor()
         if m is not None and getattr(m, '_strategy_runner', None) is not None:
             re = getattr(m._strategy_runner, 'risk_engine', None)
