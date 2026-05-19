@@ -99,7 +99,7 @@ def make_fake_data(n=60, seed=42):
     for i in range(n):
         p = p * (1 + random.uniform(-0.02, 0.025))
         d.append({
-            'date': '2024-01-%02d' % (i + 1),
+            'date': f'2024-01-{i + 1:02d}',
             'open':  round(p * 0.99, 2),
             'high':  round(p * 1.01, 2),
             'low':   round(p * 0.98, 2),

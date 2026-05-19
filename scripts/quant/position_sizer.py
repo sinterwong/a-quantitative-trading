@@ -124,7 +124,7 @@ if __name__ == '__main__':
 
     # 股数计算
     shares = calc_shares_for_kelly(10000, 4.50, f4)
-    print('可用资金 10000，价 4.50，Kelly %.1f%% → 可买 %d 股' % (f4 * 100, shares))
+    print(f'可用资金 10000，价 4.50，Kelly {f4 * 100:.1f}% → 可买 {shares} 股')
     assert shares % 100 == 0
 
     print()

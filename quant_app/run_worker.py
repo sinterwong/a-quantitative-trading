@@ -182,7 +182,7 @@ def _acquire_pid_lock(pid_file: str) -> bool:
                 pass
         pf.seek(0)
         pf.truncate()
-        pf.write('%d' % os.getpid())
+        pf.write(f'{os.getpid()}')
         pf.flush()
         os.fsync(pf.fileno())
         return True

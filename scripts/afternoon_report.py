@@ -238,7 +238,7 @@ def build_closing_report(snapshot: dict, return_info: dict) -> str:
             pnl = t.get('pnl', 0)
             lines.append(
                 f"  {direction} {sym} {shares}股 @{px:.2f}"
-                f"{' pnl=%+.0f' % pnl if pnl else ''}"
+                f"{f' pnl={pnl:+.0f}' if pnl else ''}"
             )
     else:
         lines.append("今日成交: 无")

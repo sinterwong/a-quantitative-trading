@@ -919,7 +919,7 @@ def format_feishu_message(alerts: list[SignalAlert], check_time: str) -> str:
         sign  = '+' if a.pct > 0 else ''
         pct_str = f"{sign}{a.pct:.2%}"
         rsi_str = f"RSI={a.prev_rsi:.0f}" if a.prev_rsi else ""
-        vol_str = f"量比={'%.1f'%(a.volume_ratio)}x" if a.volume_ratio else ""
+        vol_str = f"量比={f'{a.volume_ratio:.1f}'}x" if a.volume_ratio else ""
 
         parts = [x for x in [rsi_str, vol_str] if x]
         info  = ' | '.join(parts)

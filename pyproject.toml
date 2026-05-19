@@ -24,12 +24,14 @@ select = [
     "B006",   # mutable default argument
     "B008",   # function call in default arg
     "B017",   # assert raises Exception 太宽
+    "UP031",  # R3-5: 禁止 printf-style "%s" % x（已全仓库 0 违规）
+    "UP032",  # R3-5: 禁止 .format()（已全仓库 0 违规）
 ]
 # 已修一批后续 sprint 引入：
 #   "B007"   — 未用循环变量（仓库现 19 处，R3 风格 sprint 处理）
 #   "B904"   — raise from（仓库现 16 处，R1-2 fallback 信号化时统一处理）
 #   "BLE001" — broad-except（仓库 ~570 处，需按业务模块分批收窄）
-#   "UP"     — pyupgrade
+#   "UP"     — pyupgrade 其他规则（typing.List → list 等，量大谨慎引入）
 #   "I"      — isort
 #   "SIM"    — simplify
 

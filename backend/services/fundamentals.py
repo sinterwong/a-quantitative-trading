@@ -90,10 +90,10 @@ if __name__ == '__main__':
     for sym in test_symbols:
         data = fetch_fundamentals(sym)
         if data:
-            print('\n[%s %s]' % (sym, data.get('name', '')))
-            print('  PE=%.2f  PB=%.2f  股息率=%.2f%%  市值=%.0f亿' % (
+            print('\n[{} {}]'.format(sym, data.get('name', '')))
+            print('  PE={:.2f}  PB={:.2f}  股息率={:.2f}%  市值={:.0f}亿'.format(
                 data['pe'], data['pb'], data['dividend_yield'], data['market_cap']))
             ok, reason = check_fundamentals_filter(sym)
-            print('  filter: pass=%s  reason=%s' % (ok, reason))
+            print(f'  filter: pass={ok}  reason={reason}')
         else:
-            print('\n[%s] 数据获取失败' % sym)
+            print(f'\n[{sym}] 数据获取失败')

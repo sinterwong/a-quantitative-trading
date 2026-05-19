@@ -26,7 +26,7 @@ def fake_loader(symbol, start, end):
     for i in range(60):
         price = price * (1 + random.uniform(-0.02, 0.025))
         data.append({
-            'date': '2024-01-%02d' % (i + 1),
+            'date': f'2024-01-{i + 1:02d}',
             'open':  round(price * 0.99, 2),
             'high':  round(price * 1.01, 2),
             'low':   round(price * 0.98, 2),
