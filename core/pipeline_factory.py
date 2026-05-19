@@ -173,15 +173,16 @@ def build_pipeline(symbol: str = '', strict: bool = True):
     # ── 宏观层（每因子独立加载，无数据时自动降级）──────────────
     try:
         from core.data_layer import get_data_layer
+        from core.data_gateway.capabilities import MacroIndicator
         from core.factors.macro import PMIFactor, M2GrowthFactor
         dl = get_data_layer()
         pmi_data, m2_data = None, None
         try:
-            pmi_data = dl.get_macro_data('PMI')
+            pmi_data = dl.get_macro_data(MacroIndicator.PMI)
         except Exception as exc:  # noqa: BLE001
             logger.warning('PMI 数据获取失败: %s', exc)
         try:
-            m2_data = dl.get_macro_data('M2')
+            m2_data = dl.get_macro_data(MacroIndicator.M2)
         except Exception as exc:  # noqa: BLE001
             logger.warning('M2 数据获取失败: %s', exc)
 
