@@ -37,6 +37,14 @@ from .base import Provider, ProviderError
 
 logger = logging.getLogger("data_gateway.baostock")
 
+# baostock adjustflag: "1"=后复权, "2"=前复权, "3"=不复权
+_ADJUST_TO_FLAG: Dict[str, str] = {
+    "qfq": "2",
+    "hfq": "1",
+    "none": "3",
+    "no": "3",
+}
+
 # ─── Baostock 全局会话管理 ──────────────────────────────────────────
 _bs_lock = threading.Lock()
 _bs_session: Optional["_BaostockSession"] = None
@@ -163,21 +171,23 @@ class BaostockProvider(Provider):
         days: int = 120,
         adjust: str = "qfq",
         limit: int = 100,
-        **kwargs,
     ) -> pd.DataFrame:
         """获取A股日K线。
 
         Args:
             symbol: 标准化代码，如 'sh600519'
             days: 历史天数
-            adjust: 复权类型（baostock 不支持，忽略）
-            limit: 最大行数（baostock 不支持，忽略）
+            adjust: 复权类型，qfq/hfq/none，未知值按 qfq 处理
+            limit: 不生效（baostock 用 days 控制范围）
 
         Returns:
             DataFrame，列: date, open, high, low, close, volume, amount
         """
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = _offset_date(end_date, days)
+        adjustflag = _ADJUST_TO_FLAG.get(adjust, "2")
+        if adjust not in _ADJUST_TO_FLAG:
+            logger.debug("未知 adjust=%s，按 qfq 处理", adjust)
 
         try:
             session = _get_session()
@@ -185,39 +195,47 @@ class BaostockProvider(Provider):
             raise ProviderError(f"baostock 会话获取失败: {exc}") from exc
 
         bs_code = _symbol_to_bs(symbol)
-        logger.debug("fetch_kline_daily %s (%s -> %s)", symbol, start_date, end_date)
+        logger.debug(
+            "fetch_kline_daily %s (%s -> %s, adjust=%s)",
+            symbol, start_date, end_date, adjust,
+        )
 
-        try:
-            rs = session._bs.query_history_k_data_plus(
-                bs_code,
-                "date,open,high,low,close,volume,amount",
-                start_date=start_date,
-                end_date=end_date,
-                frequency="d",
-                adjustflag="3",  # 不复权
-            )
-            if rs.error_msg != "success":
-                raise ProviderError(f"baostock kline query failed: {rs.error_msg}")
+        retried = False
+        while True:
+            try:
+                rs = session._bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,open,high,low,close,volume,amount",
+                    start_date=start_date,
+                    end_date=end_date,
+                    frequency="d",
+                    adjustflag=adjustflag,
+                )
+                if rs.error_msg != "success":
+                    raise ProviderError(
+                        f"baostock kline query failed: {rs.error_msg}"
+                    )
 
-            # rs.get_data() 直接返回完整 DataFrame，无需循环
-            df = rs.get_data()
-            if df is None or df.empty:
-                return pd.DataFrame()
-            for col in ["open", "high", "low", "close", "volume", "amount"]:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-            df = df.rename(columns={"date": "timestamp"})
-            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-            return df.sort_values("timestamp").reset_index(drop=True)
+                # rs.get_data() 直接返回完整 DataFrame，无需循环
+                df = rs.get_data()
+                if df is None or df.empty:
+                    return pd.DataFrame()
+                for col in ["open", "high", "low", "close", "volume", "amount"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                df = df.rename(columns={"date": "timestamp"})
+                df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+                return df.sort_values("timestamp").reset_index(drop=True)
 
-        except Exception as exc:
-            if "login" in str(exc).lower():
-                try:
-                    session.login()
-                    return self.fetch_kline_daily(symbol, days, end_date)
-                except Exception:
-                    pass
-            raise ProviderError(f"baostock kline fetch failed: {exc}") from exc
+            except Exception as exc:
+                if not retried and "login" in str(exc).lower():
+                    retried = True
+                    try:
+                        session.login()
+                        continue
+                    except Exception:
+                        pass
+                raise ProviderError(f"baostock kline fetch failed: {exc}") from exc
 
     # ─── FUNDAMENTALS ───────────────────────────────────────────────
 

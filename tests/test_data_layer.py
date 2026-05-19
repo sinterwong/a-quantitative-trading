@@ -33,6 +33,7 @@ from core.data_layer import (
 from core.data_gateway.symbols import normalize_to_tencent
 from core.data_gateway.schemas import Quote as GwQuote
 from core.data_gateway.schemas import NorthFlow as GwNorthFlow
+from core.data_gateway.capabilities import MacroIndicator
 
 # ─── 测试框架（最小实现，无外部依赖）────────────────────────────────────────
 
@@ -289,9 +290,55 @@ class TestDataLayerForwarding:
         df = pd.DataFrame({"pmi": [50.5]}, index=pd.to_datetime(["2026-05-01"]))
         gw = _mock_gateway(macro_value=df)
         layer._gw = gw
-        out = layer.get_macro_data("PMI")
-        gw.macro.assert_called_once_with("PMI")
+        out = layer.get_macro_data(MacroIndicator.PMI)
+        gw.macro.assert_called_once_with(MacroIndicator.PMI)
         assert not out.empty
+
+    def test_get_macro_real_gateway_e2e(self):
+        """回归测试：DataLayer.get_macro_data 经真实 DataGateway 路由到 provider，
+        覆盖 gateway 内 indicator.value 访问路径——历史上 pipeline_factory 误传
+        字符串导致 AttributeError 即在此触发。"""
+        from core.data_gateway.capabilities import (
+            Capability, Market, ProviderCapability,
+        )
+        from core.data_gateway.gateway import DataGateway
+        from core.data_gateway.health import HealthTracker
+        from core.data_gateway.providers.base import Provider
+        from core.circuit_breaker import reset_all
+
+        class _MacroProvider(Provider):
+            name = "macro_mock"
+
+            def declare(self):
+                return ProviderCapability(
+                    capabilities=frozenset({Capability.MACRO}),
+                    markets=frozenset({Market.GLOBAL}),
+                    priority_hint=0.5,
+                )
+
+            def fetch_macro(self, indicator):
+                return pd.DataFrame({"pmi": [50.5]},
+                                    index=pd.to_datetime(["2026-05-01"]))
+
+        reset_all()
+        gw = DataGateway(
+            health=HealthTracker(warmup_count=1),
+            max_parallel=2,
+            enable_disk_cache=False,
+        )
+        gw.register_provider(_MacroProvider())
+        layer = DataLayer(use_parquet_cache=False)
+        layer._gw = gw
+
+        out = layer.get_macro_data(MacroIndicator.PMI)
+        assert not out.empty
+        assert out["pmi"].iloc[0] == 50.5
+
+        # 字符串入参应明确失败（contract 保险）：
+        # 之前 pipeline_factory 误传 'PMI' 时只能在运行期才暴露 AttributeError。
+        import pytest as _pytest
+        with _pytest.raises(AttributeError):
+            layer.get_macro_data("PMI")
 
     def test_invalidate_clears_gateway_cache(self):
         layer = DataLayer(use_parquet_cache=False)
