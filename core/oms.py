@@ -10,6 +10,7 @@ OMS 类：PreTrade 风控 → 发送订单 → 记录成交
 """
 
 from __future__ import annotations
+import logging
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -20,6 +21,8 @@ import os
 import sys
 import json
 import urllib.request
+
+logger = logging.getLogger('core.oms')
 
 if TYPE_CHECKING:
     from core.event_bus import EventBus, FillEvent
@@ -175,8 +178,10 @@ class EventDrivenPaperBroker(BrokerAdapter):
                         avg_price=float(p.get('avg_price', 0)),
                         current_price=float(p.get('current_price', 0)),
                     )
-        except Exception as e:
-            print(f"[EventDrivenPaperBroker] Failed to load positions: {e}")
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            # OSError: urlopen 失败 / 连接拒绝（Backend 未启动）
+            # ValueError / JSONDecodeError: 响应不是合法 JSON
+            logger.warning('[EventDrivenPaperBroker] Failed to load positions: %s', e)
 
     def send(self, order: Order) -> Fill:
         """模拟撮合。整个流程在 RLock 内，确保 _orders / _positions 一致。"""
@@ -283,8 +288,9 @@ class EventDrivenPaperBroker(BrokerAdapter):
             )
             with urllib.request.urlopen(req, timeout=5) as r:
                 jsonlib.loads(r.read())
-        except Exception as e:
-            print(f"[EventDrivenPaperBroker] persist_fill error: {e}")
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            # 与 _load_positions 同：Backend 不可达 / 响应损坏
+            logger.warning('[EventDrivenPaperBroker] persist_fill error: %s', e)
 
     def cancel(self, order_id: str, reason: str = 'manual',
                origin: str = 'manual') -> bool:
@@ -299,8 +305,9 @@ class EventDrivenPaperBroker(BrokerAdapter):
             from core.audit_log import log_order_cancel
             log_order_cancel(order_id=order_id, symbol=order.symbol,
                              reason=reason, origin=origin)
-        except Exception:
-            pass
+        except (ImportError, OSError) as e:
+            # ImportError: audit_log 模块不可用; OSError: 写文件失败
+            logger.debug('[OMS] audit cancel skipped: %s', e)
         return True
 
     @staticmethod
@@ -308,8 +315,10 @@ class EventDrivenPaperBroker(BrokerAdapter):
         try:
             from core.metrics import get_registry
             get_registry().record_order_status(status)
-        except Exception:
-            pass
+        except (ImportError, AttributeError) as e:
+            # metrics 模块缺失（脚本独立运行）或 registry 方法不存在；
+            # 监控失败不应阻塞订单链路。
+            logger.debug('[OMS] _record_status skipped: %s', e)
 
     def quote(self, symbol: str) -> Dict[str, float]:
         """腾讯实时报价"""
@@ -331,8 +340,11 @@ class EventDrivenPaperBroker(BrokerAdapter):
                     'low': float(fields[34]),
                     'volume': float(fields[6]),
                 }
-        except Exception as e:
-            print(f"[EventDrivenPaperBroker] quote error for {symbol}: {e}")
+        except (OSError, ValueError, IndexError) as e:
+            # OSError: 网络 / urlopen 失败
+            # ValueError: float() 转换失败（fields 内容不是数字）
+            # IndexError: 腾讯响应格式变化（fields 数量异常）
+            logger.warning('[EventDrivenPaperBroker] quote error for %s: %s', symbol, e)
         return {'last': 0}
 
     def get_positions(self) -> List[Position]:
@@ -407,8 +419,8 @@ class OMS:
                 try:
                     from core.audit_log import log_fill
                     log_fill(fill, signal=signal, risk_passed=True)
-                except Exception:
-                    pass
+                except (ImportError, OSError) as e:
+                    logger.debug('[OMS] audit fill log skipped: %s', e)
                 if self.bus:
                     from core.event_bus import FillEvent
                     fe = FillEvent(
@@ -420,8 +432,10 @@ class OMS:
                         commission=fill.commission,
                     )
                     self.bus.emit(fe)
-        except Exception as e:
-            print(f"[OMS] submit error: {e}")
+        except Exception as e:  # noqa: BLE001 — OMS.submit 是业务边界，
+            # 任意下层 bug（broker / audit / EventBus）都要 fail-safe 转为
+            # RiskEvent('CRITICAL')，否则订单链路死锁。
+            logger.exception('[OMS] submit error: %s', e)
             if self.bus:
                 from core.event_bus import RiskEvent
                 self.bus.emit(RiskEvent(
@@ -476,7 +490,9 @@ class OMS:
             with urllib.request.urlopen(f'{base}/portfolio/summary', timeout=5) as r:
                 summary = jsonlib.loads(r.read())
             return float(summary.get('position_value', 0) + summary.get('cash', 0))
-        except Exception:
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            # Backend 未启动 / 响应损坏 → 等权 0.0，Kelly 会跳过仓位检查
+            logger.debug('[OMS] portfolio/summary fetch skipped: %s', e)
             return 0.0
 
     def _drawdown_discount(self, equity: float, max_dd_limit: float) -> float:
@@ -519,7 +535,9 @@ class OMS:
             cfg = load_config()
             max_dd_limit = float(cfg.risk.max_drawdown)
             max_position_pct = float(cfg.portfolio.max_position_pct)
-        except Exception:
+        except (ImportError, FileNotFoundError, AttributeError, KeyError) as e:
+            # 配置缺失 / YAML 解析失败 / 字段缺失 → 安全默认值
+            logger.warning('[OMS] config load failed, using safe defaults: %s', e)
             max_dd_limit = 0.15
             max_position_pct = 0.25
 
@@ -583,10 +601,9 @@ class OMS:
                     avg_price=float(p.get('avg_price', 0)),
                     current_price=float(p.get('current_price', 0)),
                 )
-        except Exception as e:
+        except (OSError, ValueError, json.JSONDecodeError) as e:
             # Backend 未启动时静默跳过；_position_book 保持空字典
-            import logging
-            logging.getLogger('core.oms').debug('[OMS] position pre-load skipped: %s', e)
+            logger.debug('[OMS] position pre-load skipped: %s', e)
 
     @dataclass
     class PreTradeResult:
@@ -611,8 +628,9 @@ class OMS:
                             passed=False,
                             reason=f'Position {order.symbol} exceeds 25% limit'
                         )
-                except Exception:
-                    pass
+                except (ZeroDivisionError, TypeError, AttributeError) as e:
+                    # equity=0 / pos 字段类型异常 → 跳过本规则，让后续规则继续
+                    logger.debug('[OMS] position-limit check skipped: %s', e)
 
         # 2. 止损检查（已有持仓价格相比下跌超 5% → 禁止加仓）
         if pos and order.direction == 'BUY':
