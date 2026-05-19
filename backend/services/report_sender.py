@@ -43,10 +43,27 @@ import argparse
 from datetime import datetime
 from typing import Optional
 
-# 禁用代理
-for k in list(os.environ.keys()):
-    if 'proxy' in k.lower():
-        del os.environ[k]
+# R3-4 review-fix: 之前这里在 import 时遍历 os.environ 删除所有含 'proxy'
+# 的变量,是隐蔽的全局副作用——任何 import 本模块的代码都会丢失代理配置,
+# 进而影响同进程内其它需要 HTTP_PROXY 的模块(LLM 客户端、AKShare 等)。
+#
+# 改为 module-local opener,显式安装一个空的 ProxyHandler,让本模块的
+# urllib 调用绕开系统代理但不污染 os.environ。其它模块依然能正常用代理。
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _no_proxy_urlopen(req, timeout=None, context=None):
+    """本模块内部的 urlopen 包装:绕过系统代理,不动 os.environ。"""
+    if context is not None:
+        # opener.open 不直接接受 context,逐请求注入 HTTPSHandler 又过重。
+        # 对 HTTPS 走系统默认 SSL,对自定义 context 退回到标准 urlopen 但显式
+        # 传 proxies={} 等价物：再 build 一个临时 opener 拿到 https handler。
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPSHandler(context=context),
+        )
+        return opener.open(req, timeout=timeout)
+    return _NO_PROXY_OPENER.open(req, timeout=timeout)
 
 # ─── 路径设置 ────────────────────────────────────────────────
 BASE_DIR    = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # backend/services -> backend -> quant_repo
@@ -129,7 +146,7 @@ def get_realtime(symbol: str) -> Optional[dict]:
         req = urllib.request.Request(url, headers={
             'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.qq.com',
         })
-        with urllib.request.urlopen(req, timeout=6, context=ctx) as resp:
+        with _no_proxy_urlopen(req, timeout=6, context=ctx) as resp:
             raw = resp.read().decode('gbk', errors='replace')
             eq = raw.find('="')
             if eq >= 0: raw = raw[eq+2:]
@@ -161,7 +178,7 @@ def get_bulk_realtime(symbols: list[str]) -> dict[str, dict]:
         req = urllib.request.Request(url, headers={
             'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.qq.com',
         })
-        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
+        with _no_proxy_urlopen(req, timeout=8, context=ctx) as resp:
             raw = resp.read().decode('gbk', errors='replace')
             result = {}
             for i, line in enumerate(raw.strip().split('\n')):
@@ -203,7 +220,7 @@ def _fetch_tencent(url: str, timeout: float = 4.0) -> Optional[dict]:
         req = urllib.request.Request(url, headers={
             'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.qq.com',
         })
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+        with _no_proxy_urlopen(req, timeout=timeout, context=ctx) as resp:
             raw = resp.read().decode('gbk', errors='replace')
             eq = raw.find('="')
             if eq >= 0: raw = raw[eq+2:]
@@ -242,7 +259,7 @@ def backend_get(endpoint: str) -> dict:
     url = f'{BACKEND_URL}{endpoint}'
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with _no_proxy_urlopen(req, timeout=8) as resp:
             return json.loads(resp.read())
     except Exception:
         return {}
