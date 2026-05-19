@@ -123,6 +123,10 @@ class TestOrderEndpointIdempotency(unittest.TestCase):
 
         # 重置 idempotency store singleton 以拾起新的 QUANT_STATE_DB
         api_mod._idempotency_store_singleton.reset()
+        # R2-4: 之前 test_api_smoke 用 importlib 隔离了 _GLOBAL_RATE_LIMIT，
+        # 现在共享一个 backend.api 模块；前置测试可能填满了 ip 桶。
+        api_mod._GLOBAL_RATE_LIMIT.clear()
+        api_mod._RATE_LIMIT.clear()
 
         # 替换 broker 工厂为一个计数的 mock，便于断言 submit_order 调用次数。
         from backend.services.broker import OrderResult

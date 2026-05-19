@@ -488,196 +488,10 @@ def _get_risk_engine():
         return None
 
 
-@app.route('/orders/submit', methods=['POST'])
-@rate_limit(max_per_window=10, window_seconds=60)
-def submit_order():
-    """POST /orders/submit — 通过共享 broker 提交订单(simulation 模式下 PaperBroker 即时撮合)。
-
-    所有外部下单(UI / 脚本 / 第三方)都必须先过 PreTrade 风控，与
-    IntradayMonitor 的内部下单链路保持同一道门控。
-
-    R0-1: 支持 ``Idempotency-Key`` header。若同一 key 24h 内被重复提交,
-    返回上次的响应而非执行第二次。客户端可用 UUID 防重 / 防网络重试。
-    """
-    if (e := require_json()):
-        return e
-    body = request.json
-    for field in ('symbol', 'direction', 'shares'):
-        if field not in body:
-            return err(f"missing required field: {field}")
-
-    # ── 幂等键检查（R0-1）─────────────────────────────────────
-    idempotency_key = request.headers.get('Idempotency-Key', '').strip() or None
-    idem_store = None
-    request_hash = None
-    if idempotency_key is not None:
-        from core.idempotency import (
-            IdempotencyStore, IdempotencyKeyConflict, compute_request_hash,
-        )
-        idem_store = _idempotency_store_singleton.get()
-        request_hash = compute_request_hash(body)
-        try:
-            prior = idem_store.get(idempotency_key)
-        except Exception as exc:
-            app.logger.warning('idempotency lookup failed (continuing): %s', exc)
-            prior = None
-        if prior is not None:
-            if prior.request_hash != request_hash:
-                return jsonify({
-                    'status': 'error',
-                    'error': 'idempotency key reused with a different payload',
-                    'code': 'IDEMPOTENCY_KEY_CONFLICT',
-                    'timestamp': datetime.now().isoformat(),
-                }), 422
-            # 同 key 同 body 已成功过 — 直接回放
-            prior.response.setdefault('replayed', True)
-            return jsonify(prior.response), 200
-
-    direction = body['direction'].upper()
-    if direction not in ('BUY', 'SELL'):
-        return err("direction must be BUY or SELL")
-    try:
-        shares = int(body['shares'])
-    except (TypeError, ValueError):
-        return err("shares must be a positive integer")
-    if shares <= 0:
-        return err("shares must be positive")
-
-    symbol = body['symbol']
-
-    # R2-1: 业务逻辑已下沉到 core.use_cases.submit_order。本端点只做
-    # transport 层职责：参数解析、依赖装配、调用 use case、把 UseCaseError
-    # 子类映射成 HTTP 状态码。
-    from core.use_cases.submit_order import (
-        submit_order as _submit_order_uc,
-        SubmitOrderRequest,
-        NoReferencePriceError,
-        RiskRejectedError,
-        RiskCheckFailedError,
-    )
-
-    req = SubmitOrderRequest(
-        symbol=symbol,
-        direction=direction,
-        shares=shares,
-        price=float(body.get('price', 0)),
-        price_type=body.get('price_type', 'market'),
-    )
-
-    try:
-        result = _submit_order_uc(
-            req,
-            broker=_get_or_build_broker(),
-            risk_engine=_get_risk_engine(),
-        )
-    except NoReferencePriceError as exc:
-        return jsonify({
-            'status': 'error',
-            'error': exc.message,
-            'code': exc.code,
-            'timestamp': datetime.now().isoformat(),
-        }), 503
-    except RiskRejectedError as exc:
-        return jsonify({
-            'status': 'error',
-            'error': exc.message,
-            'code': exc.code,
-            'details': exc.details,
-            'timestamp': datetime.now().isoformat(),
-        }), 403
-    except RiskCheckFailedError as exc:
-        return jsonify({
-            'status': 'error',
-            'error': exc.message,
-            'code': exc.code,
-            'timestamp': datetime.now().isoformat(),
-        }), 503
-
-    # 保留旧契约：顶层 status = broker 成交状态（filled/partial/rejected/...）
-    # 而非通用的 "ok"。多个调用方（含 e2e 测试）依赖这一字段。
-    response_body = {
-        'status': result.status,
-        'timestamp': datetime.now().isoformat(),
-        'order_id': result.order_id,
-        'symbol': result.symbol,
-        'direction': result.direction,
-        'shares': result.shares,
-        'filled_shares': result.filled_shares,
-        'avg_price': result.avg_price,
-        'reason': result.reason,
-        'submitted_at': result.submitted_at,
-        'filled_at': result.filled_at,
-    }
-    # R0-1: 成功后把响应记录到 idempotency 表，下次同 key 重试直接回放。
-    if idem_store is not None and idempotency_key is not None:
-        try:
-            idem_store.put(idempotency_key, request_hash, response_body)
-        except IdempotencyKeyConflict as exc:
-            # 极端情况：本次执行成功了但与并发先到的另一个 payload 冲突。
-            # 真正的写入已经发生（broker 已成交）；返回正常 200，并发的另一
-            # 个请求拿不到 idempotency 回放——这是设计上可接受的次优窗口。
-            app.logger.warning('idempotency.put conflict on success: %s', exc)
-        except Exception as exc:
-            app.logger.warning('idempotency.put failed (continuing): %s', exc)
-    return jsonify(response_body), 200
-
-
-@app.route('/orders/recent', methods=['GET'])
-def recent_orders():
-    """
-    GET /orders/recent?symbol=600036.SH&status=filled&limit=50
-
-    查询订单记录，支持 symbol / status / limit 过滤。
-    status 可选: submitted / filled / cancelled / rejected
-    """
-    symbol = request.args.get('symbol')
-    status = request.args.get('status')
-    limit  = int(request.args.get('limit', 50))
-    svc = get_svc()
-    orders = svc.get_orders(symbol=symbol, status=status, limit=limit)
-    return ok(orders=orders, realized_pnl=svc.get_realized_pnl())
-
-
-@app.route('/orders/pending', methods=['GET'])
-def pending_orders():
-    """
-    GET /orders/pending — 所有挂起/部分成交的订单。
-    """
-    svc = get_svc()
-    pending = svc.get_pending_orders()
-    return ok(orders=pending, count=len(pending))
-
-
-@app.route('/orders/<order_id>/cancel', methods=['POST'])
-def cancel_order(order_id):
-    """
-    POST /orders/<order_id>/cancel — 撤销挂单。
-    触发 PortfolioService.update_order_cancelled()。
-    """
-    svc = get_svc()
-    order = svc.get_order(order_id)
-    if not order:
-        return err(f'Order not found: {order_id}', 404)
-    if order.get('status') not in ('pending', 'partial'):
-        return err(f'Cannot cancel order in status "{order.get("status")}"', 422)
-
-    # Use the shared broker instance from main(), not a new one
-    from main import get_broker, get_monitor
-    broker = get_broker()
-    trading_mode = monitor.trading_mode() if (monitor := get_monitor()) else 'simulation'
-
-    if broker is not None:
-        cancelled = broker.cancel_order(order_id)
-        # Simulation broker always returns False — that is normal, not an error
-        if not cancelled and trading_mode == 'live':
-            return err('Cancel failed (broker rejected)', 409)
-    else:
-        # No broker initialised yet; skip broker-level cancel
-        pass
-
-    svc.update_order_cancelled(order_id, reason='user_cancelled')
-    updated = svc.get_order(order_id)
-    return ok(order_id=order_id, status='cancelled', order=updated)
+# R2-4: /orders/* 4 个端点已拆到 backend/api_routes/orders.py（Flask Blueprint）。
+# 注册放在文件末尾，确保所有 helper（rate_limit / ok / err / get_svc /
+# _get_or_build_broker / _get_risk_engine / _idempotency_store_singleton）
+# 都已定义。
 
 
 # ============================================================
@@ -1880,6 +1694,13 @@ def server_error(e):
 # ============================================================
 # Run
 # ============================================================
+
+# R2-4: Blueprint 注册。必须放在所有 helper 定义之后，否则 blueprint 模块
+# `from backend.api import ...` 拿不到符号。未来新增 blueprint 都在这一段
+# 集中注册，方便审计 URL 命名空间冲突。
+from backend.api_routes.orders import orders_bp  # noqa: E402
+app.register_blueprint(orders_bp)
+
 
 if __name__ == '__main__':
     import argparse
