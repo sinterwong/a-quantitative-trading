@@ -972,166 +972,8 @@ def metrics_endpoint():
 # P1: Northbound (北向资金)
 # ============================================================
 
-@app.route('/northbound/flow', methods=['GET'])
-def northbound_flow():
-    """
-    GET /northbound/flow?refresh=1
-
-    北向资金实时流量（沪深港通）。
-    refresh=1 强制跳过 60s cache 拉取最新数据。
-    """
-    refresh = request.args.get('refresh', '0') == '1'
-    from services.northbound import fetch_kamt, get_north_flow_direction
-    from services.data_cache import cached_kamt
-
-    kamt = cached_kamt(force_refresh=refresh) if refresh else fetch_kamt()
-    if not kamt:
-        return err('Failed to fetch northbound data', 502)
-
-    direction = get_north_flow_direction()
-    net_yi = kamt.get('net_north_cny', 0) / 1e8
-
-    # 格式化摘要
-    from services.northbound import format_kamt_summary
-    summary_text = format_kamt_summary(kamt)
-
-    # 近10日历史
-    from services.northbound import get_north_history
-    history = get_north_history()
-    history_yi = {k: round(v / 1e8, 2) for k, v in history.items()}
-
-    return ok(
-        summary=summary_text,
-        net_north_yi=round(net_yi, 2),
-        direction=direction.get('direction'),
-        strength=direction.get('strength'),
-        trend_yi=direction.get('trend_yi'),
-        reason=direction.get('reason'),
-        history=history_yi,
-        updated_at=kamt.get('timestamp', ''),
-    )
-
-
-# ============================================================
-# P1: Performance Summary (绩效聚合)
-# ============================================================
-
-@app.route('/performance/summary', methods=['GET'])
-def performance_summary():
-    """GET /performance/summary?year=2026&month=4&include_chart=1 — 月度绩效聚合。"""
-    from core.use_cases.performance_summary import (
-        PerformanceSummaryRequest, compute_performance_summary,
-    )
-    req = PerformanceSummaryRequest(
-        year=request.args.get('year', type=int) or 0,
-        month=request.args.get('month', type=int) or 0,
-        include_chart=request.args.get('include_chart', '1') == '1',
-    )
-    return ok(**compute_performance_summary(req, get_svc()).to_dict())
-
-
-# ============================================================
-# P1: Macro Data (宏观数据)
-# ============================================================
-
-@app.route('/data/macro/<indicator>', methods=['GET'])
-def get_macro_data(indicator):
-    """
-    GET /data/macro/PMI
-    GET /data/macro/M2
-    GET /data/macro/CREDIT
-
-    返回宏观指标的最新值和日期。
-    """
-    try:
-        macro_ind = MacroIndicator(indicator)
-    except ValueError:
-        valid = {i.value for i in MacroIndicator}
-        return err(f'Unknown macro indicator: {indicator}. Valid: {valid}', 400)
-
-    try:
-        from core.data_gateway import get_gateway
-        result = get_gateway().macro(macro_ind)
-        if result is None or result.empty:
-            return err(f'No data for {indicator}', 404)
-        latest = result.iloc[-1]
-        val_col = result.columns[0]
-        return ok(
-            indicator=indicator,
-            value=float(latest[val_col]) if pd.notna(latest[val_col]) else None,
-            date=str(latest.name.date()) if hasattr(latest.name, 'date') else str(latest.name),
-            unit='%' if indicator == 'M2' else '点',
-        )
-    except Exception as exc:
-        return err(f'macro data error: {exc}', 500)
-
-
-# ============================================================
-# P1: Fundamentals (基本面)
-# ============================================================
-
-@app.route('/fundamentals/<symbol>', methods=['GET'])
-def get_fundamentals(symbol):
-    """
-    GET /fundamentals/600036.SH
-
-    返回 PE、PB、股息率、总市值等基本面指标。
-    """
-    from services.fundamentals import fetch_fundamentals
-    data = fetch_fundamentals(symbol)
-    if data is None:
-        return err(f'Fundamentals unavailable for {symbol}', 404)
-    return ok(**data)
-
-
-# ============================================================
-# P1: Market Status (市场状态)
-# ============================================================
-
-@app.route('/market/status', methods=['GET'])
-def market_status():
-    """GET /market/status — 当前 A 股是否开盘、当前时段、下次切换时间。"""
-    from services.intraday_monitor import is_market_open
-    from datetime import datetime, timedelta, time as dtime, date as ddate
-
-    now = datetime.now()
-    open_now = is_market_open(now)
-    t = now.time()
-
-    if open_now and dtime(9, 30) <= t < dtime(11, 30):
-        session, next_change = 'morning', now.replace(hour=11, minute=30, second=0, microsecond=0)
-    elif open_now and dtime(13, 0) <= t < dtime(15, 0):
-        session, next_change = 'afternoon', now.replace(hour=15, minute=0, second=0, microsecond=0)
-    elif open_now:
-        session, next_change = 'closed', None
-    else:
-        session = 'closed'
-        days_ahead = 1 if t >= dtime(15, 0) else 0
-        next_change = (datetime.combine(ddate.today(), dtime(9, 15))
-                       + timedelta(days=days_ahead)).isoformat()
-
-    return ok(is_open=open_now, session=session, next_change=next_change,
-              server_time=now.isoformat())
-
-
-# ============================================================
-# P1: Orders with Filters (订单过滤查询) — modifies existing
-# ============================================================
-
-# ============================================================
-# P4-2: News headlines (供 streamlit / UI 替代 core.factors.nlp 直连)
-# ============================================================
-
-@app.route('/data/news/<symbol>', methods=['GET'])
-def data_news(symbol):
-    """GET /data/news/<symbol>?n=5 — 标的最新新闻标题列表(东方财富)。"""
-    n = int(request.args.get('n', 5))
-    try:
-        from core.factors.nlp import _fetch_news_eastmoney
-        headlines = _fetch_news_eastmoney(symbol, n=n) or []
-    except Exception as e:
-        return err(f'news fetch failed: {e}', 503)
-    return ok(symbol=symbol, headlines=headlines, count=len(headlines))
+# R2-4 续集：/northbound, /performance, /data/macro, /fundamentals,
+# /market/status, /data/news 6 个端点已拆到 backend/api_routes/market.py
 
 
 # ============================================================
@@ -1257,11 +1099,13 @@ def server_error(e):
 # `from backend.api import ...` 拿不到符号。未来新增 blueprint 都在这一段
 # 集中注册，方便审计 URL 命名空间冲突。
 from backend.api_routes.data import data_bp  # noqa: E402
+from backend.api_routes.market import market_bp  # noqa: E402
 from backend.api_routes.orders import orders_bp  # noqa: E402
 from backend.api_routes.portfolio import portfolio_bp  # noqa: E402
 from backend.api_routes.trades_signals_params import trades_signals_params_bp  # noqa: E402
 from backend.api_routes.watchlist_alerts import watchlist_alerts_bp  # noqa: E402
 app.register_blueprint(data_bp)
+app.register_blueprint(market_bp)
 app.register_blueprint(orders_bp)
 app.register_blueprint(portfolio_bp)
 app.register_blueprint(trades_signals_params_bp)
