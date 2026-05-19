@@ -47,23 +47,7 @@ class TestBrokerFactory(unittest.TestCase):
         self.assertEqual(fill.shares, 0)
         print('\nFutuBroker submit_order offline → zero fill OK')
 
-    def test_tiger_stub_rejects_submit_order(self):
-        from core.brokers.tiger import TigerBroker
-        from core.oms import Order
-        b = TigerBroker()
-        with self.assertRaises(NotImplementedError):
-            b.submit_order(Order(symbol='AAPL', direction='BUY',
-                                 order_type='MARKET', shares=100))
-        print('\nTigerBroker submit_order raises NotImplementedError OK')
-
-    def test_ibkr_stub_rejects_submit_order(self):
-        from core.brokers.ibkr import IBBroker
-        from core.oms import Order
-        b = IBBroker()
-        with self.assertRaises(NotImplementedError):
-            b.submit_order(Order(symbol='AAPL', direction='BUY',
-                                 order_type='MARKET', shares=100))
-        print('\nIBBroker submit_order raises NotImplementedError OK')
+    # R2-2: 删除了 core/brokers/{ibkr,tiger}.py 死代码 stub，对应测试一并移除。
 
     def test_require_live_rejects_without_unlock(self):
         from core.brokers.facade import BrokerFactory, BrokerSecurityError

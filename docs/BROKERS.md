@@ -32,7 +32,8 @@
 | 文件 | 原适配目标 |
 |---|---|
 | `core/brokers/futu.py` | 富途 OpenD |
-| `core/brokers/ibkr.py` | Interactive Brokers(stub) |
-| `core/brokers/tiger.py` | 老虎证券(stub) |
+
+（R2-2: `core/brokers/ibkr.py` 和 `core/brokers/tiger.py` 已删除——
+本系统不接入真实券商，stub 形态毫无价值，徒增维护负担。）
 
 如需真实下单,建议另起独立仓库,接合规中间件(QMT / PTrade 等),不在本仓库做。

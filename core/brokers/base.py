@@ -11,9 +11,9 @@ core/brokers/base.py — 统一券商接口（BrokerBase）
   BrokerAdapter (core/oms.py)   — 最小接口（OMS 使用）
       └── BrokerBase            — 完整接口（新券商基类）
               ├── SimulatedBroker  — 模拟撮合（无须网络）
-              ├── FutuBroker       — 富途（stub）
-              ├── TigerBroker      — 老虎（stub）
-              └── IBBroker         — IBKR（stub）
+              └── FutuBroker       — 富途（stub，deprecated）
+
+（R2-2: IBKR / Tiger stub 已删除，本系统不接入真实券商）
 
 实现新券商示例：
     from core.brokers.base import BrokerBase, AccountInfo, OrderStatus
