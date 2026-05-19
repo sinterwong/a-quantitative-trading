@@ -116,7 +116,7 @@ def fetch_selected_stocks(n: int = 5) -> list:
                 'symbol': s.get('code', ''),
                 'name':   s.get('name', ''),
                 'reason': s.get('reason', ''),
-                'score':  s.get('total', 0),
+                'score':  s.get('total_score', s.get('score', s.get('total', 0))),
             })
         _log.info('Selected %d stocks: %s', len(result), [s['symbol'] for s in result])
         return result
