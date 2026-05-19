@@ -8,14 +8,13 @@
 历史遗留(deprecated,仅保留代码雏形,导入时打 warning):
   - futu.py    — Futu OpenD 适配(已停止维护)
 
-R2-2: ibkr.py / tiger.py 已删除——本系统不接入真实券商,只保留
-PaperBroker / SimulatedBroker。如未来需接入,请重新实现,不要恢复 stub。
-
-SafetyMode 默认 PAPER。LIVE 模式在当前产品定位下视为危险路径,
-保留代码但不建议解锁(后续可考虑彻底移除)。
+R2-2: ibkr.py / tiger.py / facade.py (BrokerFactory + SafetyMode) 已删除
+——本系统不接入真实券商,生产链路直接 `from backend.services.broker import
+PaperBroker`,不需要工厂层。SafetyMode 历史上是为"LIVE 模式 3 步解锁"
+预留的,但产品定位明确不上 LIVE,SafetyMode 实际只剩 PAPER 一种状态,
+保留它徒增维护负担。如未来需接入,请重新实现,不要恢复 stub。
 """
 
 from core.brokers.paper import PaperBroker
-from core.brokers.facade import BrokerFactory, SafetyMode
 
-__all__ = ['PaperBroker', 'BrokerFactory', 'SafetyMode']
+__all__ = ['PaperBroker']

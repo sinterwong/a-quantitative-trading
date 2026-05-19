@@ -2,9 +2,8 @@
 core/brokers/base.py — 统一券商接口（BrokerBase）
 
 设计原则：
-  - 所有券商（SimulatedBroker / Futu / Tiger / IBKR / ...）实现同一接口
+  - 所有券商（SimulatedBroker / Futu / ...）实现同一接口
   - 新增券商只需继承 BrokerBase 并实现全部 abstract 方法
-  - SafetyMode 由 BrokerFactory 在外层控制，Broker 本身不做安全检查
   - 支持 A股 / 港股 / 美股 / 期货，通过 supported_markets() 声明
 
 接口层次：

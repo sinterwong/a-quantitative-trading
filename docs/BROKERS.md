@@ -13,18 +13,6 @@
 > `core.brokers.PaperBroker` 是 `core.oms.EventDrivenPaperBroker` 的别名。
 > 两个 PaperBroker 实现差异在事件驱动 vs 同步直写。
 
-## SafetyMode
-
-`core.brokers.facade.BrokerFactory` 的 `SafetyMode`:
-
-| Mode | 行为 |
-|---|---|
-| `PAPER`(默认) | 仅 PaperBroker,真实下单路径阻断 |
-| `SIMULATED` | 同 PAPER,语义区分 |
-| `LIVE` | 需 3 步显式解锁,默认禁用 |
-
-`QUANT_BROKER_MODE` 环境变量强制覆盖。
-
 ## Deprecated
 
 下列文件 import 时会打 `DeprecationWarning`,不再维护,后续清理周期可能删除:
@@ -33,7 +21,9 @@
 |---|---|
 | `core/brokers/futu.py` | 富途 OpenD |
 
-（R2-2: `core/brokers/ibkr.py` 和 `core/brokers/tiger.py` 已删除——
-本系统不接入真实券商，stub 形态毫无价值，徒增维护负担。）
+（R2-2: `core/brokers/ibkr.py` / `tiger.py` / `facade.py`
+[BrokerFactory + SafetyMode] 已删除——本系统不接入真实券商,SafetyMode
+实际只剩 PAPER 一种状态,工厂层徒增维护负担。生产链路直接
+`from backend.services.broker import PaperBroker`。）
 
 如需真实下单,建议另起独立仓库,接合规中间件(QMT / PTrade 等),不在本仓库做。
