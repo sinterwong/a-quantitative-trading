@@ -74,38 +74,75 @@ def submit_order():
             return err(f"missing required field: {field}")
 
     # ── 幂等键检查（R0-1）─────────────────────────────────────
+    # 用 reserve / complete / release 三段式：DB PRIMARY KEY 串行化并发
+    # 抢锁，且必须先 reserve 再 submit_order，撮合后 complete；任何错误
+    # 路径都 release，避免一个 key 被卡 24h。详见 core/idempotency.py 模块
+    # docstring。
     idempotency_key = request.headers.get('Idempotency-Key', '').strip() or None
     idem_store = None
     request_hash = None
+    reserved_new = False
     if idempotency_key is not None:
-        from core.idempotency import compute_request_hash
+        from core.idempotency import (
+            IdempotencyKeyConflict,
+            ReserveOutcome,
+            compute_request_hash,
+        )
         idem_store = _idempotency_store_singleton.get()
         request_hash = compute_request_hash(body)
         try:
-            prior = idem_store.get(idempotency_key)
+            outcome, stored = idem_store.reserve(idempotency_key, request_hash)
+        except IdempotencyKeyConflict:
+            return jsonify({
+                'status': 'error',
+                'error': 'idempotency key reused with a different payload',
+                'code': 'IDEMPOTENCY_KEY_CONFLICT',
+                'timestamp': datetime.now().isoformat(),
+            }), 422
         except Exception as exc:
-            app.logger.warning('idempotency lookup failed (continuing): %s', exc)
-            prior = None
-        if prior is not None:
-            if prior.request_hash != request_hash:
-                return jsonify({
-                    'status': 'error',
-                    'error': 'idempotency key reused with a different payload',
-                    'code': 'IDEMPOTENCY_KEY_CONFLICT',
-                    'timestamp': datetime.now().isoformat(),
-                }), 422
-            # 同 key 同 body 已成功过 — 直接回放
-            prior.response.setdefault('replayed', True)
-            return jsonify(prior.response), 200
+            # 存储层挂了 — 不阻断下单。打 warning，按"无幂等保护"处理。
+            app.logger.warning('idempotency.reserve failed (continuing without '
+                               'idempotency): %s', exc)
+            idem_store = None
+            outcome, stored = ReserveOutcome.NEW, None
+
+        if outcome is ReserveOutcome.REPLAY and stored is not None:
+            stored.response.setdefault('replayed', True)
+            return jsonify(stored.response), 200
+        if outcome is ReserveOutcome.IN_FLIGHT:
+            # 同 key 还在处理中 — 让客户端短退避后重试，避免重复下单。
+            return jsonify({
+                'status': 'error',
+                'error': 'a request with this idempotency key is already in flight',
+                'code': 'IDEMPOTENCY_IN_FLIGHT',
+                'timestamp': datetime.now().isoformat(),
+            }), 409
+        # outcome == NEW：我们持有 reservation，必须 complete 或 release。
+        reserved_new = True
 
     direction = body['direction'].upper()
     if direction not in ('BUY', 'SELL'):
+        if reserved_new and idem_store is not None:
+            try:
+                idem_store.release(idempotency_key, request_hash)
+            except Exception as exc:
+                app.logger.warning('idempotency.release failed: %s', exc)
         return err("direction must be BUY or SELL")
     try:
         shares = int(body['shares'])
     except (TypeError, ValueError):
+        if reserved_new and idem_store is not None:
+            try:
+                idem_store.release(idempotency_key, request_hash)
+            except Exception as exc:
+                app.logger.warning('idempotency.release failed: %s', exc)
         return err("shares must be a positive integer")
     if shares <= 0:
+        if reserved_new and idem_store is not None:
+            try:
+                idem_store.release(idempotency_key, request_hash)
+            except Exception as exc:
+                app.logger.warning('idempotency.release failed: %s', exc)
         return err("shares must be positive")
 
     symbol = body['symbol']
@@ -126,6 +163,13 @@ def submit_order():
         price_type=body.get('price_type', 'market'),
     )
 
+    def _release_on_error() -> None:
+        if reserved_new and idem_store is not None:
+            try:
+                idem_store.release(idempotency_key, request_hash)
+            except Exception as rel_exc:
+                app.logger.warning('idempotency.release failed: %s', rel_exc)
+
     try:
         result = _submit_order_uc(
             req,
@@ -133,6 +177,7 @@ def submit_order():
             risk_engine=_api_get_risk_engine(),
         )
     except NoReferencePriceError as exc:
+        _release_on_error()
         return jsonify({
             'status': 'error',
             'error': exc.message,
@@ -140,6 +185,7 @@ def submit_order():
             'timestamp': datetime.now().isoformat(),
         }), 503
     except RiskRejectedError as exc:
+        _release_on_error()
         return jsonify({
             'status': 'error',
             'error': exc.message,
@@ -148,12 +194,17 @@ def submit_order():
             'timestamp': datetime.now().isoformat(),
         }), 403
     except RiskCheckFailedError as exc:
+        _release_on_error()
         return jsonify({
             'status': 'error',
             'error': exc.message,
             'code': exc.code,
             'timestamp': datetime.now().isoformat(),
         }), 503
+    except Exception:
+        # broker / 撮合本身抛了未分类异常 — 释放 reservation 让客户端可重试。
+        _release_on_error()
+        raise
 
     response_body = {
         'status': result.status,
@@ -168,14 +219,17 @@ def submit_order():
         'submitted_at': result.submitted_at,
         'filled_at': result.filled_at,
     }
-    if idem_store is not None and idempotency_key is not None:
+    if reserved_new and idem_store is not None:
         from core.idempotency import IdempotencyKeyConflict
         try:
-            idem_store.put(idempotency_key, request_hash, response_body)
+            idem_store.complete(idempotency_key, request_hash, response_body)
         except IdempotencyKeyConflict as exc:
-            app.logger.warning('idempotency.put conflict on success: %s', exc)
+            # complete-time hash drift = caller bug. 订单已实际成交，不要回滚。
+            app.logger.warning('idempotency.complete conflict (order succeeded): %s',
+                               exc)
         except Exception as exc:
-            app.logger.warning('idempotency.put failed (continuing): %s', exc)
+            # 存储侧问题不能让已成交订单变成 500 — 客户端拿到 200 + order_id 即可。
+            app.logger.warning('idempotency.complete failed (continuing): %s', exc)
     return jsonify(response_body), 200
 
 
