@@ -536,79 +536,72 @@ def submit_order():
     direction = body['direction'].upper()
     if direction not in ('BUY', 'SELL'):
         return err("direction must be BUY or SELL")
-    shares = int(body['shares'])
+    try:
+        shares = int(body['shares'])
+    except (TypeError, ValueError):
+        return err("shares must be a positive integer")
     if shares <= 0:
         return err("shares must be positive")
 
     symbol = body['symbol']
-    price = float(body.get('price', 0))
-    price_type = body.get('price_type', 'market')
 
-    # 市价单调用方通常不带 price,但 RiskEngine 的多数规则(单笔金额、组合
-    # 占比、CVaR 估算)需要金额才能算。price=0 等于绕过这些规则 ⇒ 必须先
-    # 拿到一个参考价。复用 broker 的 _fetch_market_price(失败返回 0),
-    # 失败时直接拒单而不是用 0 通过风控。
-    broker = _get_or_build_broker()
-    if price <= 0:
-        ref = 0.0
-        try:
-            fetch = getattr(broker, '_fetch_market_price', None)
-            if fetch is not None:
-                ref = float(fetch(symbol) or 0.0)
-        except Exception:
-            ref = 0.0
-        if ref <= 0:
-            return jsonify({
-                'status': 'error',
-                'error': 'market order needs a reference price (broker fetch failed)',
-                'code': 'NO_REF_PRICE',
-                'timestamp': datetime.now().isoformat(),
-            }), 503
-        risk_price = ref
-    else:
-        risk_price = price
-
-    # ── PreTrade 风控（与 IntradayMonitor 同一道门控）────────────
-    re = _get_risk_engine()
-    if re is not None:
-        try:
-            from core.factors.base import Signal as _Sig
-            sig = _Sig(
-                timestamp=datetime.now(), symbol=symbol, direction=direction,
-                strength=1.0, factor_name='API', price=risk_price,
-            )
-            rr = re.check(sig)
-            if not rr.passed:
-                return jsonify({
-                    'status': 'error',
-                    'error': f'PreTrade rejected: {rr.reason}',
-                    'code': 'RISK_REJECTED',
-                    'details': rr.details,
-                    'timestamp': datetime.now().isoformat(),
-                }), 403
-        except Exception as exc:
-            # 风控自身异常不应放行：宁可保守拒单
-            return jsonify({
-                'status': 'error',
-                'error': f'PreTrade check raised: {exc}',
-                'code': 'RISK_ERROR',
-                'timestamp': datetime.now().isoformat(),
-            }), 503
-
-    result = broker.submit_order(
-        symbol=symbol, direction=direction, shares=shares,
-        price=price,
-        price_type=price_type,
+    # R2-1: 业务逻辑已下沉到 core.use_cases.submit_order。本端点只做
+    # transport 层职责：参数解析、依赖装配、调用 use case、把 UseCaseError
+    # 子类映射成 HTTP 状态码。
+    from core.use_cases.submit_order import (
+        submit_order as _submit_order_uc,
+        SubmitOrderRequest,
+        NoReferencePriceError,
+        RiskRejectedError,
+        RiskCheckFailedError,
     )
+
+    req = SubmitOrderRequest(
+        symbol=symbol,
+        direction=direction,
+        shares=shares,
+        price=float(body.get('price', 0)),
+        price_type=body.get('price_type', 'market'),
+    )
+
+    try:
+        result = _submit_order_uc(
+            req,
+            broker=_get_or_build_broker(),
+            risk_engine=_get_risk_engine(),
+        )
+    except NoReferencePriceError as exc:
+        return jsonify({
+            'status': 'error',
+            'error': exc.message,
+            'code': exc.code,
+            'timestamp': datetime.now().isoformat(),
+        }), 503
+    except RiskRejectedError as exc:
+        return jsonify({
+            'status': 'error',
+            'error': exc.message,
+            'code': exc.code,
+            'details': exc.details,
+            'timestamp': datetime.now().isoformat(),
+        }), 403
+    except RiskCheckFailedError as exc:
+        return jsonify({
+            'status': 'error',
+            'error': exc.message,
+            'code': exc.code,
+            'timestamp': datetime.now().isoformat(),
+        }), 503
+
     # 保留旧契约：顶层 status = broker 成交状态（filled/partial/rejected/...）
     # 而非通用的 "ok"。多个调用方（含 e2e 测试）依赖这一字段。
     response_body = {
         'status': result.status,
         'timestamp': datetime.now().isoformat(),
         'order_id': result.order_id,
-        'symbol': symbol,
-        'direction': direction,
-        'shares': shares,
+        'symbol': result.symbol,
+        'direction': result.direction,
+        'shares': result.shares,
         'filled_shares': result.filled_shares,
         'avg_price': result.avg_price,
         'reason': result.reason,
