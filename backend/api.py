@@ -364,125 +364,8 @@ def build_pipeline(symbol: str = ''):
 # 回测
 # ============================================================
 
-@app.route('/backtest/run', methods=['POST'])
-def backtest_run():
-    """
-    POST /backtest/run
-
-    单标的回测,返回绩效 KPI(不含 equity curve 序列)。
-
-    Body (JSON):
-        {
-          "symbol": "sh600519",
-          "start": "2024-01-01",            // 可选
-          "end":   "2024-12-31",            // 可选
-          "days":  252,                      // start/end 缺省时用
-          "initial_equity":  100000,
-          "commission_rate": 0.0003,
-          "slippage_bps":    5.0,
-          "strategies": [
-            {"factor_name": "RSI", "threshold": 1.0, "params": {"window": 14}}
-          ]
-        }
-
-    Returns:
-        {
-          "symbol": "sh600519", "n_bars": 120, "n_trades": 8,
-          "total_return": 0.12, "annual_return": 0.25, "sharpe": 1.4,
-          "max_drawdown_pct": 0.08, "win_rate": 0.62, "profit_factor": 1.7,
-          "factor_ic": 0.03, "factor_ir": 0.6, "summary": "..."
-        }
-    """
-    from core.use_cases.backtest import (
-        BacktestRequest, StrategySpec, run_backtest,
-    )
-    from core.use_cases import UseCaseError
-    body = request.get_json(silent=True) or {}
-    try:
-        symbol = body.get('symbol')
-        if not symbol:
-            return err('symbol is required', 422)
-        req = BacktestRequest(
-            symbol=str(symbol),
-            start=body.get('start'),
-            end=body.get('end'),
-            days=int(body.get('days', 252)),
-            initial_equity=float(body.get('initial_equity', 100_000)),
-            commission_rate=float(body.get('commission_rate', 0.0003)),
-            slippage_bps=float(body.get('slippage_bps', 5.0)),
-            strategies=[
-                StrategySpec(
-                    factor_name=str(s['factor_name']),
-                    threshold=float(s.get('threshold', 1.0)),
-                    params=dict(s.get('params', {})),
-                )
-                for s in body.get('strategies', [])
-            ],
-        )
-    except (KeyError, ValueError, TypeError) as exc:
-        return err(f'invalid request: {exc}', 422)
-    try:
-        response = run_backtest(req)
-    except UseCaseError as exc:
-        return err(exc.message, 503 if exc.code == 'DATA_UNAVAILABLE' else 422)
-    return ok(**response.to_dict())
-
-
-# ============================================================
-# 组合优化
-# ============================================================
-
-@app.route('/portfolio/compose', methods=['POST'])
-def portfolio_compose():
-    """
-    POST /portfolio/compose
-
-    基于 universe 的历史日 K 收益,产出建议权重(不下单)。
-
-    Body (JSON):
-        {
-          "universe":     ["600519.SH", "000858.SZ", "601318.SH"],
-          "method":       "min_variance",  // min_variance | max_sharpe |
-                                           // risk_parity | max_diversification |
-                                           // equal_weight
-          "history_days": 252,
-          "max_weight":   0.25,
-          "min_weight":   0.0,
-          "cov_method":   "ledoit_wolf",
-          "rf_annual":    0.02
-        }
-
-    Returns:
-        {
-          "method": "min_variance",
-          "weights": {"600519.SH": 0.40, ...},
-          "n_assets": 3,
-          "expected_return": 0.08, "expected_vol": 0.18, "sharpe": 0.33,
-          "diagnostics": {"cov_method": "ledoit_wolf", "history_bars": "250", ...}
-        }
-    """
-    from core.use_cases.compose_portfolio import (
-        ComposePortfolioRequest, compose_portfolio,
-    )
-    from core.use_cases import UseCaseError
-    body = request.get_json(silent=True) or {}
-    try:
-        req = ComposePortfolioRequest(
-            universe=list(body.get('universe', [])),
-            method=str(body.get('method', 'min_variance')),
-            history_days=int(body.get('history_days', 252)),
-            max_weight=float(body.get('max_weight', 0.25)),
-            min_weight=float(body.get('min_weight', 0.0)),
-            cov_method=str(body.get('cov_method', 'ledoit_wolf')),
-            rf_annual=float(body.get('rf_annual', 0.02)),
-        )
-    except (ValueError, TypeError) as exc:
-        return err(f'invalid request: {exc}', 422)
-    try:
-        advice = compose_portfolio(req)
-    except UseCaseError as exc:
-        return err(exc.message, 503 if exc.code == 'DATA_UNAVAILABLE' else 422)
-    return ok(**advice.to_dict())
+# R2-4 续集：/backtest, /portfolio/compose, /wfa/* 已拆到
+# backend/api_routes/research.py
 
 
 # R2-4 续集：/watchlist/* + /alerts/* 6 个端点已拆到
@@ -496,204 +379,8 @@ def portfolio_compose():
 # R2-4 续集：/data/* 4 个端点已拆到 backend/api_routes/data.py
 
 
-# ============================================================
-# Trading Mode
-# ============================================================
-
-_MODE_FILE = os.path.join(os.path.dirname(__file__), 'trading_mode.json')
-_VALID_MODES = {'simulation', 'live'}
-
-
-def _load_trading_mode() -> str:
-    try:
-        with open(_MODE_FILE, 'r') as f:
-            data = json.load(f)
-        mode = data.get('mode', 'simulation')
-        return mode if mode in _VALID_MODES else 'simulation'
-    except (FileNotFoundError, json.JSONDecodeError):
-        return 'simulation'
-
-
-def _save_trading_mode(mode: str) -> None:
-    with open(_MODE_FILE, 'w') as f:
-        json.dump({'mode': mode, 'updated_at': datetime.now().isoformat()}, f)
-
-
-@app.route('/trading/mode', methods=['GET'])
-def get_trading_mode():
-    """Return current trading mode (simulation or live)."""
-    mode = _load_trading_mode()
-    return ok(mode=mode)
-
-
-@app.route('/trading/mode', methods=['PUT'])
-def set_trading_mode():
-    """Set trading mode. Body: {"mode": "simulation"|"live"}"""
-    if (e := require_json()):
-        return e
-    body = request.json or {}
-    mode = body.get('mode', '')
-    if mode not in _VALID_MODES:
-        return err(f'invalid mode "{mode}", must be one of: {sorted(_VALID_MODES)}', 422)
-    _save_trading_mode(mode)
-    return ok(mode=mode, message=f'Trading mode set to {mode}')
-
-
-# ============================================================
-# Monitor status
-# ============================================================
-
-@app.route('/monitor/status', methods=['GET'])
-def monitor_status():
-    """
-    GET /monitor/status
-    返回 IntradayMonitor 的实时运行状态：
-      - 线程状态、交易模式、扫描计数
-      - 最近 10 条信号触发记录
-      - 最近 10 条跳过记录（含原因分类）
-      - 最近 5 条 LLM 审核记录
-      - 风控状态（Kelly 仓位、回撤熔断）
-    """
-    from main import get_monitor
-    monitor = get_monitor()
-    if monitor is None:
-        return err('Monitor not initialized', 503)
-    return ok(monitor.get_status())
-
-
-@app.route('/risk/status', methods=['GET'])
-def risk_status():
-    """GET /risk/status — 风控快照（组合敞口、板块集中度、回撤、Kelly）。"""
-    from core.use_cases.risk_snapshot import get_risk_snapshot
-    from main import get_monitor
-    snap = get_risk_snapshot(get_svc(), monitor=get_monitor())
-    return ok(**snap.to_dict())
-
-
-# ============================================================
-# Prometheus 监控指标端点
-# ============================================================
-
-@app.route('/metrics', methods=['GET'])
-def metrics_endpoint():
-    """GET /metrics — Prometheus 格式监控指标（in-process 刷新，无自调 HTTP）。"""
-    try:
-        from core.metrics import get_registry
-        reg = get_registry()
-        reg.refresh_from_service(get_svc())
-        return reg.generate(), 200, {'Content-Type': reg.content_type}
-    except Exception as e:
-        return f'# metrics error: {e}\n', 500, {'Content-Type': 'text/plain'}
-
-
-# ============================================================
-# P1: Northbound (北向资金)
-# ============================================================
-
-# R2-4 续集：/northbound, /performance, /data/macro, /fundamentals,
-# /market/status, /data/news 6 个端点已拆到 backend/api_routes/market.py
-
-
-# ============================================================
-# P2: LLM Signal Review (独立信号审核)
-# ============================================================
-
-def _probe_llm_provider():
-    """尝试初始化 LLM provider；不可用返回 None。"""
-    try:
-        from services.llm.providers import MiniMaxProvider
-        provider = MiniMaxProvider()
-        provider.chat([{"role": "user", "content": "hi"}], max_tokens=5)
-        return provider
-    except Exception:
-        return None
-
-
-@app.route('/llm/analyze', methods=['POST'])
-@rate_limit(max_per_window=10, window_seconds=60)
-def llm_analyze():
-    """POST /llm/analyze — LLM 独立信号审核 (services.llm.service.signal_review 入口)。"""
-    if (e := require_json()):
-        return e
-    body = request.json
-    if 'symbol' not in body:
-        return err('missing required field: symbol', 422)
-    if 'price' not in body:
-        return err('missing required field: price', 422)
-    # Provide sensible defaults for optional fields the UI may not fill
-    body.setdefault('direction', 'UNKNOWN')
-    body.setdefault('signal', 'NEUTRAL')
-    body.setdefault('alert_reason', '')
-
-    provider = _probe_llm_provider()
-    from services.llm.service import signal_review
-    result = signal_review(
-        symbol=body['symbol'], direction=body['direction'],
-        signal=body['signal'], price=float(body['price']),
-        alert_reason=body['alert_reason'],
-        entry_price=body.get('entry_price'),
-        position_shares=int(body.get('position_shares', 0)),
-        position_pnl=float(body.get('position_pnl', 0)),
-        rsi_value=body.get('rsi_value'),
-        atr_ratio=body.get('atr_ratio'),
-        market_regime=body.get('market_regime', 'UNKNOWN'),
-        north_flow_yi=float(body.get('north_flow_yi', 0)),
-        cash=float(body.get('cash', 0)),
-        equity=float(body.get('equity', 0)),
-        other_positions=body.get('other_positions'),
-        recent_trades=body.get('recent_trades'),
-        news_sentiment=body.get('news_sentiment', ''),
-        provider=provider,
-    )
-    return ok(
-        approved=result.approved, decision=result.decision,
-        reason=result.reason, confidence=result.confidence,
-        size_rec=result.size_rec, llm_available=(provider is not None),
-    )
-
-
-# ============================================================
-# P2: WFA History (WFA 历史查询)
-# ============================================================
-
-@app.route('/wfa/history', methods=['GET'])
-def wfa_history():
-    """
-    GET /wfa/history?symbol=600036.SH&strategy=RSI&limit=30
-
-    查询 WFA 运行历史记录。
-    """
-    symbol   = request.args.get('symbol')
-    strategy = request.args.get('strategy')
-    limit    = int(request.args.get('limit', 30))
-
-    from services.walkforward_persistence import get_wfa_history
-    try:
-        records = get_wfa_history(symbol=symbol, strategy=strategy, limit=limit)
-        return ok(records=records, count=len(records))
-    except Exception as e:
-        return err(str(e), 500)
-
-
-@app.route('/wfa/summary', methods=['GET'])
-def wfa_summary():
-    """
-    GET /wfa/summary?symbol=600036.SH
-
-    查询某标的最新 WFA 结果（regime ATR 两条策略的最新记录）。
-    """
-    symbol = request.args.get('symbol')
-    if not symbol:
-        return err('symbol is required', 422)
-
-    from services.wfa_history import get_latest_wfa
-    rsi_result = get_latest_wfa(symbol, 'RSI')
-    atr_result = get_latest_wfa(symbol, 'ATR')
-    return ok(
-        symbol=symbol,
-        rsi=rsi_result,
-        atr=atr_result,
-    )
+# R2-4 续集：/trading/mode, /monitor, /risk, /metrics, /llm/analyze 已拆到
+# backend/api_routes/ops.py
 
 
 # ============================================================
@@ -719,15 +406,19 @@ def server_error(e):
 from backend.api_routes.analysis import analysis_bp  # noqa: E402
 from backend.api_routes.data import data_bp  # noqa: E402
 from backend.api_routes.market import market_bp  # noqa: E402
+from backend.api_routes.ops import ops_bp  # noqa: E402
 from backend.api_routes.orders import orders_bp  # noqa: E402
 from backend.api_routes.portfolio import portfolio_bp  # noqa: E402
+from backend.api_routes.research import research_bp  # noqa: E402
 from backend.api_routes.trades_signals_params import trades_signals_params_bp  # noqa: E402
 from backend.api_routes.watchlist_alerts import watchlist_alerts_bp  # noqa: E402
 app.register_blueprint(analysis_bp)
 app.register_blueprint(data_bp)
 app.register_blueprint(market_bp)
+app.register_blueprint(ops_bp)
 app.register_blueprint(orders_bp)
 app.register_blueprint(portfolio_bp)
+app.register_blueprint(research_bp)
 app.register_blueprint(trades_signals_params_bp)
 app.register_blueprint(watchlist_alerts_bp)
 
