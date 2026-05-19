@@ -302,6 +302,20 @@ check(shares_warm >= 0, f"热启动 Kelly 份数应 ≥ 0，实际={shares_warm}
 # 份数应是 100 的整数倍（A 股最小单位）
 check(shares_warm % 100 == 0, f"份数应是 100 的整数倍，实际={shares_warm}")
 
+# 资金不足以买 100 股时，_calc_shares_price 应返回 0 而不是 100
+# （回归：早期实现里 max(shares, 100) 在小账户/高价股场景会撒谎报 100 股，
+# 下游 _can_buy 拿到不切实的 est_cost）
+eng_small = BacktestEngine(BacktestConfig(initial_equity=5_000))
+shares_unaffordable = eng_small._calc_shares_price(100.0)   # 100×100 = 10k > 5k
+check(shares_unaffordable == 0,
+      f"资金不足买 100 股时应返回 0，实际={shares_unaffordable}")
+shares_affordable = eng_small._calc_shares_price(10.0)       # 100×10 = 1k <= 5k
+check(shares_affordable >= 100,
+      f"资金足够时至少返回 100 股，实际={shares_affordable}")
+shares_fixed_unaffordable = eng_small._calc_shares_from_equity(100.0)
+check(shares_fixed_unaffordable == 0,
+      f"_calc_shares_from_equity 资金不足应返回 0，实际={shares_fixed_unaffordable}")
+
 # ─── Section 5: adj_type 校验 + 停牌处理 ─────────────────────────────────────
 
 section("复权类型校验")

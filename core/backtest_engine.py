@@ -633,10 +633,17 @@ class BacktestEngine:
         avg_loss = avg_loss_pnl / equity
         return win_rate, max(avg_win, 1e-6), max(avg_loss, 1e-6)
 
+    def _floor_min_lot(self, shares: int, price: float, equity: float) -> int:
+        """统一向下取整到 100 股，且只在权益足以买 100 股时回填到 100，
+        否则返回 0。避免在资金不足以买入最低单位时虚报份数。"""
+        shares = (max(shares, 0) // 100) * 100
+        if shares > 0:
+            return shares
+        return 100 if equity >= price * 100 else 0
+
     def _calc_shares_from_equity(self, price: float) -> int:
-        shares = int(self._equity * 0.25 / price)
-        shares = (shares // 100) * 100
-        return max(shares, 100)  # A股最低 100 股约束
+        raw = int(self._equity * 0.25 / price)
+        return self._floor_min_lot(raw, price, self._equity)
 
     def _calc_shares_price(self, price: float) -> int:
         """基于动态 Kelly 公式计算买入份额"""
@@ -647,9 +654,8 @@ class BacktestEngine:
             kelly = (win_rate * b - (1 - win_rate)) / b
             kelly = max(kelly, 0) * 0.5
             kelly = min(kelly, self.config.max_position_pct)
-            shares = int(equity * kelly / price)
-            shares = (shares // 100) * 100
-            return max(shares, 100)  # A股最低 100 股约束
+            raw = int(equity * kelly / price)
+            return self._floor_min_lot(raw, price, equity)
         except Exception:
             return 0
 
