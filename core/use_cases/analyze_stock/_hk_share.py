@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from typing import Type, cast
+
+from core.factors.base import Factor
 
 from ._deps import resolve_gateway
 from ._llm_summary import try_llm_summary
@@ -129,8 +132,9 @@ def analyze_hk_share(req: AnalysisRequest) -> AnalysisReport:
                 (ATRFactor, 0.20),
             ]:
                 try:
-                    pipeline.add(cls, weight=w, params=sym_param)
-                except Exception as exc:
+                    # mypy 对 ABCMeta 子类的 type[Factor] 推断不完美，cast 让契约清晰
+                    pipeline.add(cast(Type[Factor], cls), weight=w, params=sym_param)
+                except Exception as exc:  # noqa: BLE001 — 单因子失败不阻断 pipeline
                     logger.debug('HK pipeline.add %s failed: %s', cls.__name__, exc)
 
             pr = pipeline.run(symbol=sym, data=df, price=current_price)

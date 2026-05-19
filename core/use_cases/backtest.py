@@ -58,7 +58,7 @@ class BacktestResponse:
     factor_ir: float
     summary_text: str
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             'symbol': self.symbol,
             'n_bars': self.n_bars,

@@ -9,7 +9,7 @@ import re
 from typing import Any, Dict, Optional
 
 
-def safe_float(v) -> Optional[float]:
+def safe_float(v: Any) -> Optional[float]:
     try:
         if v is None:
             return None
@@ -38,6 +38,9 @@ def safe_json_extract(text: str) -> Optional[Dict[str, Any]]:
     if not candidate:
         return None
     try:
-        return json.loads(candidate)
-    except Exception:
+        result = json.loads(candidate)
+        if isinstance(result, dict):
+            return result
+        return None
+    except (json.JSONDecodeError, ValueError):
         return None

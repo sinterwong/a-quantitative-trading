@@ -88,12 +88,17 @@ jobs:
       - name: Mypy strict (R3-1 / R3-2 选定核心模块)
         run: |
           # R3-1 / R3-2: 对 R0-R2 新写模块 + 关键领域基类 (factor base /
-          # broker base) 开 strict。具体规则见 pyproject.toml
-          # [[tool.mypy.overrides]]。存量代码持续整改后逐步纳入。
+          # broker base) + use_cases 子模块开 strict。具体规则见
+          # pyproject.toml [[tool.mypy.overrides]]。存量代码持续整改后逐步纳入。
           pip install mypy
           mypy core/singleton.py core/lifecycle.py core/idempotency.py \
                core/errors.py core/config_defaults.py \
                core/use_cases/__init__.py core/use_cases/submit_order.py \
+               core/use_cases/backtest.py core/use_cases/daily_analysis.py \
+               core/use_cases/intraday_signals.py core/use_cases/morning_workflow.py \
+               core/use_cases/performance_summary.py core/use_cases/risk_snapshot.py \
+               core/use_cases/sector_rotation_signal.py core/use_cases/system_health.py \
+               core/use_cases/analyze_stock/ \
                core/factors/base.py core/brokers/base.py
 
       - name: Run pytest (full suite)

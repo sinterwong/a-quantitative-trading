@@ -78,10 +78,21 @@ module = [
     "core.config_defaults",
     "core.use_cases",
     "core.use_cases.submit_order",
-    # R3-2: 关键公共接口纳入 strict (review 指出 factor / broker 是
-    # use_case 之外最重要的"领域基类")
+    # R3-2 批 1: 领域基类
     "core.factors.base",
     "core.brokers.base",
+    # R3-2 批 2: use_cases 多模块批量纳入（依然有 compose_portfolio /
+    # pairs_trading_signal 两个 use_case 没进，因为它们触及更深层类型 bug
+    # 留待单独 PR）
+    "core.use_cases.backtest",
+    "core.use_cases.daily_analysis",
+    "core.use_cases.intraday_signals",
+    "core.use_cases.morning_workflow",
+    "core.use_cases.performance_summary",
+    "core.use_cases.risk_snapshot",
+    "core.use_cases.sector_rotation_signal",
+    "core.use_cases.system_health",
+    "core.use_cases.analyze_stock.*",
 ]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true

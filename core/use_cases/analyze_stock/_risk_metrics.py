@@ -11,7 +11,7 @@ from typing import Any, Dict
 logger = logging.getLogger('core.use_cases.analyze_stock')
 
 
-def compute_risk_metrics(df, current_price: float) -> Dict[str, Any]:
+def compute_risk_metrics(df: Any, current_price: float) -> Dict[str, Any]:
     """从日 K 计算 ATR / VaR-95 / 年化波动率 / 最大回撤 / 建议止损止盈。"""
     try:
         import numpy as np

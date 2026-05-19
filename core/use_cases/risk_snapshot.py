@@ -8,7 +8,7 @@ core/use_cases/risk_snapshot.py — 组合风控快照 use case (P2-8 收尾)
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -24,7 +24,7 @@ class RiskSnapshot:
     position_count: int = 0
     sector_exposure: Dict[str, float] = field(default_factory=dict)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             'total_equity': round(self.total_equity, 2),
             'peak_equity': round(self.peak_equity, 2),
@@ -39,7 +39,7 @@ class RiskSnapshot:
         }
 
 
-def compute_sector_exposure(positions: list) -> Dict[str, float]:
+def compute_sector_exposure(positions: List[Dict[str, Any]]) -> Dict[str, float]:
     """按 sector 字段聚合持仓市值占比。"""
     sector_mv: Dict[str, float] = {}
     total = 0.0

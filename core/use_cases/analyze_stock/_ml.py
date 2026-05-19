@@ -10,7 +10,7 @@ from typing import Any, Dict
 logger = logging.getLogger('core.use_cases.analyze_stock')
 
 
-def try_ml_prediction(symbol: str, df) -> Dict[str, Any]:
+def try_ml_prediction(symbol: str, df: Any) -> Dict[str, Any]:
     """尝试加载已训练的 XGBoost 模型并预测下一日方向。"""
     try:
         from core.ml.model_registry import ModelRegistry

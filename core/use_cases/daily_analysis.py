@@ -30,13 +30,15 @@ class DailyAnalysisRequest:
 class DailyAnalysisResponse:
     sources: Dict[str, Any] = field(default_factory=dict)
     top_sectors: List[Dict[str, Any]] = field(default_factory=list)
-    news_summary: List[Any] = field(default_factory=list)
+    # selector.get_news_summary 实际返回 list[dict] 或 str（无 LLM 时为空 list）；
+    # 实际数据由展示层使用，dataclass 不强制 schema。
+    news_summary: Any = field(default_factory=list)
     selected_stocks: List[Any] = field(default_factory=list)
     # 持久化 / daily_meta 等 best-effort 步骤的失败原因。
     # 主流程不抛,但调用方能看到何处降级。
     warnings: List[str] = field(default_factory=list)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             'sources': self.sources,
             'top_sectors': self.top_sectors,
