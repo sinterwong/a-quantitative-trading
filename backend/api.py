@@ -178,6 +178,17 @@ def reset_svc(instance: Optional[PortfolioService] = None) -> None:
     _svc_singleton.reset(instance)
 
 
+# R0-1: 订单提交幂等性存储——同 Idempotency-Key 24h 内重试直接回放上次响应。
+def _make_idempotency_store():
+    from core.idempotency import IdempotencyStore
+    return IdempotencyStore()
+
+
+_idempotency_store_singleton = LockedSingleton(
+    _make_idempotency_store, name="api.idempotency_store"
+)
+
+
 # ============================================================
 # Helpers
 # ============================================================
@@ -484,6 +495,9 @@ def submit_order():
 
     所有外部下单(UI / 脚本 / 第三方)都必须先过 PreTrade 风控，与
     IntradayMonitor 的内部下单链路保持同一道门控。
+
+    R0-1: 支持 ``Idempotency-Key`` header。若同一 key 24h 内被重复提交,
+    返回上次的响应而非执行第二次。客户端可用 UUID 防重 / 防网络重试。
     """
     if (e := require_json()):
         return e
@@ -491,6 +505,33 @@ def submit_order():
     for field in ('symbol', 'direction', 'shares'):
         if field not in body:
             return err(f"missing required field: {field}")
+
+    # ── 幂等键检查（R0-1）─────────────────────────────────────
+    idempotency_key = request.headers.get('Idempotency-Key', '').strip() or None
+    idem_store = None
+    request_hash = None
+    if idempotency_key is not None:
+        from core.idempotency import (
+            IdempotencyStore, IdempotencyKeyConflict, compute_request_hash,
+        )
+        idem_store = _idempotency_store_singleton.get()
+        request_hash = compute_request_hash(body)
+        try:
+            prior = idem_store.get(idempotency_key)
+        except Exception as exc:
+            app.logger.warning('idempotency lookup failed (continuing): %s', exc)
+            prior = None
+        if prior is not None:
+            if prior.request_hash != request_hash:
+                return jsonify({
+                    'status': 'error',
+                    'error': 'idempotency key reused with a different payload',
+                    'code': 'IDEMPOTENCY_KEY_CONFLICT',
+                    'timestamp': datetime.now().isoformat(),
+                }), 422
+            # 同 key 同 body 已成功过 — 直接回放
+            prior.response.setdefault('replayed', True)
+            return jsonify(prior.response), 200
 
     direction = body['direction'].upper()
     if direction not in ('BUY', 'SELL'):
@@ -559,13 +600,33 @@ def submit_order():
         price=price,
         price_type=price_type,
     )
-    return ok(
-        order_id=result.order_id, status=result.status,
-        symbol=symbol, direction=direction, shares=shares,
-        filled_shares=result.filled_shares, avg_price=result.avg_price,
-        reason=result.reason,
-        submitted_at=result.submitted_at, filled_at=result.filled_at,
-    )
+    # 保留旧契约：顶层 status = broker 成交状态（filled/partial/rejected/...）
+    # 而非通用的 "ok"。多个调用方（含 e2e 测试）依赖这一字段。
+    response_body = {
+        'status': result.status,
+        'timestamp': datetime.now().isoformat(),
+        'order_id': result.order_id,
+        'symbol': symbol,
+        'direction': direction,
+        'shares': shares,
+        'filled_shares': result.filled_shares,
+        'avg_price': result.avg_price,
+        'reason': result.reason,
+        'submitted_at': result.submitted_at,
+        'filled_at': result.filled_at,
+    }
+    # R0-1: 成功后把响应记录到 idempotency 表，下次同 key 重试直接回放。
+    if idem_store is not None and idempotency_key is not None:
+        try:
+            idem_store.put(idempotency_key, request_hash, response_body)
+        except IdempotencyKeyConflict as exc:
+            # 极端情况：本次执行成功了但与并发先到的另一个 payload 冲突。
+            # 真正的写入已经发生（broker 已成交）；返回正常 200，并发的另一
+            # 个请求拿不到 idempotency 回放——这是设计上可接受的次优窗口。
+            app.logger.warning('idempotency.put conflict on success: %s', exc)
+        except Exception as exc:
+            app.logger.warning('idempotency.put failed (continuing): %s', exc)
+    return jsonify(response_body), 200
 
 
 @app.route('/orders/recent', methods=['GET'])
