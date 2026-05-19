@@ -896,7 +896,7 @@ class DataGateway:
         return result
 
     def macro(self, indicator: MacroIndicator) -> pd.DataFrame:
-        """indicator: MacroIndicator enum (PMI / M2 / CREDIT)。"""
+        """indicator: MacroIndicator enum (PMI / M2 / CREDIT / CPI / PPI)。"""
         cache_key = f"macro:{indicator.value}"
         cached = self._cache_get(Capability.MACRO, cache_key)
         if cached is not None:
