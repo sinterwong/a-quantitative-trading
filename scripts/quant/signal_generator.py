@@ -266,7 +266,7 @@ class MACDSignalSource(SignalSource):
             return {
                 'signal': SignalType.BUY,
                 'strength': 0.8,
-                'reason': f'macd_golden_cross',
+                'reason': 'macd_golden_cross',
                 'meta': {'hist': hist}
             }
 
@@ -464,7 +464,7 @@ class BollingerBandSource(SignalSource):
                 self._entry_price = 0
                 self._hold_days = 0
                 return {'signal': SignalType.SELL, 'strength': 0.8,
-                        'reason': f'bb_upper_hit', 'meta': {'bb_pos': bb_pos}}
+                        'reason': 'bb_upper_hit', 'meta': {'bb_pos': bb_pos}}
 
             return {'signal': SignalType.HOLD, 'strength': 0.0, 'reason': 'holding'}
 
@@ -694,6 +694,7 @@ class BlackListFilter:
 
     def can_sell(self, data, i) -> tuple:
         """卖出限制较少，主要检查停牌"""
+        d = data[i]  # 修复 F821：原代码漏了从 data[i] 取 bar
         if d.get('volume', 0) <= 0:
             return False, 'suspended'
         return True, ''

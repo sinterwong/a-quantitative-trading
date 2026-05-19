@@ -70,7 +70,7 @@ with col_mode:
     if '_pending_mode' in st.session_state:
         t = st.session_state['_pending_mode']
         if t == 'live':
-            st.error(f'⚠️ 即将切换到 LIVE,会接真实 broker!')
+            st.error('⚠️ 即将切换到 LIVE,会接真实 broker!')
         else:
             st.warning(f'即将切换到 {t}')
         if confirm_dialog('apply_mode', '不可撤销 — 立即生效',

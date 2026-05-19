@@ -328,7 +328,7 @@ class DailyDiffReporter:
         lines = [
             f'=== 每日对比报告 {report.report_date} ===',
             f'生成时间：{report.generated_at}',
-            f'',
+            '',
             f'实盘信号数：{report.n_live_signals}',
             f'回测信号数：{report.n_bt_signals}',
             f'方向一致数：{report.n_matches}',

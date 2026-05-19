@@ -114,7 +114,7 @@ class WalkForwardAnalyzer:
                     train_results.append(result)
 
             if not train_results:
-                print(f"    [SKIP] No valid train results")
+                print("    [SKIP] No valid train results")
                 continue
 
             # 按夏普选训练集最优

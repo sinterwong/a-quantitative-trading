@@ -491,7 +491,7 @@ class OptimizationResult:
     def print_summary(self) -> None:
         bar = '=' * 65
         print(f'\n{bar}')
-        print(f'  贝叶斯优化结果汇总')
+        print('  贝叶斯优化结果汇总')
         print(f'  标的: {self.symbol}  |  策略: {self.strategy}')
         print(bar)
         print(f'  有效 Trials : {self.n_valid_trials} / {self.n_trials}')
@@ -499,7 +499,7 @@ class OptimizationResult:
         print(f'  WFA 窗口数  : {self.wfa_n_windows}')
         print(f'  正Sharpe比  : {self.wfa_positive_sharpe_pct*100:.1f}%')
         print(bar)
-        print(f'  最优参数:')
+        print('  最优参数:')
         for k, v in self.best_params.items():
             v_str = f'{v:.4f}' if isinstance(v, float) else str(v)
             print(f'    {k:<22} = {v_str}')

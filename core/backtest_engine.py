@@ -19,7 +19,7 @@ Phase 6 核心组件：
 from __future__ import annotations
 import logging
 from dataclasses import dataclass, field as dataclass_field
-from datetime import datetime
+from datetime import datetime, date
 from typing import Dict, List, Optional, Literal, Tuple
 from collections import defaultdict
 import numpy as np

@@ -371,7 +371,7 @@ class PortfolioAllocator:
 
     def print_summary(self) -> None:
         s = self.summary()
-        print(f'=== PortfolioAllocator ===')
+        print('=== PortfolioAllocator ===')
         print(f'总资金：{s["total_capital"]:,.0f} | 模式：{s["mode"]}')
         print(f'已分配：{s["total_budget"]:,.0f} | 已使用：{s["total_used"]:,.0f} | '
               f'保留：{s["reserve"]:,.0f}')

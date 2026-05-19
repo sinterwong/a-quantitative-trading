@@ -138,7 +138,7 @@ class TestSignalsFStringReplace(unittest.TestCase):
         price = 28.13
         reason = f'RSI=65≤30超卖区间｜现价{price}'
         # 修复后 north_boost 也用全角 '｜'
-        north_boost = f'｜北向脉冲+52亿'
+        north_boost = '｜北向脉冲+52亿'
 
         # 替换: '｜现价28.13' → '｜北向脉冲+52亿｜现价28.13'
         result = reason.replace(f'｜现价{price}', f'{north_boost}｜现价{price}')

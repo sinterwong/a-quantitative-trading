@@ -28,7 +28,7 @@ sys.path.insert(0, BACKEND)
 def app(tmp_path):
     """Create Flask test app with isolated SQLite DB and temp mode file."""
     import importlib
-    import backend.api as api_mod          # noqa: import for reload side-effect
+    import backend.api as api_mod          # noqa: F401 — import for side-effect
 
     # Fresh PortfolioService backed by temp SQLite
     from services.portfolio import PortfolioService

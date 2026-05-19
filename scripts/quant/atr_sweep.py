@@ -188,7 +188,7 @@ def print_summary(results: list[dict]):
         return
 
     print(f"\n{'='*70}")
-    print(f"  ATR Multiplier Sweep Summary")
+    print("  ATR Multiplier Sweep Summary")
     print(f"{'='*70}")
     header = f"  {'Mult':>6} | {'Ann.Return':>10} | {'Sharpe':>7} | {'MaxDD':>7} | {'WinRate':>7} | {'Trades':>6} | {'ATRstop':>7}"
     print(header)
@@ -251,7 +251,7 @@ def main():
     # 全局汇总
     if len(all_symbol_results) > 1:
         print(f"\n{'#'*70}")
-        print(f"  ALL SYMBOLS AGGREGATED")
+        print("  ALL SYMBOLS AGGREGATED")
         print(f"{'#'*70}")
         # Average across symbols for each multiplier
         by_mult = {}

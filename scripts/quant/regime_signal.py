@@ -262,7 +262,7 @@ def run_tests(symbol, start_date=None, end_date=None, capital=200000):
     results.sort(key=lambda x: x['sharpe'], reverse=True)
 
     print(f"\n{'='*60}")
-    print(f"  排名 (按夏普比率)")
+    print("  排名 (按夏普比率)")
     print(f"{'='*60}")
     print(f"  {'#':<4} {'Signal':<20} {'Sharpe':>8} {'Return':>9} {'MaxDD':>8} {'WinRate':>7} {'Trades':>6}")
     print(f"  {'-'*60}")

@@ -210,7 +210,7 @@ if __name__ == '__main__':
     print(f"层数: {PORTFOLIO['layers']}层 x {PORTFOLIO['layer_size']:,}元/层")
     print(f"最多持仓: {PORTFOLIO['max_positions']}只")
     print()
-    print(f"全局默认RSI参数（来自params.json）:")
+    print("全局默认RSI参数（来自params.json）:")
     rsi_def = get_default_params('RSI')
     print(f"  period={rsi_def.get('period',21)} "
           f"oversold={rsi_def.get('oversold',35)} "

@@ -178,7 +178,7 @@ def run_wfa_for_threshold(kline, threshold, rsi_buy, rsi_sell, train_years, test
             sig.setup(train)
             eng=BacktestEngine(initial_capital=capital,commission=0.0003,
                               stop_loss=sl,take_profit=tp,max_position_pct=0.20)
-            r=eng.run(train,sig,f'Train')
+            r=eng.run(train,sig,'Train')
             if r['sharpe_ratio']>best_sharpe and r['total_trades']>=4:
                 best_sharpe=r['sharpe_ratio']; best_params=(rb,rs,sl,tp)
 
@@ -190,7 +190,7 @@ def run_wfa_for_threshold(kline, threshold, rsi_buy, rsi_sell, train_years, test
         sig2.setup(test)
         eng2=BacktestEngine(initial_capital=capital,commission=0.0003,
                             stop_loss=sl,take_profit=tp,max_position_pct=0.20)
-        r2=eng2.run(test,sig2,f'Test')
+        r2=eng2.run(test,sig2,'Test')
         window_results.append({
             'sharpe': r2['sharpe_ratio'],
             'ret': r2['total_return_pct'],
@@ -242,7 +242,7 @@ def scan_thresholds(symbol, thresholds, train_years, test_years, capital):
             results.append(r)
             print(f' done | Sharpe={r["avg_sharpe"]:+.3f} | PosWin={r["positive_windows"]}/{r["n_windows"]} | MaxDD={r["avg_maxdd"]:.1f}%')
         else:
-            print(f' no valid windows')
+            print(' no valid windows')
 
     if not results: print('[FAIL] No results'); return
 

@@ -1,0 +1,48 @@
+# R1-1: lint 基线
+#
+# 当前阶段只锁住"安全相关 + 0 误报"的小集合规则。E722（裸 except）和
+# F-系列（pyflakes 真实 bug）必须 0 违规；其他规则后续在 R3-1 工程化基线
+# sprint 里逐步加严。
+#
+# 不开 BLE001（broad except）：仓库现有 ~570 处 `except Exception`，
+# 一次性整改不现实——R1-1 先建 gate，R1 后续按业务模块批量收窄类型。
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+extend-exclude = [
+    ".venv", "venv", ".git", "__pycache__", "build", "dist",
+    # 长期不维护的脚本（R2-3 计划合并到 core 后删除）
+    "scripts/quant/backtest_cli.py",
+]
+
+[tool.ruff.lint]
+select = [
+    "E722",   # 裸 except —— 零容忍
+    "F",      # pyflakes 真实 bug (undefined-name, unused-var-in-fn, ...)
+    "B006",   # mutable default argument
+    "B008",   # function call in default arg
+    "B017",   # assert raises Exception 太宽
+]
+# 已修一批后续 sprint 引入：
+#   "B007"   — 未用循环变量（仓库现 19 处，R3 风格 sprint 处理）
+#   "B904"   — raise from（仓库现 16 处，R1-2 fallback 信号化时统一处理）
+#   "BLE001" — broad-except（仓库 ~570 处，需按业务模块分批收窄）
+#   "UP"     — pyupgrade
+#   "I"      — isort
+#   "SIM"    — simplify
+
+ignore = [
+    "F401",   # 未用 import：~350 处历史 import，R3-1 阶段统一清理
+    "F811",   # 重复定义：~6 处，R3-1 一并清理
+    "F841",   # 未用本地变量：常见于调试残留，R3 处理
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试文件允许更多自由（pytest 风格）
+"tests/**/*.py" = ["B017"]
+
+[tool.ruff.format]
+quote-style = "preserve"  # 不强制改引号风格，等大批量 ruff format 单独 PR
+indent-style = "space"

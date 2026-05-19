@@ -95,7 +95,7 @@ class MultiSymbolResult:
     notes: List[str] = field(default_factory=list)
 
     def print_report(self) -> None:
-        print(f'=== 多标的批量回测报告 ===')
+        print('=== 多标的批量回测报告 ===')
         print(f'策略: {self.strategy_name} | 日期: {self.run_date}')
         print(f'标的数: {self.n_symbols} | 通过数: {self.n_passed} '
               f'| 通过率: {self.pass_rate:.0%} '

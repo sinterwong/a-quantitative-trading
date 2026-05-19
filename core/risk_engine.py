@@ -12,6 +12,7 @@ EventBus 集成：
 """
 
 from __future__ import annotations
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from typing import Dict, List, Literal, Optional, Any, Callable

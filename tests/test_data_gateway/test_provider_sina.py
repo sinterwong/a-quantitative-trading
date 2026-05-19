@@ -93,7 +93,7 @@ def test_parse_a_share_zero_price_returns_none():
     f[3] = "0.00"
     f[30] = "2026-05-08"
     f[31] = "15:30:00"
-    bad = f'var hq_str_sh600519="' + ",".join(f) + '";'
+    bad = 'var hq_str_sh600519="' + ",".join(f) + '";'
     assert _parse_a_share("sh600519", bad) is None
 
 

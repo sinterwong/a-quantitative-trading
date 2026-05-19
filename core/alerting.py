@@ -356,7 +356,7 @@ class AlertManager:
 
         lines = [
             f"**{report_date} 每日交易报告**",
-            f"",
+            "",
             f"**总体 P&L：** {pnl_sign}{total_pnl:.2f} 元 ({pct_sign}{pnl_pct*100:.2f}%) {status}",
             f"**成交笔数：** {n_trades}",
         ]

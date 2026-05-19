@@ -71,7 +71,7 @@ class TestBrokerFactory(unittest.TestCase):
         with self.assertRaises(BrokerSecurityError) as ctx:
             factory.require_live()
         self.assertIn('unlock', str(ctx.exception).lower())
-        print(f'\nrequire_live() rejected without unlock OK')
+        print('\nrequire_live() rejected without unlock OK')
 
     def test_factory_get_broker_returns_simulated(self):
         """PAPER 模式下 factory 返回 SimulatedBroker（已取代旧 PaperBroker）。"""

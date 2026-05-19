@@ -61,7 +61,7 @@ def check_fundamentals_filter(symbol: str,
     # ETF 类品种（价格>0 但 PE/PB 为 0）直接通过
     if pe <= 0 and pb <= 0:
         # 可能是 ETF 或特殊品种，跳过基本面过滤
-        return True, f'PE/PB 均无效（可能是 ETF），跳过过滤'
+        return True, 'PE/PB 均无效（可能是 ETF），跳过过滤'
 
     if pe <= 0:
         return False, f'PE={pe:.1f}无效或亏损'

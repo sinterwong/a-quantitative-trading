@@ -61,7 +61,7 @@ class TestBacktestDegradedSteps(unittest.TestCase):
         # 末尾汇总日志也必须出现
         self.assertTrue(
             any('degraded steps' in m.lower() for m in cm.output),
-            f"未找到 'degraded steps' 汇总日志",
+            "未找到 'degraded steps' 汇总日志",
         )
 
     def test_no_degradation_means_empty_dict(self):

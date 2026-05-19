@@ -225,7 +225,7 @@ def make_macd_trend_pipeline(
     signal: int = 9,
     atr_threshold: float = 0.85,
     symbol: str = "",
-) -> "FactorPipeline":  # type: ignore[name-defined]
+) -> "FactorPipeline":  # type: ignore[name-defined]  # noqa: F821 — lazy import inside fn
     """
     快速创建只含 MACDTrendFactor 的 FactorPipeline（供独立测试 / WFA 对比用）。
     """

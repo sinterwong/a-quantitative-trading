@@ -77,6 +77,14 @@ jobs:
             --extend-ignore=E501,W503,W504,E203 \
             --count
 
+      - name: Ruff lint (R1-1 baseline)
+        run: |
+          # R1-1: 全仓库 lint 基线。规则集见 pyproject.toml，目前只覆盖
+          # E722（裸 except）+ F（pyflakes 真实 bug）+ 少量 B 安全规则。
+          # 任何新增违规阻断 PR。
+          pip install ruff==0.15.13
+          ruff check .
+
       - name: Run pytest (full suite)
         run: |
           # P2-21: 跑完整 pytest，替代 run_tests.py 的自定义框架（仍保留兼容）

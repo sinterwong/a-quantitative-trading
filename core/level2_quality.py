@@ -102,32 +102,32 @@ class Level2QualityReport:
             md_path = os.path.join(_OUTPUTS_DIR, 'level2_quality_report.md')
 
         lines = [
-            f'# Level 2 数据质量报告',
-            f'',
+            '# Level 2 数据质量报告',
+            '',
             f'生成时间：{self.generated_at}',
             f'数据源：{self.db_path}',
             f'分析天数：{self.days_analyzed}',
             f'完整率阈值：{self.threshold:.0%}',
-            f'',
-            f'## 总体结论',
-            f'',
+            '',
+            '## 总体结论',
+            '',
             f'整体完整率：**{self.overall_completeness:.1%}** '
             f'{"✓ PASS" if self.passed else "✗ FAIL"}',
-            f'',
+            '',
         ]
 
         for s in self.symbols:
             lines += [
                 f'## {s.symbol}',
-                f'',
+                '',
                 f'- 快照数：{s.n_snapshots}',
                 f'- 交易日数：{s.trading_days}',
                 f'- 平均间隔：{s.avg_interval_sec:.1f} 秒',
                 f'- 整体完整率：{s.overall_completeness:.1%} '
                 f'{"✓" if s.passed else "✗"}',
-                f'',
-                f'| 字段 | 总数 | 有效 | 完整率 | 状态 |',
-                f'|------|------|------|--------|------|',
+                '',
+                '| 字段 | 总数 | 有效 | 完整率 | 状态 |',
+                '|------|------|------|--------|------|',
             ]
             for fq in s.field_stats:
                 status = '✓' if fq.passed else '✗'
@@ -511,7 +511,7 @@ class Level2QualityReporter:
         for fname in _REQUIRED_FIELDS:
             try:
                 cur.execute(
-                    f'SELECT COUNT(*) FROM l2_snapshots WHERE symbol=? AND ts>=?',
+                    'SELECT COUNT(*) FROM l2_snapshots WHERE symbol=? AND ts>=?',
                     (symbol, since),
                 )
                 total = cur.fetchone()[0]

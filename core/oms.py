@@ -620,7 +620,7 @@ class OMS:
         reference_price: float = 0.0,
         slice_interval: int = 5,
         volume_profile: Optional[List[float]] = None,
-    ) -> 'AlgoOrderResult':
+    ) -> 'AlgoOrderResult':  # noqa: F821 — lazy import below
         """
         提交算法订单（VWAP / TWAP），返回模拟执行结果。
 
