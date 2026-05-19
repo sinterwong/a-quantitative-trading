@@ -276,71 +276,7 @@ def docs():
 # backend/api_routes/portfolio.py。
 
 
-# ============================================================
-# Trades
-# ============================================================
-
-@app.route('/trades', methods=['GET'])
-def get_trades():
-    """GET /trades — recent trades."""
-    svc = get_svc()
-    symbol = request.args.get('symbol')
-    limit = int(request.args.get('limit', 50))
-    return ok(trades=svc.get_trades(symbol=symbol, limit=limit))
-
-
-@app.route('/trades', methods=['POST'])
-def record_trade():
-    """POST /trades — record a completed trade."""
-    if (e := require_json()):
-        return e
-    body = request.json
-    required = ['symbol', 'direction', 'shares', 'price']
-    for field in required:
-        if field not in body:
-            return err(f"missing required field: {field}")
-    svc = get_svc()
-    pnl = body.get('pnl')
-    if pnl is not None:
-        pnl = float(pnl)
-    trade_id = svc.record_trade(
-        body['symbol'], body['direction'],
-        int(body['shares']), float(body['price']), pnl
-    )
-    return ok(trade_id=trade_id, message="Trade recorded")
-
-
-# ============================================================
-# Signals
-# ============================================================
-
-@app.route('/signals', methods=['GET'])
-def get_signals():
-    """GET /signals — recent signals."""
-    svc = get_svc()
-    symbol = request.args.get('symbol')
-    since = request.args.get('since')
-    limit = int(request.args.get('limit', 50))
-    return ok(signals=svc.get_signals(symbol=symbol, since=since, limit=limit))
-
-
-@app.route('/signals', methods=['POST'])
-def record_signal():
-    """POST /signals — record a signal."""
-    if (e := require_json()):
-        return e
-    body = request.json
-    required = ['symbol', 'signal']
-    for field in required:
-        if field not in body:
-            return err(f"missing required field: {field}")
-    svc = get_svc()
-    svc.record_signal(
-        body['symbol'], body['signal'],
-        float(body.get('strength', 0.0)),
-        body.get('reason', ''),
-    )
-    return ok(message="Signal recorded")
+# R2-4 续集：/trades, /signals 已拆到 backend/api_routes/trades_signals_params.py
 
 
 # ============================================================
@@ -403,39 +339,8 @@ def _get_risk_engine():
 # Symbol params (P1)
 # ============================================================
 
-@app.route('/params/<symbol>', methods=['GET'])
-def get_symbol_params(symbol):
-    """
-    GET /params/<symbol> — 查询单股参数（WFA + 手工配置合并后）。
-    返回 rsi_buy, rsi_sell, stop_loss, take_profit, atr_threshold 等。
-    """
-    from services.signals import load_symbol_params
-    params = load_symbol_params(symbol)
-    return ok(symbol=symbol, params=params)
-
-
-@app.route('/params/<symbol>', methods=['PATCH'])
-def update_symbol_params(symbol):
-    """
-    PATCH /params/<symbol> — 更新单股参数（写入 params.json）。
-    Body: {"rsi_buy": 30, "stop_loss": 0.06, ...}
-    支持字段见 services.signals.PARAM_FIELDS_ALLOWED。
-    """
-    if (e := require_json()):
-        return e
-    from services.signals import update_symbol_params as _update, PARAM_FIELDS_ALLOWED
-    updated = _update(symbol, request.json or {})
-    if not updated:
-        return err(f'No valid fields. Allowed: {sorted(PARAM_FIELDS_ALLOWED)}', 422)
-    return ok(symbol=symbol, params=updated)
-
-
-@app.route('/params', methods=['GET'])
-def list_all_params():
-    """GET /params — 全量参数列表（params.json + live_params.json 合并视图）。"""
-    from services.signals import list_symbols_with_params, load_symbol_params
-    result = {sym: load_symbol_params(sym) for sym in list_symbols_with_params()}
-    return ok(params=result, count=len(result))
+# R2-4 续集：/params/* 3 个端点已拆到
+# backend/api_routes/trades_signals_params.py
 
 
 # ============================================================
@@ -1605,8 +1510,10 @@ def server_error(e):
 # 集中注册，方便审计 URL 命名空间冲突。
 from backend.api_routes.orders import orders_bp  # noqa: E402
 from backend.api_routes.portfolio import portfolio_bp  # noqa: E402
+from backend.api_routes.trades_signals_params import trades_signals_params_bp  # noqa: E402
 app.register_blueprint(orders_bp)
 app.register_blueprint(portfolio_bp)
+app.register_blueprint(trades_signals_params_bp)
 
 
 if __name__ == '__main__':
