@@ -477,8 +477,13 @@ class RiskEngine:
                 raw = r.read().decode('gbk')
             fields = raw.split('~')
             price = float(fields[3]) if len(fields) > 3 else 0.0
-        except Exception:
-            pass
+        except Exception as exc:
+            # R0-4: 不再静默吞掉。实时价拉取失败如果不出声，下游用 price=0
+            # 算 ATR/止损会给出错误指令。
+            logging.getLogger('core.risk_engine').warning(
+                'fetch realtime price for %s failed: %s (price=0.0, 后续按历史 close 兜底)',
+                symbol, exc,
+            )
 
         # 2. 从历史日K线计算真实 ATR(14) 和 RSI(14)
         try:
@@ -510,8 +515,13 @@ class RiskEngine:
 
                 if price == 0.0:
                     price = float(close.iloc[-1])
-        except Exception:
-            # 降级：ATR 按价格 1.5% 估算，RSI 用中性值
+        except Exception as exc:
+            # R0-4: 降级用 ATR=price*1.5% / RSI=50 是 best effort，但必须
+            # 留下日志——否则风控用错值做止损判断没人知道。
+            logging.getLogger('core.risk_engine').warning(
+                'compute ATR/RSI for %s failed: %s (降级 ATR=price*1.5%%, RSI=50)',
+                symbol, exc,
+            )
             if price > 0:
                 atr = price * 0.015
             rsi = 50.0

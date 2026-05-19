@@ -17,7 +17,8 @@ Phase 6 核心组件：
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime
 from typing import Dict, List, Optional, Literal, Tuple
 from collections import defaultdict
@@ -26,6 +27,8 @@ import pandas as pd
 
 from core.factors.base import Factor, Signal
 from core.oms import Order
+
+logger = logging.getLogger('core.backtest_engine')
 
 
 # ─── 回测数据结构 ───────────────────────────────────────────────────────────
@@ -138,6 +141,11 @@ class BacktestResult:
     factor_ic: float = 0               # IC（预测相关性）
     factor_ir: float = 0               # IC / std(IC)
 
+    # R0-4: 关键路径降级计数 — 回测中静默吞错的位置（因子 / Kelly / ExitEngine
+    # 等）每次降级 +1。非零时应在 CI/告警里关注：可能因子有 bug、数据缺失，
+    # 或者 Kelly 样本不足。{} 表示一切正常。
+    degraded_steps: Dict[str, int] = dataclass_field(default_factory=dict)
+
     def summary(self) -> str:
         return (
             f"回测结果：\n"
@@ -199,6 +207,10 @@ class BacktestEngine:
 
         # P0-1: 单例 ExitEngine
         self._exit_engine = None
+
+        # R0-4: 跟踪关键路径降级次数 — 回测结束时报告，避免静默吞错
+        # 让 buggy 因子被误以为是"无信号"。
+        self._degraded_steps: Dict[str, int] = defaultdict(int)
         if self.config.use_exit_engine:
             from core.exit_engine import ExitEngine
             self._exit_engine = ExitEngine(**(self.config.exit_engine_params or {}))
@@ -444,11 +456,10 @@ class BacktestEngine:
                 price_bars=price_bars,
             )
         except Exception as exc:
-            # 回测中不应让 ExitEngine 异常打断主循环
-            import logging
-            logging.getLogger('core.backtest_engine').warning(
-                'ExitEngine.generate failed: %s', exc,
-            )
+            # 回测中不应让 ExitEngine 异常打断主循环；但要计数+告警，
+            # 否则止盈止损静默失效，回测看起来正常。
+            self._degraded_steps['exit_engine'] += 1
+            logger.warning('ExitEngine.generate failed: %s', exc)
             return []
 
         # 3. 转换为 SELL Signal（保留 exit_pct → metadata['shares']）
@@ -509,8 +520,13 @@ class BacktestEngine:
                     continue
                 sigs = factor.signals(fv, price=ref_price)
                 signals.extend(sigs)
-            except Exception:
-                pass
+            except Exception as exc:
+                # R0-4: 不再静默吞掉因子抛错。回测里因子 bug 会让该 bar
+                # 信号缺失，掩盖问题；改为记日志 + 计数，回测末报告。
+                self._degraded_steps[f'factor.{factor.__class__.__name__}'] += 1
+                logger.warning(
+                    'factor %s.signals failed: %s', factor.__class__.__name__, exc,
+                )
 
         return signals
 
@@ -656,7 +672,11 @@ class BacktestEngine:
             kelly = min(kelly, self.config.max_position_pct)
             raw = int(equity * kelly / price)
             return self._floor_min_lot(raw, price, equity)
-        except Exception:
+        except Exception as exc:
+            # R0-4: 不再静默返回 0。Kelly 失败常因 equity=0 或样本不足，
+            # 静默返回 0 会让"无交易"被误以为"策略保守"。
+            self._degraded_steps['kelly_calc'] += 1
+            logger.warning('Kelly position sizing failed: %s', exc)
             return 0
 
     def _simulate_fill(self, direction: Literal['BUY', 'SELL'], price: float) -> float:
@@ -849,6 +869,16 @@ class BacktestEngine:
         # 平均持仓
         avg_holding = np.mean(self._holding_periods) if self._holding_periods else 0
 
+        # R0-4: 回测末汇总降级次数。非零意味着回测过程中静默吞过错（因子异常 /
+        # Kelly 计算失败 / ExitEngine 故障），调用方应排查。
+        degraded = dict(self._degraded_steps)
+        if degraded:
+            logger.warning(
+                'Backtest completed with degraded steps: %s '
+                '(检查因子/数据是否健康，否则回测结果可能失真)',
+                degraded,
+            )
+
         return BacktestResult(
             equity_curve=equity_series,
             daily_stats=self._daily_stats,
@@ -868,6 +898,7 @@ class BacktestEngine:
             avg_holding_period=avg_holding,
             calmar_ratio=calmar,
             sortino_ratio=sortino,
+            degraded_steps=degraded,
         )
 
 

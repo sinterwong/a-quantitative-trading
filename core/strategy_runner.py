@@ -796,8 +796,13 @@ class StrategyRunner:
                     })
                 if positions:
                     return positions
-            except Exception:
-                pass
+            except Exception as exc:
+                # R0-4: 不再静默吞错。RiskEngine.book 读取失败若不出声，
+                # 后续再平衡会被当作"没历史数据"静默跳过，无人察觉。
+                logger.warning(
+                    '[StrategyRunner] read positions from RiskEngine failed: %s',
+                    exc,
+                )
 
         if self.oms is not None:
             try:
@@ -812,7 +817,10 @@ class StrategyRunner:
                     for p in self.oms.broker.get_positions()
                     if p.shares > 0
                 ]
-            except Exception:
-                pass
+            except Exception as exc:
+                # R0-4: 同上——OMS 持仓读取失败必须留痕，不能假装"无持仓"。
+                logger.warning(
+                    '[StrategyRunner] read positions from OMS failed: %s', exc,
+                )
 
         return []
