@@ -436,15 +436,16 @@ class TestFundamentalDataManager(unittest.TestCase):
         self.assertTrue(result.empty)
 
     def test_get_fundamentals_gateway_raises(self):
-        """Gateway 抛异常时，get_fundamentals() 返回空 DataFrame（不向上传播）"""
+        """R0-5: Gateway 抛异常时，get_fundamentals() 抛 DataSourceError，
+        不再静默返回空 DF——否则上层无法区分"无数据"与"网络故障"。"""
         from core.fundamental_data import FundamentalDataManager
+        from core.errors import DataSourceError
         with patch('core.fundamental_data.get_gateway') as mock_gw:
             mock_gw.return_value.fundamentals_history.side_effect = RuntimeError('network')
             mgr = FundamentalDataManager()
-            result = mgr.get_fundamentals('000001.SZ')
-
-        self.assertIsInstance(result, pd.DataFrame)
-        self.assertTrue(result.empty)
+            with self.assertRaises(DataSourceError) as ctx:
+                mgr.get_fundamentals('000001.SZ')
+        self.assertIn('000001.SZ', str(ctx.exception))
 
     def test_get_fundamentals_date_index_normalized(self):
         """返回 DataFrame 保证 DatetimeIndex"""

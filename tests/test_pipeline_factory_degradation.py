@@ -255,5 +255,71 @@ class TestFundamentalWhitelistExpansion(unittest.TestCase):
         self.assertNotIn('unrelated_column', fin_cols)
 
 
+class TestFundamentalDataManagerErrorDistinction(unittest.TestCase):
+    """R0-5: FundamentalDataManager 区分"无数据"和"数据源故障"两种情况。"""
+
+    def test_returns_empty_df_when_gateway_returns_empty(self):
+        """数据网关合法返回空 → 返回空 DataFrame（不抛错）。"""
+        from core.fundamental_data import FundamentalDataManager
+
+        class _FakeGateway:
+            def fundamentals_history(self, symbol, **_kwargs):
+                return pd.DataFrame()
+
+        with patch('core.fundamental_data.get_gateway', return_value=_FakeGateway()):
+            mgr = FundamentalDataManager()
+            result = mgr.get_fundamentals('600519.SH')
+        self.assertTrue(result.empty)
+
+    def test_raises_datasource_error_when_gateway_raises(self):
+        """数据网关抛错 → 必须抛 DataSourceError，不能静默吞掉。"""
+        from core.fundamental_data import FundamentalDataManager
+        from core.errors import DataSourceError
+
+        class _BrokenGateway:
+            def fundamentals_history(self, symbol, **_kwargs):
+                raise RuntimeError('simulated network failure')
+
+        with patch('core.fundamental_data.get_gateway', return_value=_BrokenGateway()):
+            mgr = FundamentalDataManager()
+            with self.assertRaises(DataSourceError) as ctx:
+                mgr.get_fundamentals('600519.SH')
+        self.assertIn('600519.SH', str(ctx.exception))
+
+
+class TestPipelineFactoryHandlesDataSourceError(unittest.TestCase):
+    """R0-5: pipeline_factory 在基本面数据源故障时降级而非崩溃。"""
+
+    def test_data_source_error_triggers_degraded_weights(self):
+        """get_fundamentals 抛 DataSourceError 时, pipeline 仍能构建,
+        基本面层走 ×0.5 降级权重。"""
+        from core.pipeline_factory import build_pipeline
+        from core.errors import DataSourceError
+
+        with patch('core.fundamental_data.FundamentalDataManager.get_fundamentals',
+                   side_effect=DataSourceError('网络故障')):
+            pipeline = build_pipeline(symbol='sh600519', strict=False)
+
+        # pipeline 仍应构建成功 (非基本面因子继续可用)
+        self.assertGreaterEqual(len(pipeline.factor_names), 4)
+
+        # 基本面因子(若加载)应走降级权重
+        pe_entries = [e for e in pipeline._entries if e.factor.name == 'PEPercentile']
+        if pe_entries:
+            self.assertAlmostEqual(pe_entries[0].weight, 0.025, places=4)
+
+    def test_logs_error_level_on_data_source_failure(self):
+        """数据源故障必须用 ERROR 级日志，不能仅 INFO/WARNING 让运维错过。"""
+        import logging
+        from core.pipeline_factory import build_pipeline
+        from core.errors import DataSourceError
+
+        with self.assertLogs('core.pipeline_factory', level='ERROR') as cm:
+            with patch('core.fundamental_data.FundamentalDataManager.get_fundamentals',
+                       side_effect=DataSourceError('mock')):
+                build_pipeline(symbol='sh600519', strict=False)
+        self.assertTrue(any('数据源故障' in m for m in cm.output))
+
+
 if __name__ == '__main__':
     unittest.main()

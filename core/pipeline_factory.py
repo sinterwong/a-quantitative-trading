@@ -37,6 +37,8 @@ import logging
 import os
 from typing import Any, Dict, Optional, Type
 
+from core.errors import DataSourceError
+
 logger = logging.getLogger('core.pipeline_factory')
 
 # 至少需要加载多少个因子才算 pipeline 健康
@@ -118,6 +120,7 @@ def build_pipeline(symbol: str = '', strict: bool = True):
         # 使用 FundamentalDataManager 获取历史季报数据（前向填充至日频）
         # 数据请求委托给 DataGateway，享受熔断 + 健康度 + 缓存保护
         financial_data = None
+        fundamental_data_source_failed = False  # R0-5: 区分"数据源故障" vs "本就无数据"
         if symbol:
             try:
                 from core.fundamental_data import FundamentalDataManager
@@ -140,16 +143,33 @@ def build_pipeline(symbol: str = '', strict: bool = True):
                         'debt_to_equity', 'current_ratio', 'quick_ratio',
                     ]
                     financial_data = fin_df[[c for c in available if c in fin_df.columns]]
+            except DataSourceError as exc:
+                # 数据源故障：用 error 级日志让告警可见，并标记降级原因。
+                logger.error(
+                    'FundamentalDataManager 数据源故障 %s: %s (基本面层将启用降级权重)',
+                    symbol, exc,
+                )
+                fundamental_data_source_failed = True
             except Exception as exc:
-                logger.warning('FundamentalDataManager 获取 %s 失败: %s', symbol, exc)
+                # 兜底未预期异常仍记录，但不应该走到这里——上面已显式区分了。
+                logger.warning('FundamentalDataManager 获取 %s 未知失败: %s', symbol, exc)
+                fundamental_data_source_failed = True
 
-        # W5-2: 数据质量感知降权 — 基本面数据获取失败时,基本面层整体权重 ×0.5
+        # W5-2 + R0-5: 数据质量感知降权
+        # - 数据源故障（fundamental_data_source_failed=True）→ 降权 ×0.5 + ERROR 日志
+        # - 本就无数据（financial_data is None 但 fetch 未抛错，如 ETF）→ 降权 ×0.5 + INFO 日志
         fundamental_quality_mult = 1.0 if financial_data is not None else 0.5
         if fundamental_quality_mult < 1.0:
-            logger.warning(
-                '基本面数据缺失,基本面因子层权重 ×%.1f (数据质量感知降权)',
-                fundamental_quality_mult,
-            )
+            if fundamental_data_source_failed:
+                logger.warning(
+                    '%s 基本面数据源故障，基本面因子层权重 ×%.1f',
+                    symbol or '?', fundamental_quality_mult,
+                )
+            else:
+                logger.info(
+                    '%s 无基本面数据（合法缺失），基本面因子层权重 ×%.1f',
+                    symbol or '?', fundamental_quality_mult,
+                )
 
         for cls, w in [
             (PEPercentileFactor,        0.05),
