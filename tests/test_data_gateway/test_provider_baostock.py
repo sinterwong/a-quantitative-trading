@@ -91,6 +91,23 @@ class TestBaostockDeclare:
         assert Capability.BALANCE_SHEET in caps.capabilities
 
 
+class TestBaostockFieldAuthority:
+    """A 股 FUNDAMENTALS 主源应声明 roe_ttm/eps_ttm 基准权威(1.0) +
+    independent industry 字段权威。"""
+
+    def test_field_authority_declares_fundamentals(self):
+        from core.data_gateway.providers.baostock import BaostockProvider
+        from core.data_gateway.capabilities import Capability
+
+        auth = BaostockProvider().field_authority()
+        assert Capability.FUNDAMENTALS in auth
+        fa = auth[Capability.FUNDAMENTALS]
+        assert fa["roe_ttm"] >= 1.0, "ROE 主源权威应 ≥ 1.0"
+        assert fa["eps_ttm"] >= 1.0, "EPS 主源权威应 ≥ 1.0"
+        assert fa["industry"] >= 1.0, "industry 是 Baostock 独家字段，应声明高权威"
+        assert "profit_yoy" in fa
+
+
 class TestBaostockFetchFundamentalsGrowthFields:
     """fetch_fundamentals 填入 profit_yoy / eps_yoy / asset_yoy。"""
 

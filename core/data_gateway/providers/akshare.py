@@ -15,7 +15,7 @@ import logging
 import math
 import re
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -72,8 +72,18 @@ class AkshareProvider(Provider):
             return True
         return market in self.declare().markets
 
+    def field_authority(self) -> Dict[Capability, Dict[str, float]]:
+        # AkShare 是 A 股基本面备灾源(priority_hint=0.30)，权威低于 Baostock(1.0)，
+        # 但贡献 revenue_yoy / profit_yoy 等独家成长字段，对其单独声明权威。
+        return {
+            Capability.FUNDAMENTALS: {
+                "roe_ttm": 0.8, "eps_ttm": 0.8,
+                "revenue_yoy": 0.7, "profit_yoy": 0.7,
+            },
+        }
+
     def fetch_macro(self, indicator: MacroIndicator) -> pd.DataFrame:
-        """支持 indicator: MacroIndicator.PMI / M2 / CREDIT。"""
+        """支持 indicator: MacroIndicator.PMI / M2 / CREDIT / CPI / PPI。"""
         try:
             import akshare as ak
         except ImportError:
@@ -87,6 +97,10 @@ class AkshareProvider(Provider):
                 return self._fetch_m2(ak)
             if indicator == MacroIndicator.CREDIT:
                 return self._fetch_credit(ak)
+            if indicator == MacroIndicator.CPI:
+                return self._fetch_cpi(ak)
+            if indicator == MacroIndicator.PPI:
+                return self._fetch_ppi(ak)
         except Exception as exc:
             raise ProviderError(f"akshare.fetch_macro({indicator}): {exc}") from exc
 
@@ -329,6 +343,30 @@ class AkshareProvider(Provider):
             raw.columns[1],
         )
         return cls._normalize(raw, date_col, val_col, 'credit_yoy')
+
+    @classmethod
+    def _fetch_cpi(cls, ak) -> pd.DataFrame:
+        # macro_china_cpi() 返回 CPI 月度时序（居民消费价格指数）
+        raw = ak.macro_china_cpi()
+        raw.columns = [c.strip() for c in raw.columns]
+        date_col = next((c for c in raw.columns if "月" in c or "date" in c.lower()), raw.columns[0])
+        val_col = next(
+            (c for c in raw.columns if "同比" in c or "CPI" in c.upper()),
+            raw.columns[1],
+        )
+        return cls._normalize(raw, date_col, val_col, "cpi_yoy")
+
+    @classmethod
+    def _fetch_ppi(cls, ak) -> pd.DataFrame:
+        # macro_china_ppi() 返回 PPI 月度时序（工业生产者出厂价格指数）
+        raw = ak.macro_china_ppi()
+        raw.columns = [c.strip() for c in raw.columns]
+        date_col = next((c for c in raw.columns if "月" in c or "date" in c.lower()), raw.columns[0])
+        val_col = next(
+            (c for c in raw.columns if "同比" in c or "PPI" in c.upper()),
+            raw.columns[1],
+        )
+        return cls._normalize(raw, date_col, val_col, "ppi_yoy")
 
     def fetch_fundamentals_history(
         self, symbol: str, start: str | None = None, end: str | None = None,

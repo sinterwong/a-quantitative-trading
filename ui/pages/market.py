@@ -24,11 +24,13 @@ tab_macro, tab_flow, tab_north, tab_status = st.tabs(
 )
 
 with tab_macro:
-    # 后端 MacroIndicator 枚举仅支持 PMI / M2 / CREDIT；扩展此处时同步更新 capabilities.py
+    # 后端 MacroIndicator 枚举支持 PMI / M2 / CREDIT / CPI / PPI；扩展此处时同步更新 capabilities.py
     MACRO_OPTIONS = {
         '制造业PMI': 'PMI',
         'M2货币供应': 'M2',
         '社融存量同比': 'CREDIT',
+        'CPI居民消费': 'CPI',
+        'PPI工业出厂': 'PPI',
     }
     selected_label = st.selectbox('指标', list(MACRO_OPTIONS.keys()))
     indicator = MACRO_OPTIONS[selected_label]

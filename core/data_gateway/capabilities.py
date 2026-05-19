@@ -38,6 +38,8 @@ class MacroIndicator(str, Enum):
     PMI = "PMI"           # 制造业采购经理指数
     M2 = "M2"             # 货币供应量 M2 同比
     CREDIT = "CREDIT"     # 社融存量同比
+    CPI = "CPI"           # 居民消费价格指数（同比）
+    PPI = "PPI"           # 工业生产者出厂价格指数（同比）
 
 
 class Market(str, Enum):

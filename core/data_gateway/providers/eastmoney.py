@@ -260,11 +260,13 @@ class EastmoneyProvider(Provider):
             except ProviderError:
                 continue
         if not raw or not isinstance(raw, dict):
-            raise ProviderError("eastmoney.fetch_sectors: 无数据返回")
+            logger.warning("eastmoney.fetch_sectors: 无数据返回，触发 failover")
+            return []
 
         records = ((raw.get("data") or {}).get("diff") or [])
         if not isinstance(records, list) or not records:
-            raise ProviderError("eastmoney.fetch_sectors: diff 字段为空")
+            logger.warning("eastmoney.fetch_sectors: diff 字段为空，触发 failover")
+            return []
 
         sectors: List[SectorRanking] = []
         for i, rec in enumerate(records, 1):

@@ -52,12 +52,18 @@ logger = logging.getLogger("data_gateway.gateway")
 
 
 # ─── 缓存 TTL 默认值 ──────────────────────────────────────────────────────────
+# 此表值担两个角色：
+#   1) _cache_set 写 L1 时调用方未显式传 ttl 的回退值
+#   2) _cache_get 读 L2 时的 disk_ttl 阈值（仅 _PERSISTENT_CAPS 中 cap 生效）
+# 对 KLINE 这类 L1 ttl 由调用方 hardcode（60/300s）但 L2 阈值需要更宽松（盘后
+# 24h/1h 都算新鲜）的 cap，此处的值以 L2 阈值为准，L1 端调用方显式覆盖即可。
 
 _DEFAULT_TTL = {
     Capability.QUOTE: 30.0,
     Capability.FUNDAMENTALS: 60.0,
     Capability.FUNDAMENTALS_HISTORY: 86400.0,  # 季度数据，24h 缓存足够
     Capability.BALANCE_SHEET: 86400.0,         # 季报数据，24h 缓存足够
+    Capability.KLINE_DAILY: 86400.0,           # L2 disk_ttl；L1 ttl 由 kline() hardcode 300s
     Capability.SECTOR_RANKING: 3600.0,
     Capability.SECTOR_CONSTITUENTS: 60.0,
     Capability.NORTH_FLOW: 60.0,
@@ -72,16 +78,31 @@ _DEFAULT_TTL = {
 # ─── L2 持久化白名单 ──────────────────────────────────────────────────────────
 # 仅历史 / 慢变 DataFrame 落 Parquet 盘，实时 Quote / 列表数据只走 L1。
 # 进程重启后 L2 可避免重拉昂贵的多源历史时序。
+#
+# 不变量：本集合 ⊆ _DEFAULT_TTL.keys()——_cache_get 用 _DEFAULT_TTL[cap] 作
+# L2 disk_ttl，缺键会让 L2 fallback 静默失效（KLINE 在 review 中被发现过此 bug）。
+# 文件尾部有 assert 锁住。
 
 _PERSISTENT_CAPS: set = {
     Capability.KLINE_DAILY,
+    # 注：KLINE_MINUTE 故意不在白名单——分钟 K 数据量大、变化快、L2 价值低；
+    # test_kline_daily_persists_kline_minute_does_not 锁定此设计。
     Capability.FUNDAMENTALS_HISTORY,
-    Capability.BALANCE_SHEET,
     Capability.MARGIN_FLOW,
     Capability.FUND_FLOW,
     Capability.NORTH_FLOW,      # 仅 north_flow_history 走 L2,实时 snapshot 不会
     Capability.MACRO,
+    # 注：BALANCE_SHEET 是 dataclass 不是 DataFrame，TieredCache.set 的
+    # isinstance 守卫会跳过，加入白名单也不会落盘——故不在此处登记。
 }
+
+
+# 模块加载期自检：若新增 cap 入 _PERSISTENT_CAPS 但忘了 _DEFAULT_TTL，直接报错。
+assert _PERSISTENT_CAPS <= set(_DEFAULT_TTL.keys()), (
+    "_PERSISTENT_CAPS 中以下 cap 缺 _DEFAULT_TTL 登记，"
+    "会导致 L2 disk_ttl=None / 回读失效: "
+    f"{_PERSISTENT_CAPS - set(_DEFAULT_TTL.keys())}"
+)
 
 
 # ─── 时序切片辅助 ─────────────────────────────────────────────────────────────
@@ -896,7 +917,7 @@ class DataGateway:
         return result
 
     def macro(self, indicator: MacroIndicator) -> pd.DataFrame:
-        """indicator: MacroIndicator enum (PMI / M2 / CREDIT)。"""
+        """indicator: MacroIndicator enum (PMI / M2 / CREDIT / CPI / PPI)。"""
         cache_key = f"macro:{indicator.value}"
         cached = self._cache_get(Capability.MACRO, cache_key)
         if cached is not None:

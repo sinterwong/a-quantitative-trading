@@ -239,6 +239,10 @@ class TencentProvider(Provider):
             "high_52w": 1.3, "low_52w": 1.3, "turnover_rate": 1.2,
             "amplitude": 1.2, "limit_up": 1.2, "limit_down": 1.2,
             "volume_ratio": 1.2, "dividend_yield": 1.2,
+            # bid1/ask1 由 88-field 同样返回，但声明权威低于 Sina(1.2)，
+            # 让 Sina 主、腾讯备：Sina 不可用时 MERGE_FIELDS 能自动降级。
+            "bid1_price": 0.9, "bid1_vol": 0.9,
+            "ask1_price": 0.9, "ask1_vol": 0.9,
         }
         return {Capability.QUOTE: quote_authority}
 

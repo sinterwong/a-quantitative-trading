@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import datetime
-from typing import Optional
+from typing import Dict, Optional
 
 import pandas as pd
 
@@ -144,6 +144,16 @@ class BaostockProvider(Provider):
             return False
         # baostock 仅支持 A股
         return market in (Market.A, Market.INDEX) or market == Market.A
+
+    def field_authority(self) -> Dict[Capability, Dict[str, float]]:
+        # Baostock 是 A 股基本面主源(priority_hint=0.75)，权威高于 AkShare(备灾源)。
+        # industry 是 Baostock 独家字段，声明 1.0 让其他源不会覆盖。
+        return {
+            Capability.FUNDAMENTALS: {
+                "roe_ttm": 1.0, "eps_ttm": 1.0,
+                "profit_yoy": 0.9, "industry": 1.0,
+            },
+        }
 
     # ─── KLINE_DAILY ─────────────────────────────────────────────────
 

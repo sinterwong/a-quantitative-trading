@@ -301,7 +301,7 @@ class DataLayer:
     # ── 宏观数据 ─────────────────────────────────────────────────────────────
 
     def get_macro_data(self, indicator: MacroIndicator) -> pd.DataFrame:
-        """indicator: MacroIndicator enum (PMI / M2 / CREDIT)。"""
+        """indicator: MacroIndicator enum (PMI / M2 / CREDIT / CPI / PPI)。"""
         return self._gw.macro(indicator)
 
     # ── 缓存管理 ─────────────────────────────────────────────────────────────

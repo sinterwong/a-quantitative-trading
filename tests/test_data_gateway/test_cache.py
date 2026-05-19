@@ -124,6 +124,19 @@ def test_disk_cache_different_keys_dont_collide(disk_cache):
     assert disk_cache.get("b")["v"].iloc[0] == 2
 
 
+def test_disk_cache_preserves_datetime_index(disk_cache):
+    """回归：to_parquet(index=False) 会丢 DatetimeIndex 导致 macro/日 K 时间
+    轴变成整数。此测试锁定 set→get round-trip 保留 DatetimeIndex。"""
+    idx = pd.date_range("2026-01-01", periods=3, freq="D")
+    df = pd.DataFrame({"v": [1.0, 2.0, 3.0]}, index=idx)
+    df.index.name = "date"
+    disk_cache.set("k", df)
+    out = disk_cache.get("k")
+    assert out is not None
+    assert isinstance(out.index, pd.DatetimeIndex)
+    pd.testing.assert_index_equal(out.index, idx)
+
+
 # ── TieredCache ──────────────────────────────────────────────────────────────
 
 

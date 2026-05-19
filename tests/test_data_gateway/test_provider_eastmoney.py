@@ -58,21 +58,21 @@ def test_fetch_sectors_parses_jsonp():
 
 
 def test_fetch_sectors_empty_data():
-    # EastmoneyProvider.fetch_sectors 在两个请求路径都失败时 raise ProviderError
+    # EastmoneyProvider.fetch_sectors 在两个请求路径都失败时返回 [] 触发 failover
     p = EastmoneyProvider()
     with patch.object(p, "_request_em", return_value=None):
         with patch.object(p, "_request", return_value=None):
-            with pytest.raises(ProviderError):
-                p.fetch_sectors()
+            out = p.fetch_sectors()
+            assert out == []
 
 
 def test_fetch_sectors_http_error_wraps():
-    # EastmoneyProvider.fetch_sectors 将 ProviderError 透传
+    # EastmoneyProvider.fetch_sectors 将 ProviderError 透传到 failover 路径，最终返回 []
     p = EastmoneyProvider()
     with patch.object(p, "_request_em", side_effect=ProviderError("conn reset")):
         with patch.object(p, "_request", side_effect=ProviderError("conn reset")):
-            with pytest.raises(ProviderError):
-                p.fetch_sectors()
+            out = p.fetch_sectors()
+            assert out == []
 
 
 def test_fetch_sectors_limit_applied():
