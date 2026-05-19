@@ -161,20 +161,22 @@ class BaostockProvider(Provider):
         self,
         symbol: str,
         days: int = 120,
-        end_date: Optional[str] = None,
+        adjust: str = "qfq",
+        limit: int = 100,
+        **kwargs,
     ) -> pd.DataFrame:
         """获取A股日K线。
 
         Args:
             symbol: 标准化代码，如 'sh600519'
             days: 历史天数
-            end_date: 截止日期，格式 YYYY-MM-DD，默认为今天
+            adjust: 复权类型（baostock 不支持，忽略）
+            limit: 最大行数（baostock 不支持，忽略）
 
         Returns:
             DataFrame，列: date, open, high, low, close, volume, amount
         """
-        if end_date is None:
-            end_date = datetime.now().strftime("%Y-%m-%d")
+        end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = _offset_date(end_date, days)
 
         try:
