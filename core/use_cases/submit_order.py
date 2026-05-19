@@ -189,11 +189,12 @@ def _run_risk_check(risk_engine: Any, req: SubmitOrderRequest,
                     risk_price: float) -> None:
     """Build a Signal and run risk_engine.check; raise on rejection / failure."""
     try:
+        from typing import cast, Literal
         from core.factors.base import Signal
         signal = Signal(
             timestamp=datetime.now(),
             symbol=req.symbol,
-            direction=req.direction,
+            direction=cast(Literal['BUY', 'SELL'], req.direction),
             strength=1.0,
             factor_name='use_case.submit_order',
             price=risk_price,

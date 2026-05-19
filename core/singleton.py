@@ -16,7 +16,7 @@ state in one call instead of importing every module's hand-written ``reset_*``.
 from __future__ import annotations
 
 import threading
-from typing import Callable, Generic, List, Optional, TypeVar
+from typing import Any, Callable, Generic, List, Optional, TypeVar
 
 T = TypeVar("T")
 
@@ -55,7 +55,8 @@ class LockedSingleton(Generic[T]):
     ) -> None:
         self._factory = factory
         self._dispose = dispose
-        self._name = name or getattr(factory, "__name__", "<anonymous>")
+        # getattr fallback guarantees a str; cast for mypy strict.
+        self._name: str = str(name or getattr(factory, "__name__", "<anonymous>"))
         self._lock = threading.Lock()
         self._instance: Optional[T] = None
         SingletonRegistry._register(self)
@@ -108,11 +109,11 @@ class SingletonRegistry:
     this directly.
     """
 
-    _instances: List[LockedSingleton] = []
+    _instances: "List[LockedSingleton[Any]]" = []
     _lock = threading.Lock()
 
     @classmethod
-    def _register(cls, singleton: LockedSingleton) -> None:
+    def _register(cls, singleton: "LockedSingleton[Any]") -> None:
         with cls._lock:
             cls._instances.append(singleton)
 

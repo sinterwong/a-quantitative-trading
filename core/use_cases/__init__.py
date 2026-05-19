@@ -62,7 +62,7 @@ class UseCaseError(Exception):
         self.message = message
         self.code = code
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> "dict[str, str]":
         return {"error": self.message, "code": self.code}
 
 

@@ -46,3 +46,38 @@ ignore = [
 [tool.ruff.format]
 quote-style = "preserve"  # 不强制改引号风格，等大批量 ruff format 单独 PR
 indent-style = "space"
+
+
+# ─── R3-1: mypy 配置 ─────────────────────────────────────────────────────────
+# 仓库现有代码类型注解不齐（R3-2 持续整改），全仓库 mypy strict 会爆 ~300
+# 个错。本批仅对"R0-R2 新写、注解完整、零警告"的核心基础设施模块开启
+# strict mode，新写代码默认进入这一档；存量按模块逐步迁入。
+#
+# 用法：mypy（依据 pyproject.toml 自动找配置）
+
+[tool.mypy]
+python_version = "3.11"
+follow_imports = "silent"        # 不下钻历史代码
+ignore_missing_imports = true    # 第三方库（pandas / akshare / flask 等）无 stubs
+# 全局松：仓库存量代码类型注解不齐，R3-2 持续整改。CI 只检查 strict 模块。
+disallow_untyped_defs = false
+strict_optional = false
+warn_redundant_casts = true      # 全局开（不会误报）
+warn_unused_ignores = true
+
+# 选择性 strict：新写、注解完整的核心基础设施。R0-R2 引入的模块默认进入
+# 这一档；后续按模块逐步迁入更多老代码。
+[[tool.mypy.overrides]]
+module = [
+    "core.singleton",
+    "core.lifecycle",
+    "core.idempotency",
+    "core.errors",
+    "core.config_defaults",
+    "core.use_cases",
+    "core.use_cases.submit_order",
+]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+no_implicit_optional = true

@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import signal as _signal
 import threading
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,7 @@ class Shutdown:
         if self._signals_installed:
             return
 
-        def _handle(signum, _frame):  # noqa: ANN001
+        def _handle(signum: int, _frame: Any) -> None:
             name = _signal.Signals(signum).name if hasattr(_signal, 'Signals') else str(signum)
             self.request(reason=f'signal:{name}')
 
