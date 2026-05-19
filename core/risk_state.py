@@ -110,8 +110,11 @@ def read_risk_state() -> Optional[Dict[str, Any]]:
         return None
     try:
         with open(target, encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as exc:  # noqa: BLE001
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
         logger.warning('risk_state read failed: %s', exc)
         return None
 

@@ -99,7 +99,9 @@ jobs:
                core/use_cases/performance_summary.py core/use_cases/risk_snapshot.py \
                core/use_cases/sector_rotation_signal.py core/use_cases/system_health.py \
                core/use_cases/analyze_stock/ \
-               core/factors/base.py core/brokers/base.py
+               core/factors/base.py core/brokers/base.py \
+               core/risk_state.py core/audit_log.py core/factor_pipeline.py \
+               core/data_quality.py
 
       - name: Run pytest (full suite)
         run: |

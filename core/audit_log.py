@@ -187,7 +187,7 @@ class AuditLogger:
 
     def list_dates(self) -> List[str]:
         """列出所有有审计记录的日期（'YYYY-MM-DD'）。"""
-        dates = []
+        dates: List[str] = []
         if not os.path.exists(self.audit_dir):
             return dates
         for month_dir in sorted(os.listdir(self.audit_dir)):
@@ -314,9 +314,9 @@ def log_ml_retrain(symbol: str, model: str, oos_accuracy: float,
 
 
 def log_fill(
-    fill,
-    signal=None,
-    pipeline_result=None,
+    fill: Any,
+    signal: Optional[Any] = None,
+    pipeline_result: Optional[Any] = None,
     risk_passed: bool = True,
     risk_reason: str = '',
 ) -> Optional[str]:

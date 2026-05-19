@@ -30,5 +30,5 @@ repos:
     hooks:
       - id: mypy
         # 只跑选定的 strict 模块；存量代码 R3-2 持续整改时再扩展
-        files: ^core/(singleton|lifecycle|idempotency|errors|config_defaults|use_cases/.*|factors/base|brokers/base)\.py$
+        files: ^core/(singleton|lifecycle|idempotency|errors|config_defaults|use_cases/.*|factors/base|brokers/base|risk_state|audit_log|factor_pipeline|data_quality)\.py$
         additional_dependencies: []

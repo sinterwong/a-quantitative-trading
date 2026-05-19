@@ -408,7 +408,7 @@ class DynamicWeightPipeline(FactorPipeline):
         self._bars_since_update: int = 0
         self._weight_history: List[Dict[str, float]] = []  # 权重历史（诊断用）
         self._decay_disabled: Dict[str, bool] = {}      # factor_name → 是否因衰减被禁用
-        self._factor_status_log: List[Dict] = []        # 因子状态变更日志
+        self._factor_status_log: List[Dict[str, Any]] = []  # 因子状态变更日志
 
         self._persistence_load_ok: bool = True
         if persist:
@@ -628,7 +628,7 @@ class DynamicWeightPipeline(FactorPipeline):
         n = len(self._entries)
         return {e.factor.name: 1.0 / n for e in self._entries} if n else {}
 
-    def factor_status(self) -> Dict[str, Dict]:
+    def factor_status(self) -> Dict[str, Dict[str, Any]]:
         """
         返回各因子的当前状态摘要，包含：
           - disabled: bool  是否因衰减被禁用
@@ -645,6 +645,6 @@ class DynamicWeightPipeline(FactorPipeline):
             }
         return result
 
-    def factor_status_log(self) -> List[Dict]:
+    def factor_status_log(self) -> List[Dict[str, Any]]:
         """返回因子衰减/恢复事件日志（DECAY_DISABLED / DECAY_RECOVERED）。"""
         return list(self._factor_status_log)

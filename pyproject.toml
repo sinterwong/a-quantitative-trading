@@ -93,6 +93,11 @@ module = [
     "core.use_cases.sector_rotation_signal",
     "core.use_cases.system_health",
     "core.use_cases.analyze_stock.*",
+    # R3-2 批 3: 核心运行时基础设施
+    "core.risk_state",
+    "core.audit_log",
+    "core.factor_pipeline",
+    "core.data_quality",
 ]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
