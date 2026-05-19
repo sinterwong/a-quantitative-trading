@@ -46,17 +46,29 @@ except Exception:
 # Database bootstrap
 # ============================================================
 
+# ─── 线程模型（R0-3 文档化）────────────────────────────────────────────────
+#
+# - 每次 get_cursor() 在当前线程新建 / 销毁连接，连接绝不跨线程共享。
+#   check_same_thread=False 只是兜底，避免 PortfolioService 缓存 conn
+#   引发的潜在跨线程访问。
+# - 同一进程的所有写经 _WRITE_LOCK 串行化，防止 SQLite 'database is locked'。
+# - WAL + busy_timeout=5000 + synchronous=NORMAL 在每个新连接上设置；
+#   journal_mode 是 DB-file 持久化的（首次切到 WAL 后写入 -wal 文件），
+#   SQLite 自身对重复设置是 no-op，所以每个 connection 都设置是安全的，
+#   且避免了"测试切换 DB_PATH 后新文件没拿到 WAL"的隐患。
+# - 并发不变量见 tests/test_portfolio_concurrent_writes.py: 50 线程交替
+#   BUY/SELL，cash + 持仓市值守恒。
+
+
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    # P2-19: WAL 模式允许并发读 + 序列化写；busy_timeout 让竞争写自旋等待
-    # 而非立即抛 'database is locked'
     try:
         conn.execute('PRAGMA journal_mode=WAL')
         conn.execute('PRAGMA busy_timeout=5000')
         conn.execute('PRAGMA synchronous=NORMAL')
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning('[portfolio] PRAGMA setup failed (continuing): %s', exc)
     return conn
 
 
@@ -66,7 +78,10 @@ _WRITE_LOCK = threading.Lock()
 
 @contextmanager
 def get_cursor():
-    """Yield a write-locked cursor; commits or rolls back on exit."""
+    """Yield a write-locked cursor; commits or rolls back on exit.
+
+    Concurrency model: see "线程模型" comment above.
+    """
     _WRITE_LOCK.acquire()
     conn = get_db()
     try:
