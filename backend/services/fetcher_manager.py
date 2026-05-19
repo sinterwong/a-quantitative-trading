@@ -55,23 +55,29 @@ def _fetcher_supports(fetcher_name: str, is_hk: bool) -> bool:
 
 # ─── 全局 FetcherManager 单例 ──────────────────────────────────────────────
 
-_global_manager: Optional['DataFetcherManager'] = None
+from core.singleton import LockedSingleton
+
+
+def _dispose_fetcher_manager(mgr: 'DataFetcherManager') -> None:
+    # 沿用旧 reset 行为：替换前先把 circuit_breaker 状态清空，避免下游误读残留。
+    mgr._circuit_breaker.reset()
+
+
+_fetcher_manager_singleton: LockedSingleton['DataFetcherManager'] = LockedSingleton(
+    lambda: DataFetcherManager(),
+    name="data_fetcher_manager",
+    dispose=_dispose_fetcher_manager,
+)
 
 
 def get_fetcher_manager() -> 'DataFetcherManager':
-    """获取全局 DataFetcherManager 单例（延迟创建）"""
-    global _global_manager
-    if _global_manager is None:
-        _global_manager = DataFetcherManager()
-    return _global_manager
+    """获取全局 DataFetcherManager 单例（延迟创建、线程安全）"""
+    return _fetcher_manager_singleton.get()
 
 
 def reset_fetcher_manager() -> None:
     """重置全局单例（用于测试或配置变更后重载）"""
-    global _global_manager
-    if _global_manager is not None:
-        _global_manager._circuit_breaker.reset()
-    _global_manager = None
+    _fetcher_manager_singleton.reset()
 
 
 class DataFetcherManager:

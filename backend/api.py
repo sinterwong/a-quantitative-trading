@@ -41,6 +41,8 @@ BACKEND_DIR = os.path.dirname(THIS_DIR)
 PROJ_DIR = os.path.dirname(BACKEND_DIR)
 sys.path.insert(0, PROJ_DIR)
 
+from typing import Optional
+
 from flask import Flask, request, jsonify
 from services.portfolio import PortfolioService
 from core.data_gateway.capabilities import MacroIndicator
@@ -158,15 +160,22 @@ def _check_auth_and_rate_limit():
 
     return None
 
-# Singleton portfolio service
-_svc: PortfolioService = None
+# Singleton portfolio service — Flask WSGI 多线程下两个并发请求曾各建一个实例，
+# 导致 DB 句柄分裂。改用 LockedSingleton 走双检锁。
+from core.singleton import LockedSingleton
+
+_svc_singleton: LockedSingleton[PortfolioService] = LockedSingleton(
+    PortfolioService, name="api.portfolio_service"
+)
 
 
 def get_svc() -> PortfolioService:
-    global _svc
-    if _svc is None:
-        _svc = PortfolioService()
-    return _svc
+    return _svc_singleton.get()
+
+
+def reset_svc(instance: Optional[PortfolioService] = None) -> None:
+    """重置 PortfolioService 单例（测试用，替代历史上的 ``api._svc = ...`` 直接赋值）。"""
+    _svc_singleton.reset(instance)
 
 
 # ============================================================
@@ -438,16 +447,20 @@ def _get_or_build_broker():
     return b
 
 
-_RISK_ENGINE = None
-# Flask 在多线程 WSGI 下两个请求会并发进入 _get_risk_engine 的懒建分支;
-# 没锁会创建两份 RiskEngine,如果其 __init__ 有副作用(打开 sqlite 句柄、
-# 注册回调) 就会泄漏。锁只保护懒建,共享 StrategyRunner 实例的路径无副作用。
-_RISK_ENGINE_LOCK = threading.Lock()
+def _make_risk_engine():
+    from core.risk_engine import RiskEngine
+    return RiskEngine()
+
+
+# Flask 多线程 WSGI 下两个请求并发进入懒建分支会创建两份 RiskEngine，
+# 其 __init__ 有副作用(打开 sqlite 句柄、注册回调)，所以必须加锁。
+_risk_engine_singleton: LockedSingleton = LockedSingleton(
+    _make_risk_engine, name="api.risk_engine"
+)
 
 
 def _get_risk_engine():
     """共享 RiskEngine：优先复用 StrategyRunner 的实例，否则懒建一个本地 singleton。"""
-    global _RISK_ENGINE
     try:
         from main import get_monitor
         m = get_monitor()
@@ -457,15 +470,11 @@ def _get_risk_engine():
                 return re
     except Exception:
         pass
-    if _RISK_ENGINE is None:
-        with _RISK_ENGINE_LOCK:
-            if _RISK_ENGINE is None:
-                try:
-                    from core.risk_engine import RiskEngine
-                    _RISK_ENGINE = RiskEngine()
-                except Exception:
-                    return None
-    return _RISK_ENGINE
+    try:
+        return _risk_engine_singleton.get()
+    except Exception:
+        # RiskEngine 初始化失败（如配置缺失）维持旧行为：返回 None 让上层决定。
+        return None
 
 
 @app.route('/orders/submit', methods=['POST'])

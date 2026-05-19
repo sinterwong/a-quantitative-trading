@@ -144,25 +144,21 @@ class HealthTracker:
 # ─── 全局单例 ──────────────────────────────────────────────────────────────────
 
 
-_tracker: Optional[HealthTracker] = None
-_tracker_lock = threading.Lock()
+from core.singleton import LockedSingleton
+
+_tracker_singleton: LockedSingleton[HealthTracker] = LockedSingleton(
+    HealthTracker, name="health_tracker"
+)
 
 
 def get_health_tracker() -> HealthTracker:
-    """获取全局 HealthTracker 单例。"""
-    global _tracker
-    if _tracker is None:
-        with _tracker_lock:
-            if _tracker is None:
-                _tracker = HealthTracker()
-    return _tracker
+    """获取全局 HealthTracker 单例(线程安全)。"""
+    return _tracker_singleton.get()
 
 
 def reset_health_tracker(tracker: Optional[HealthTracker] = None) -> None:
     """重置/替换全局单例(测试用)。"""
-    global _tracker
-    with _tracker_lock:
-        _tracker = tracker
+    _tracker_singleton.reset(tracker)
 
 
 __all__ = ["HealthTracker", "get_health_tracker", "reset_health_tracker"]

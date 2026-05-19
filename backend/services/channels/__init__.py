@@ -218,13 +218,20 @@ class ChannelManager:
 
 # ─── 全局单例 ─────────────────────────────────────────────────
 
-_global_manager: Optional[ChannelManager] = None
+from core.singleton import LockedSingleton
+
+_channel_manager_singleton: LockedSingleton[ChannelManager] = LockedSingleton(
+    ChannelManager, name="channel_manager"
+)
+
 
 def global_manager() -> ChannelManager:
-    global _global_manager
-    if _global_manager is None:
-        _global_manager = ChannelManager()
-    return _global_manager
+    return _channel_manager_singleton.get()
+
+
+def reset_global_manager(manager: Optional[ChannelManager] = None) -> None:
+    """重置全局 ChannelManager（测试用）。"""
+    _channel_manager_singleton.reset(manager)
 
 
 def setup_default_channels(

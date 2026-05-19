@@ -37,7 +37,7 @@ def app(tmp_path):
     svc.set_cash(500_000.0)               # seed cash
 
     # Patch singleton + mode file
-    api_mod._svc = svc
+    api_mod.reset_svc(svc)
     api_mod._MODE_FILE = str(tmp_path / 'trading_mode.json')
 
     api_mod.app.config['TESTING'] = True
@@ -45,7 +45,7 @@ def app(tmp_path):
         yield client
 
     # cleanup
-    api_mod._svc = None
+    api_mod.reset_svc(None)
 
 
 # ── Helper ───────────────────────────────────────────────────────────────────

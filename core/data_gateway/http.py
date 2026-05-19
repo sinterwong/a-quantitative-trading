@@ -258,31 +258,29 @@ class HttpClient:
 
 # ─── 全局单例 ──────────────────────────────────────────────────────────────────
 
+from core.singleton import LockedSingleton
 
-_client: Optional[HttpClient] = None
-_client_lock = threading.Lock()
+
+def _dispose_http_client(client: HttpClient) -> None:
+    # 旧版 reset_http_client 在替换前会调 _client.close() 释放连接池。
+    client.close()
+
+
+_http_client_singleton: LockedSingleton[HttpClient] = LockedSingleton(
+    HttpClient,
+    name="http_client",
+    dispose=_dispose_http_client,
+)
 
 
 def get_http_client() -> HttpClient:
-    """获取全局 HttpClient 单例(连接池共享)。"""
-    global _client
-    if _client is None:
-        with _client_lock:
-            if _client is None:
-                _client = HttpClient()
-    return _client
+    """获取全局 HttpClient 单例(连接池共享、线程安全)。"""
+    return _http_client_singleton.get()
 
 
 def reset_http_client(client: Optional[HttpClient] = None) -> None:
     """重置/替换全局单例(测试用)。"""
-    global _client
-    with _client_lock:
-        if _client is not None and client is not _client:
-            try:
-                _client.close()
-            except Exception:
-                pass
-        _client = client
+    _http_client_singleton.reset(client)
 
 
 __all__ = [

@@ -1332,10 +1332,6 @@ class DataGateway:
 # ─── 默认注册 + 单例 ──────────────────────────────────────────────────────────
 
 
-_gateway: Optional[DataGateway] = None
-_gateway_lock = threading.Lock()
-
-
 def _build_default_gateway() -> DataGateway:
     from .providers.akshare import AkshareProvider
     from .providers.baostock import BaostockProvider
@@ -1354,21 +1350,21 @@ def _build_default_gateway() -> DataGateway:
     return gw
 
 
+from core.singleton import LockedSingleton
+
+_gateway_singleton: LockedSingleton[DataGateway] = LockedSingleton(
+    _build_default_gateway, name="data_gateway"
+)
+
+
 def get_gateway() -> DataGateway:
-    """获取全局 DataGateway 单例(默认注册全部 provider)。"""
-    global _gateway
-    if _gateway is None:
-        with _gateway_lock:
-            if _gateway is None:
-                _gateway = _build_default_gateway()
-    return _gateway
+    """获取全局 DataGateway 单例(默认注册全部 provider，线程安全)。"""
+    return _gateway_singleton.get()
 
 
 def reset_gateway(gw: Optional[DataGateway] = None) -> None:
     """重置/替换全局单例(测试用)。"""
-    global _gateway
-    with _gateway_lock:
-        _gateway = gw
+    _gateway_singleton.reset(gw)
 
 
 __all__ = ["DataGateway", "get_gateway", "reset_gateway"]

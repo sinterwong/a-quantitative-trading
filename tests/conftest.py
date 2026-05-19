@@ -90,3 +90,11 @@ def _reset_module_caches():
         wm._trade_calendar_date = ''
     except (ImportError, AttributeError):
         pass
+
+    # R0-2: 通过 SingletonRegistry 一次性清掉所有迁移到 LockedSingleton 的全局态，
+    # 避免新增单例时再来这里手写 reset_*。
+    try:
+        from core.singleton import SingletonRegistry
+        SingletonRegistry.reset_all()
+    except ImportError:
+        pass

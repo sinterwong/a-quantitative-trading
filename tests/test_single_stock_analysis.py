@@ -384,14 +384,14 @@ class TestEndpoints(unittest.TestCase):
         from services.portfolio import PortfolioService
         import tempfile
         self.tmp = tempfile.mkdtemp()
-        api_mod._svc = PortfolioService(db_path=os.path.join(self.tmp, 'p.db'))
+        api_mod.reset_svc(PortfolioService(db_path=os.path.join(self.tmp, 'p.db')))
         api_mod._GLOBAL_RATE_LIMIT.clear()
         api_mod.app.config['TESTING'] = True
         self.client = api_mod.app.test_client()
 
     def tearDown(self):
         import backend.api as api_mod
-        api_mod._svc = None
+        api_mod.reset_svc(None)
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
 

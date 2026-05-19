@@ -376,22 +376,18 @@ class MetricsRegistry:
 # 全局单例
 # ---------------------------------------------------------------------------
 
-_registry: Optional[MetricsRegistry] = None
-_registry_lock = threading.Lock()
+from core.singleton import LockedSingleton
+
+_registry_singleton: LockedSingleton[MetricsRegistry] = LockedSingleton(
+    MetricsRegistry, name="metrics_registry"
+)
 
 
 def get_registry() -> MetricsRegistry:
     """获取全局 MetricsRegistry 单例。"""
-    global _registry
-    if _registry is None:
-        with _registry_lock:
-            if _registry is None:
-                _registry = MetricsRegistry()
-    return _registry
+    return _registry_singleton.get()
 
 
 def reset_registry() -> None:
     """重置全局单例（主要用于测试隔离）。"""
-    global _registry
-    with _registry_lock:
-        _registry = None
+    _registry_singleton.reset()

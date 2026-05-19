@@ -204,15 +204,21 @@ class AuditLogger:
 # OMS 集成助手（在 OMS._on_signal 成交成功后调用）
 # ---------------------------------------------------------------------------
 
-_default_audit_logger: Optional[AuditLogger] = None
+from core.singleton import LockedSingleton
+
+_audit_singleton: LockedSingleton[AuditLogger] = LockedSingleton(
+    AuditLogger, name="audit_logger"
+)
 
 
 def get_audit_logger() -> AuditLogger:
-    """返回全局 AuditLogger 单例。"""
-    global _default_audit_logger
-    if _default_audit_logger is None:
-        _default_audit_logger = AuditLogger()
-    return _default_audit_logger
+    """返回全局 AuditLogger 单例（线程安全）。"""
+    return _audit_singleton.get()
+
+
+def reset_audit_logger(logger_: Optional[AuditLogger] = None) -> None:
+    """重置全局 AuditLogger（测试用）。"""
+    _audit_singleton.reset(logger_)
 
 
 # ---------------------------------------------------------------------------
