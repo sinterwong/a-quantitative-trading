@@ -31,3 +31,4 @@ plotly>=5.20.0
 # Testing (also required by tests/test_api_contract.py)
 pytest
 jsonschema>=4.0.0
+freezegun>=1.5.0    # R3-3: 替代 time.sleep 让时间敏感测试稳定

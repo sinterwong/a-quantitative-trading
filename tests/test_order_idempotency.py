@@ -10,9 +10,10 @@ from __future__ import annotations
 import os
 import tempfile
 import threading
-import time
 import unittest
 from unittest.mock import patch
+
+from freezegun import freeze_time
 
 from core.idempotency import (
     IdempotencyKeyConflict, IdempotencyStore, compute_request_hash,
@@ -59,15 +60,22 @@ class TestIdempotencyStore(unittest.TestCase):
             self.store.put('k', compute_request_hash({'a': 2}), {'order_id': 'O2'})
 
     def test_expired_entry_is_not_returned(self) -> None:
-        from core import idempotency as idem_mod
-        original_ttl = idem_mod.TTL_SECONDS
-        try:
-            idem_mod.TTL_SECONDS = 0.05  # 50ms
+        """R3-3: 用 freeze_time 替代 time.sleep+短 TTL hack。
+        旧实现 sleep(0.1) 在 CI 慢机器上脆弱，且需要改 module 常量。"""
+        with freeze_time('2026-05-19 10:00:00') as frozen:
             self.store.put('k', compute_request_hash({'a': 1}), {'order_id': 'O1'})
-            time.sleep(0.1)
+            # TTL 是 24h，向前跳 24h+1s 应该过期
+            frozen.tick(delta=24 * 3600 + 1)
             self.assertIsNone(self.store.get('k'))
-        finally:
-            idem_mod.TTL_SECONDS = original_ttl
+
+    def test_entry_still_valid_within_ttl(self) -> None:
+        """对照：TTL 窗口内同 key 仍可回放。"""
+        with freeze_time('2026-05-19 10:00:00') as frozen:
+            self.store.put('k', compute_request_hash({'a': 1}), {'order_id': 'O1'})
+            frozen.tick(delta=23 * 3600)  # 23h 后还在窗口内
+            result = self.store.get('k')
+            self.assertIsNotNone(result)
+            self.assertEqual(result.response['order_id'], 'O1')
 
     def test_compute_request_hash_is_order_insensitive(self) -> None:
         a = compute_request_hash({'shares': 100, 'symbol': '600000'})
