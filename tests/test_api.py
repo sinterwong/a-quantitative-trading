@@ -38,7 +38,9 @@ def app(tmp_path):
 
     # Patch singleton + mode file
     api_mod.reset_svc(svc)
-    api_mod._MODE_FILE = str(tmp_path / 'trading_mode.json')
+    # R2-4 续集: /trading/mode 已搬到 backend.api_routes.ops，_MODE_FILE 也跟着搬
+    from backend.api_routes import ops as ops_mod
+    ops_mod._MODE_FILE = str(tmp_path / 'trading_mode.json')
 
     api_mod.app.config['TESTING'] = True
     with api_mod.app.test_client() as client:
