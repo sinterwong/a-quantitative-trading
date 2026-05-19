@@ -161,6 +161,16 @@ def test_field_authority_declares_88_fields():
         assert qa[f] > 1.0, f"{f} 未声明高权威"
 
 
+def test_field_authority_declares_bid_ask_as_sina_backup():
+    """腾讯 88-field 同样返回 bid1/ask1，权威应声明 < Sina(1.2)，
+    让 MERGE_FIELDS 优先 Sina、Sina 不可用时降级到腾讯。"""
+    auth = TencentProvider().field_authority()
+    qa = auth[Capability.QUOTE]
+    for f in ("bid1_price", "bid1_vol", "ask1_price", "ask1_vol"):
+        assert f in qa, f"{f} 未声明权威"
+        assert qa[f] < 1.2, f"{f} 权威 ({qa[f]}) 应低于 Sina 的 1.2"
+
+
 # ── fetch_quote: mock HttpClient ─────────────────────────────────────────────
 
 

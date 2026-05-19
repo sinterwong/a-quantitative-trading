@@ -15,7 +15,7 @@ import logging
 import math
 import re
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -71,6 +71,16 @@ class AkshareProvider(Provider):
         if Market.GLOBAL in self.declare().markets:
             return True
         return market in self.declare().markets
+
+    def field_authority(self) -> Dict[Capability, Dict[str, float]]:
+        # AkShare 是 A 股基本面备灾源(priority_hint=0.30)，权威低于 Baostock(1.0)，
+        # 但贡献 revenue_yoy / profit_yoy 等独家成长字段，对其单独声明权威。
+        return {
+            Capability.FUNDAMENTALS: {
+                "roe_ttm": 0.8, "eps_ttm": 0.8,
+                "revenue_yoy": 0.7, "profit_yoy": 0.7,
+            },
+        }
 
     def fetch_macro(self, indicator: MacroIndicator) -> pd.DataFrame:
         """支持 indicator: MacroIndicator.PMI / M2 / CREDIT / CPI / PPI。"""

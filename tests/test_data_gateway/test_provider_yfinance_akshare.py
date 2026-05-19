@@ -128,6 +128,16 @@ def test_akshare_priority_hint_low():
     assert AkshareProvider().declare().priority_hint < 0.5
 
 
+def test_akshare_field_authority_declares_fundamentals():
+    """AkShare 贡献 revenue_yoy/profit_yoy 等成长字段，权威应低于 Baostock(1.0)。"""
+    auth = AkshareProvider().field_authority()
+    assert Capability.FUNDAMENTALS in auth
+    fa = auth[Capability.FUNDAMENTALS]
+    for f in ("roe_ttm", "eps_ttm", "revenue_yoy", "profit_yoy"):
+        assert f in fa, f"{f} 未声明权威"
+        assert 0 < fa[f] < 1.0, f"{f} 权威 ({fa[f]}) 应低于 Baostock 的 1.0"
+
+
 # ── Akshare: fetch_macro ─────────────────────────────────────────────────────
 
 
