@@ -145,7 +145,7 @@ def analyze_a_stock_endpoint():
     """POST /analysis/stock/a — A 股综合分析（行情 + 因子 + 风险 + 可选 ML/NLP/LLM）。
 
     Body: {"symbol": "603369.SH", "lookback_days": 250, "include_regime/news/ml/llm": bool}"""
-    from services.single_stock_analysis import (
+    from core.use_cases.analyze_stock import (
         AnalysisRequest,
         analyze_a_share,
         detect_market,
@@ -167,7 +167,7 @@ def analyze_hk_stock_endpoint():
     """POST /analysis/stock/hk — 港股综合分析（行情 + 因子 + 风险 + 可选 LLM）。
 
     Body: {"symbol": "HK:00700", ...} — 支持 HK:N / N.HK / hkN"""
-    from services.single_stock_analysis import (
+    from core.use_cases.analyze_stock import (
         AnalysisRequest,
         analyze_hk_share,
         detect_market,
