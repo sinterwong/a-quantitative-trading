@@ -20,35 +20,24 @@ from datetime import datetime
 
 from flask import Blueprint, jsonify, request
 
-# Shared helpers live in backend.api; importing them here is safe because
-# api.py registers this Blueprint at the very bottom of its module body,
-# after all helpers + decorators are defined.
+# Flask helpers stay in backend.api (they're tied to the `app` instance).
+# Broker / risk-engine / idempotency-store getters live in backend.api_deps
+# so we can import them here without going through backend.api — this
+# closes the circular-via-sys.modules trick the R2-4 review flagged.
 #
-# We import *names* used at decoration / static dispatch (app / rate_limit
-# / get_svc / ok / err / require_json / idempotency singleton). For broker
-# and risk-engine getters, we resolve them at *call* time via
-# ``sys.modules['backend.api']`` attribute lookup so test patches against
-# ``backend.api._get_or_build_broker`` take effect (and we avoid the cycle
-# that bites tests loading api.py via importlib as a free-standing module).
-from backend.api import (
-    _idempotency_store_singleton,
-    app,
-    err,
-    get_svc,
-    ok,
-    rate_limit,
-    require_json,
-)
+# Test pattern (already used by test_order_idempotency.py):
+#   import backend.api as api_mod
+#   with patch.object(api_mod, '_get_or_build_broker', ...): ...
+# backend.api re-exports the getter from api_deps so legacy patches keep
+# working; new tests should patch backend.api_deps directly.
+from backend.api import app, err, get_svc, ok, rate_limit, require_json
+# Import the module (not the names) so test patches that target
+# ``backend.api_deps._get_or_build_broker`` propagate into call sites here.
+# Importing the names directly would freeze the binding at import time and
+# defeat patch.object.
+from backend import api_deps
+from backend.api_deps import _idempotency_store_singleton
 
-
-def _api_get_or_build_broker():
-    import sys
-    return sys.modules['backend.api']._get_or_build_broker()
-
-
-def _api_get_risk_engine():
-    import sys
-    return sys.modules['backend.api']._get_risk_engine()
 
 orders_bp = Blueprint('orders', __name__)
 
@@ -173,8 +162,8 @@ def submit_order():
     try:
         result = _submit_order_uc(
             req,
-            broker=_api_get_or_build_broker(),
-            risk_engine=_api_get_risk_engine(),
+            broker=api_deps._get_or_build_broker(),
+            risk_engine=api_deps._get_risk_engine(),
         )
     except NoReferencePriceError as exc:
         _release_on_error()

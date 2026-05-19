@@ -244,12 +244,18 @@ class TestOrderEndpointIdempotency(unittest.TestCase):
                 return 10.0
 
         self.broker = _CountingBroker()
+        # R2-4 review-fix: getter 现在住在 backend.api_deps,Blueprint 通过
+        # `api_deps._get_or_build_broker()` 调用,所以测试 patch 也要打在
+        # api_deps 上(打在 api_mod 上不生效——那只是 re-export)。
+        import backend.api_deps as api_deps_mod
         self._patch_broker = patch.object(
-            api_mod, '_get_or_build_broker', return_value=self.broker,
+            api_deps_mod, '_get_or_build_broker', return_value=self.broker,
         )
         self._patch_broker.start()
         # PreTrade 风控关掉（专注幂等性测试）
-        self._patch_risk = patch.object(api_mod, '_get_risk_engine', return_value=None)
+        self._patch_risk = patch.object(
+            api_deps_mod, '_get_risk_engine', return_value=None,
+        )
         self._patch_risk.start()
 
         api_mod.app.config['TESTING'] = True

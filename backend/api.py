@@ -182,14 +182,14 @@ def reset_svc(instance: Optional[PortfolioService] = None) -> None:
     _svc_singleton.reset(instance)
 
 
-# R0-1: 订单提交幂等性存储——同 Idempotency-Key 24h 内重试直接回放上次响应。
-def _make_idempotency_store():
-    from core.idempotency import IdempotencyStore
-    return IdempotencyStore()
-
-
-_idempotency_store_singleton = LockedSingleton(
-    _make_idempotency_store, name="api.idempotency_store"
+# R0-1 / R2-4 review-fix: broker / risk_engine / idempotency-store 三个
+# getter 现集中在 backend/api_deps.py。重新导出以保持向后兼容（已有测试
+# 用 patch.object(backend.api, '_get_or_build_broker', ...) 的方式 mock）。
+from backend.api_deps import (
+    _get_or_build_broker,
+    _get_risk_engine,
+    _idempotency_store_singleton,
+    _risk_engine_singleton,
 )
 
 
@@ -288,54 +288,9 @@ def docs():
 # Phase 2: will call broker service
 # ============================================================
 
-def _get_or_build_broker():
-    """复用 quant_app.main.get_broker() 的共享实例；测试/无 monitor 场景回退到新建 PaperBroker。"""
-    try:
-        from quant_app.main import get_broker
-        b = get_broker()
-        if b is not None:
-            return b
-    except Exception:
-        pass
-    from services.broker import PaperBroker
-    b = PaperBroker(portfolio_service=get_svc())
-    b.connect()
-    return b
-
-
-def _make_risk_engine():
-    from core.risk_engine import RiskEngine
-    return RiskEngine()
-
-
-# Flask 多线程 WSGI 下两个请求并发进入懒建分支会创建两份 RiskEngine，
-# 其 __init__ 有副作用(打开 sqlite 句柄、注册回调)，所以必须加锁。
-_risk_engine_singleton: LockedSingleton = LockedSingleton(
-    _make_risk_engine, name="api.risk_engine"
-)
-
-
-def _get_risk_engine():
-    """共享 RiskEngine：优先复用 StrategyRunner 的实例，否则懒建一个本地 singleton。"""
-    try:
-        from quant_app.main import get_monitor
-        m = get_monitor()
-        if m is not None and getattr(m, '_strategy_runner', None) is not None:
-            re = getattr(m._strategy_runner, 'risk_engine', None)
-            if re is not None:
-                return re
-    except Exception:
-        pass
-    try:
-        return _risk_engine_singleton.get()
-    except Exception:
-        # RiskEngine 初始化失败（如配置缺失）维持旧行为：返回 None 让上层决定。
-        return None
-
-
 # R2-4: /orders/* 4 个端点已拆到 backend/api_routes/orders.py（Flask Blueprint）。
-# 注册放在文件末尾，确保所有 helper（rate_limit / ok / err / get_svc /
-# _get_or_build_broker / _get_risk_engine / _idempotency_store_singleton）
+# 注册放在文件末尾,确保所有 helper(rate_limit / ok / err / get_svc /
+# api_deps._get_or_build_broker / _get_risk_engine / _idempotency_store_singleton)
 # 都已定义。
 
 
