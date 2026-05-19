@@ -1,0 +1,1052 @@
+{
+  "timestamp": "2026-05-19T08:50:07.202207",
+  "project_root": "/home/sinter/workspace/a-quantitative-trading",
+  "conda_python": "/home/sinter/softwares/miniconda3/envs/quant-trading/bin/python",
+  "market_coverage": {
+    "TencentProvider": {
+      "declared_markets": [
+        "A",
+        "HK",
+        "INDEX",
+        "US"
+      ],
+      "declared_caps": [
+        "kline_daily",
+        "kline_minute",
+        "market_index",
+        "quote"
+      ],
+      "tests": {
+        "sh600519/A": {
+          "symbol": "sh600519",
+          "market": "A",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": true,
+              "quote_valid": true,
+              "price": 1323.0
+            },
+            "kline_daily": {
+              "supports": true,
+              "rows": 5
+            }
+          }
+        },
+        "hk00700/HK": {
+          "symbol": "hk00700",
+          "market": "HK",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": true,
+              "quote_valid": true,
+              "price": 449.2
+            },
+            "kline_daily": {
+              "supports": true,
+              "rows": 5
+            }
+          }
+        },
+        "usAAPL/US": {
+          "symbol": "usAAPL",
+          "market": "US",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": true,
+              "quote_valid": true,
+              "price": 297.84
+            },
+            "kline_daily": {
+              "supports": false
+            }
+          }
+        },
+        "sh000001/INDEX": {
+          "symbol": "sh000001",
+          "market": "INDEX",
+          "caps": [
+            "quote",
+            "market_index"
+          ],
+          "results": {
+            "quote": {
+              "supports": true,
+              "quote_valid": true,
+              "price": 4131.53
+            },
+            "market_index": {
+              "supports": true,
+              "price": 4131.53
+            }
+          }
+        }
+      }
+    },
+    "SinaProvider": {
+      "declared_markets": [
+        "A",
+        "HK",
+        "INDEX"
+      ],
+      "declared_caps": [
+        "kline_daily",
+        "kline_minute",
+        "market_index",
+        "quote",
+        "sector_constituents",
+        "sector_ranking"
+      ],
+      "tests": {
+        "sh600519/A": {
+          "symbol": "sh600519",
+          "market": "A",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": true,
+              "quote_valid": true,
+              "price": 1323.0
+            },
+            "kline_daily": {
+              "supports": true,
+              "rows": 5
+            }
+          }
+        },
+        "hk00700/HK": {
+          "symbol": "hk00700",
+          "market": "HK",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": true,
+              "quote_valid": true,
+              "price": 449.2
+            },
+            "kline_daily": {
+              "supports": false
+            }
+          }
+        },
+        "usAAPL/US": {
+          "symbol": "usAAPL",
+          "market": "US",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": false
+            },
+            "kline_daily": {
+              "supports": false
+            }
+          }
+        },
+        "sh000001/INDEX": {
+          "symbol": "sh000001",
+          "market": "INDEX",
+          "caps": [
+            "quote",
+            "market_index"
+          ],
+          "results": {
+            "quote": {
+              "supports": true,
+              "quote_valid": true,
+              "price": 4131.5276
+            },
+            "market_index": {
+              "supports": true,
+              "price": 4131.5276
+            }
+          }
+        }
+      }
+    },
+    "EastmoneyProvider": {
+      "declared_markets": [
+        "A",
+        "GLOBAL",
+        "HK",
+        "INDEX"
+      ],
+      "declared_caps": [
+        "market_index",
+        "news_headlines",
+        "north_flow",
+        "quote",
+        "sector_constituents",
+        "sector_ranking"
+      ],
+      "tests": {
+        "sh600519/A": {
+          "symbol": "sh600519",
+          "market": "A",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": true,
+              "error": "ProviderError: eastmoney.fetch_quote(sh600519): GET https://push2.eastmoney.com/"
+            },
+            "kline_daily": {
+              "supports": false
+            }
+          }
+        },
+        "hk00700/HK": {
+          "symbol": "hk00700",
+          "market": "HK",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": true,
+              "error": "ProviderError: eastmoney.fetch_quote(hk00700): GET https://push2.eastmoney.com/a"
+            },
+            "kline_daily": {
+              "supports": false
+            }
+          }
+        },
+        "usAAPL/US": {
+          "symbol": "usAAPL",
+          "market": "US",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": false
+            },
+            "kline_daily": {
+              "supports": false
+            }
+          }
+        },
+        "sh000001/INDEX": {
+          "symbol": "sh000001",
+          "market": "INDEX",
+          "caps": [
+            "quote",
+            "market_index"
+          ],
+          "results": {
+            "quote": {
+              "supports": true,
+              "error": "ProviderError: eastmoney.fetch_quote(sh000001): GET https://push2.eastmoney.com/"
+            },
+            "market_index": {
+              "supports": true,
+              "error": "ProviderError: eastmoney.fetch_market_index(sh000001): GET https://push2.eastmon"
+            }
+          }
+        }
+      }
+    },
+    "AkshareProvider": {
+      "declared_markets": [
+        "GLOBAL"
+      ],
+      "declared_caps": [
+        "fund_flow",
+        "fundamentals",
+        "fundamentals_history",
+        "macro",
+        "margin_flow",
+        "news_headlines",
+        "north_flow"
+      ],
+      "tests": {
+        "sh600519/A": {
+          "symbol": "sh600519",
+          "market": "A",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": false
+            },
+            "kline_daily": {
+              "supports": false
+            }
+          }
+        },
+        "hk00700/HK": {
+          "symbol": "hk00700",
+          "market": "HK",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": false
+            },
+            "kline_daily": {
+              "supports": false
+            }
+          }
+        },
+        "usAAPL/US": {
+          "symbol": "usAAPL",
+          "market": "US",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": false
+            },
+            "kline_daily": {
+              "supports": false
+            }
+          }
+        },
+        "sh000001/INDEX": {
+          "symbol": "sh000001",
+          "market": "INDEX",
+          "caps": [
+            "quote",
+            "market_index"
+          ],
+          "results": {
+            "quote": {
+              "supports": false
+            },
+            "market_index": {
+              "supports": false
+            }
+          }
+        }
+      }
+    },
+    "BaostockProvider": {
+      "declared_markets": [
+        "A"
+      ],
+      "declared_caps": [
+        "balance_sheet",
+        "fundamentals",
+        "fundamentals_history",
+        "kline_daily"
+      ],
+      "tests": {
+        "sh600519/A": {
+          "symbol": "sh600519",
+          "market": "A",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": false
+            },
+            "kline_daily": {
+              "supports": true,
+              "rows": 3
+            }
+          }
+        },
+        "hk00700/HK": {
+          "symbol": "hk00700",
+          "market": "HK",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": false
+            },
+            "kline_daily": {
+              "supports": false
+            }
+          }
+        },
+        "usAAPL/US": {
+          "symbol": "usAAPL",
+          "market": "US",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": false
+            },
+            "kline_daily": {
+              "supports": false
+            }
+          }
+        },
+        "sh000001/INDEX": {
+          "symbol": "sh000001",
+          "market": "INDEX",
+          "caps": [
+            "quote",
+            "market_index"
+          ],
+          "results": {
+            "quote": {
+              "supports": false
+            },
+            "market_index": {
+              "supports": false
+            }
+          }
+        }
+      }
+    },
+    "YfinanceProvider": {
+      "declared_markets": [
+        "GLOBAL",
+        "US"
+      ],
+      "declared_caps": [
+        "kline_daily",
+        "market_index"
+      ],
+      "tests": {
+        "sh600519/A": {
+          "symbol": "sh600519",
+          "market": "A",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": false
+            },
+            "kline_daily": {
+              "supports": false
+            }
+          }
+        },
+        "hk00700/HK": {
+          "symbol": "hk00700",
+          "market": "HK",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": false
+            },
+            "kline_daily": {
+              "supports": false
+            }
+          }
+        },
+        "usAAPL/US": {
+          "symbol": "usAAPL",
+          "market": "US",
+          "caps": [
+            "quote",
+            "kline_daily"
+          ],
+          "results": {
+            "quote": {
+              "supports": false
+            },
+            "kline_daily": {
+              "supports": true,
+              "rows": 0
+            }
+          }
+        },
+        "sh000001/INDEX": {
+          "symbol": "sh000001",
+          "market": "INDEX",
+          "caps": [
+            "quote",
+            "market_index"
+          ],
+          "results": {
+            "quote": {
+              "supports": false
+            },
+            "market_index": {
+              "supports": false
+            }
+          }
+        }
+      }
+    }
+  },
+  "capability_extensions": {
+    "TencentProvider.fetch_quote": {
+      "status": "ok",
+      "fields": [
+        "symbol",
+        "name",
+        "code",
+        "market",
+        "price",
+        "prev_close",
+        "open",
+        "high",
+        "low",
+        "avg_price",
+        "change",
+        "pct_change",
+        "volume",
+        "amount",
+        "turnover_rate",
+        "volume_ratio",
+        "bid1_price",
+        "bid1_vol",
+        "ask1_price",
+        "pe_ttm",
+        "pb",
+        "dividend_yield",
+        "market_cap",
+        "float_cap",
+        "limit_up",
+        "limit_down",
+        "amplitude",
+        "high_52w",
+        "low_52w",
+        "currency",
+        "timestamp"
+      ]
+    },
+    "SinaProvider.fetch_quote": {
+      "status": "ok",
+      "fields": [
+        "symbol",
+        "name",
+        "code",
+        "market",
+        "price",
+        "prev_close",
+        "open",
+        "high",
+        "low",
+        "change",
+        "pct_change",
+        "volume",
+        "amount",
+        "bid1_price",
+        "bid1_vol",
+        "ask1_price",
+        "ask1_vol",
+        "currency",
+        "timestamp"
+      ]
+    },
+    "EastmoneyProvider.fetch_north_flow_history": {
+      "status": "empty_df"
+    },
+    "BaostockProvider.fetch_fundamentals_history": {
+      "status": "ok",
+      "rows": 818,
+      "columns": [
+        "debt_to_equity",
+        "current_ratio",
+        "quick_ratio"
+      ],
+      "head": [
+        {
+          "debt_to_equity": 12.356200000000001,
+          "current_ratio": 6.942732,
+          "quick_ratio": 5.668325
+        },
+        {
+          "debt_to_equity": 12.356200000000001,
+          "current_ratio": 6.942732,
+          "quick_ratio": 5.668325
+        },
+        {
+          "debt_to_equity": 12.356200000000001,
+          "current_ratio": 6.942732,
+          "quick_ratio": 5.668325
+        }
+      ]
+    },
+    "YfinanceProvider.fetch_kline_daily": {
+      "status": "empty_df"
+    },
+    "YfinanceProvider.fetch_market_index": {
+      "status": "null"
+    }
+  },
+  "field_authority": {
+    "TencentProvider/quote_field_gaps": {
+      "status": "has_gaps",
+      "gaps": [
+        [
+          "bid1_price",
+          1322.97
+        ],
+        [
+          "ask1_price",
+          1323.0
+        ]
+      ]
+    },
+    "TencentProvider/quote": {
+      "status": "ok",
+      "price": 1323.0
+    },
+    "SinaProvider/quote": {
+      "status": "ok",
+      "price": 1323.0
+    },
+    "EastmoneyProvider/quote": {
+      "error": "ProviderError: eastmoney.fetch_quote(sh600519): GET https://push2.eastmoney.com/api/qt/ulist.np/get 请求失败: HTTPSConnectionPool(host='push2.eastmoney.com', port=443): Max retries exceeded with url: /api/qt/ulist.np/get?fltt=2&invt=2&fields=f2%2Cf3%2Cf4%2Cf5%2Cf6%2Cf12%2Cf14%2Cf15%2Cf16%2Cf17%2Cf18%2Cf62%2Cf104%2Cf105%2Cf106&secids=1.600519 (Caused by ProtocolError('Connection aborted.', RemoteDisconnected('Remote end closed connection without response')))"
+    },
+    "AkshareProvider/fundamentals_field_gaps": {
+      "status": "has_gaps",
+      "gaps": [
+        [
+          "roe_ttm",
+          10.57
+        ],
+        [
+          "eps_ttm",
+          21.76
+        ],
+        [
+          "revenue_yoy",
+          6.336009
+        ],
+        [
+          "profit_yoy",
+          1.471418
+        ]
+      ]
+    },
+    "BaostockProvider/fundamentals_field_gaps": {
+      "status": "has_gaps",
+      "gaps": [
+        [
+          "roe_ttm",
+          10.5687
+        ],
+        [
+          "eps_ttm",
+          66.052123
+        ],
+        [
+          "profit_yoy",
+          0.013653
+        ]
+      ]
+    }
+  },
+  "routing_policy": {
+    "quote/fetch_quote": {
+      "capability": "quote",
+      "method": "fetch_quote",
+      "expected_providers": [
+        "TencentProvider",
+        "SinaProvider",
+        "EastmoneyProvider"
+      ],
+      "routing_policy": {
+        "strategy": "merge_fields",
+        "skip_fields": [
+          "symbol",
+          "code",
+          "market",
+          "name",
+          "currency"
+        ],
+        "ffill": false
+      },
+      "issues": []
+    },
+    "quote/fetch_quotes": {
+      "capability": "quote",
+      "method": "fetch_quotes",
+      "expected_providers": [
+        "TencentProvider",
+        "SinaProvider",
+        "EastmoneyProvider"
+      ],
+      "routing_policy": {
+        "strategy": "merge_fields",
+        "skip_fields": [
+          "symbol",
+          "code",
+          "market",
+          "name",
+          "currency"
+        ],
+        "ffill": false
+      },
+      "issues": []
+    },
+    "kline_daily/fetch_kline_daily": {
+      "capability": "kline_daily",
+      "method": "fetch_kline_daily",
+      "expected_providers": [
+        "TencentProvider",
+        "SinaProvider",
+        "BaostockProvider",
+        "YfinanceProvider"
+      ],
+      "routing_policy": {
+        "strategy": "merge_frames",
+        "skip_fields": [],
+        "ffill": false
+      },
+      "issues": []
+    },
+    "kline_minute/fetch_kline_minute": {
+      "capability": "kline_minute",
+      "method": "fetch_kline_minute",
+      "expected_providers": [
+        "TencentProvider",
+        "SinaProvider"
+      ],
+      "routing_policy": {
+        "strategy": "merge_frames",
+        "skip_fields": [],
+        "ffill": false
+      },
+      "issues": []
+    },
+    "fundamentals/fetch_fundamentals": {
+      "capability": "fundamentals",
+      "method": "fetch_fundamentals",
+      "expected_providers": [
+        "AkshareProvider",
+        "BaostockProvider"
+      ],
+      "routing_policy": {
+        "strategy": "merge_fields",
+        "skip_fields": [
+          "symbol",
+          "name",
+          "industry",
+          "sector"
+        ],
+        "ffill": false
+      },
+      "issues": []
+    },
+    "sector_ranking/fetch_sectors": {
+      "capability": "sector_ranking",
+      "method": "fetch_sectors",
+      "expected_providers": [
+        "EastmoneyProvider",
+        "SinaProvider"
+      ],
+      "routing_policy": {
+        "strategy": "failover",
+        "skip_fields": [],
+        "ffill": false
+      },
+      "issues": []
+    },
+    "sector_constituents/fetch_sector_constituents": {
+      "capability": "sector_constituents",
+      "method": "fetch_sector_constituents",
+      "expected_providers": [
+        "EastmoneyProvider",
+        "SinaProvider"
+      ],
+      "routing_policy": {
+        "strategy": "failover",
+        "skip_fields": [],
+        "ffill": false
+      },
+      "issues": []
+    },
+    "north_flow/fetch_north_flow": {
+      "capability": "north_flow",
+      "method": "fetch_north_flow",
+      "expected_providers": [
+        "EastmoneyProvider",
+        "AkshareProvider"
+      ],
+      "routing_policy": {
+        "strategy": "failover",
+        "skip_fields": [],
+        "ffill": false
+      },
+      "issues": []
+    },
+    "north_flow/fetch_north_flow_history": {
+      "capability": "north_flow",
+      "method": "fetch_north_flow_history",
+      "expected_providers": [
+        "AkshareProvider"
+      ],
+      "routing_policy": {
+        "strategy": "merge_frames",
+        "skip_fields": [],
+        "ffill": false
+      },
+      "issues": []
+    },
+    "market_index/fetch_market_index": {
+      "capability": "market_index",
+      "method": "fetch_market_index",
+      "expected_providers": [
+        "TencentProvider",
+        "SinaProvider",
+        "EastmoneyProvider",
+        "YfinanceProvider"
+      ],
+      "routing_policy": {
+        "strategy": "failover",
+        "skip_fields": [],
+        "ffill": false
+      },
+      "issues": []
+    },
+    "macro/fetch_macro": {
+      "capability": "macro",
+      "method": "fetch_macro",
+      "expected_providers": [
+        "AkshareProvider"
+      ],
+      "routing_policy": {
+        "strategy": "failover",
+        "skip_fields": [],
+        "ffill": false
+      },
+      "issues": []
+    },
+    "fundamentals_history/fetch_fundamentals_history": {
+      "capability": "fundamentals_history",
+      "method": "fetch_fundamentals_history",
+      "expected_providers": [
+        "AkshareProvider",
+        "BaostockProvider"
+      ],
+      "routing_policy": {
+        "strategy": "merge_frames",
+        "skip_fields": [],
+        "ffill": true
+      },
+      "issues": []
+    },
+    "balance_sheet/fetch_balance_sheet": {
+      "capability": "balance_sheet",
+      "method": "fetch_balance_sheet",
+      "expected_providers": [
+        "BaostockProvider"
+      ],
+      "routing_policy": {
+        "strategy": "merge_fields",
+        "skip_fields": [
+          "symbol"
+        ],
+        "ffill": false
+      },
+      "issues": []
+    },
+    "margin_flow/fetch_margin_flow": {
+      "capability": "margin_flow",
+      "method": "fetch_margin_flow",
+      "expected_providers": [
+        "AkshareProvider"
+      ],
+      "routing_policy": {
+        "strategy": "failover",
+        "skip_fields": [],
+        "ffill": false
+      },
+      "issues": []
+    },
+    "fund_flow/fetch_fund_flow": {
+      "capability": "fund_flow",
+      "method": "fetch_fund_flow",
+      "expected_providers": [
+        "AkshareProvider"
+      ],
+      "routing_policy": {
+        "strategy": "merge_frames",
+        "skip_fields": [],
+        "ffill": false
+      },
+      "issues": []
+    },
+    "news_headlines/fetch_news_headlines": {
+      "capability": "news_headlines",
+      "method": "fetch_news_headlines",
+      "expected_providers": [
+        "EastmoneyProvider",
+        "AkshareProvider"
+      ],
+      "routing_policy": {
+        "strategy": "merge_lists",
+        "skip_fields": [],
+        "ffill": false
+      },
+      "issues": []
+    }
+  },
+  "akshare_hk": {
+    "hk00700": {
+      "status": "ok",
+      "fields": [
+        "symbol",
+        "pe_ttm",
+        "pb",
+        "dividend_yield",
+        "roe_ttm",
+        "eps_ttm",
+        "bps",
+        "revenue_ttm",
+        "profit_ttm",
+        "revenue_yoy",
+        "profit_yoy",
+        "timestamp"
+      ]
+    },
+    "hk00700_history": {
+      "status": "ok",
+      "rows": 2187,
+      "columns": [
+        "roe_ttm",
+        "eps_ttm",
+        "profit_yoy",
+        "revenue_yoy"
+      ]
+    },
+    "00700": {
+      "status": "ok",
+      "fields": [
+        "symbol",
+        "pe_ttm",
+        "pb",
+        "dividend_yield",
+        "roe_ttm",
+        "eps_ttm",
+        "bps",
+        "revenue_ttm",
+        "profit_ttm",
+        "revenue_yoy",
+        "profit_yoy",
+        "timestamp"
+      ]
+    },
+    "00700_history": {
+      "status": "ok",
+      "rows": 2187,
+      "columns": [
+        "roe_ttm",
+        "eps_ttm",
+        "profit_yoy",
+        "revenue_yoy"
+      ]
+    },
+    "HK:00700": {
+      "status": "ok",
+      "fields": [
+        "symbol",
+        "pe_ttm",
+        "pb",
+        "dividend_yield",
+        "roe_ttm",
+        "eps_ttm",
+        "bps",
+        "revenue_ttm",
+        "profit_ttm",
+        "revenue_yoy",
+        "profit_yoy",
+        "timestamp"
+      ]
+    },
+    "HK:00700_history": {
+      "status": "ok",
+      "rows": 2187,
+      "columns": [
+        "roe_ttm",
+        "eps_ttm",
+        "profit_yoy",
+        "revenue_yoy"
+      ]
+    },
+    "hk00001": {
+      "status": "ok",
+      "fields": [
+        "symbol",
+        "pe_ttm",
+        "pb",
+        "dividend_yield",
+        "roe_ttm",
+        "eps_ttm",
+        "bps",
+        "revenue_ttm",
+        "profit_ttm",
+        "revenue_yoy",
+        "profit_yoy",
+        "timestamp"
+      ]
+    },
+    "hk00001_history": {
+      "status": "ok",
+      "rows": 2187,
+      "columns": [
+        "roe_ttm",
+        "eps_ttm",
+        "profit_yoy",
+        "revenue_yoy"
+      ]
+    },
+    "hk00005": {
+      "status": "ok",
+      "fields": [
+        "symbol",
+        "pe_ttm",
+        "pb",
+        "dividend_yield",
+        "roe_ttm",
+        "eps_ttm",
+        "bps",
+        "revenue_ttm",
+        "profit_ttm",
+        "revenue_yoy",
+        "profit_yoy",
+        "timestamp"
+      ]
+    },
+    "hk00005_history": {
+      "status": "ok",
+      "rows": 2187,
+      "columns": [
+        "roe_ttm",
+        "eps_ttm",
+        "profit_yoy",
+        "revenue_yoy"
+      ]
+    }
+  }
+}
