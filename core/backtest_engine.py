@@ -19,7 +19,7 @@ WalkForward 验证见 core/walkforward.py。
 from __future__ import annotations
 import logging
 from dataclasses import dataclass, field as dataclass_field
-from datetime import datetime, date
+from datetime import datetime, date  # noqa: F401  # type annotation in dataclass
 from typing import Dict, List, Optional, Literal, Tuple
 from collections import defaultdict
 import numpy as np
