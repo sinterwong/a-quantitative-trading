@@ -271,62 +271,9 @@ def docs():
 # Positions
 # ============================================================
 
-@app.route('/positions', methods=['GET'])
-def get_positions():
-    """
-    GET /positions?refresh=1
-
-    Returns positions with unrealized P&L.
-    refresh=1 fetches latest prices from Tencent Finance first.
-    """
-    refresh = request.args.get('refresh', '0') == '1'
-    svc = get_svc()
-    if refresh:
-        svc.refresh_prices()
-    return ok(positions=svc.get_positions())
-
-
-@app.route('/portfolio/positions', methods=['POST'])
-def upsert_position():
-    """POST /portfolio/positions — upsert a position."""
-    if (e := require_json()):
-        return e
-    body = request.json
-    required = ['symbol', 'shares', 'entry_price']
-    for field in required:
-        if field not in body:
-            return err(f"missing required field: {field}")
-    svc = get_svc()
-    svc.upsert_position(
-        body['symbol'],
-        int(body['shares']),
-        float(body['entry_price']),
-    )
-    return ok(message=f"Position {body['symbol']} updated")
-
-
-# ============================================================
-# Cash
-# ============================================================
-
-@app.route('/cash', methods=['GET'])
-def get_cash():
-    """GET /cash — available cash."""
-    svc = get_svc()
-    return ok(cash=svc.get_cash())
-
-
-@app.route('/portfolio/cash', methods=['POST'])
-def set_cash():
-    """POST /portfolio/cash — set cash amount."""
-    if (e := require_json()):
-        return e
-    body = request.json
-    if 'amount' not in body:
-        return err("missing required field: amount")
-    svc = get_svc()
-    svc.set_cash(float(body['amount']))
-    return ok(message=f"Cash set to {body['amount']}")
+# R2-4 续集：/positions, /portfolio/positions, /cash, /portfolio/cash,
+# /portfolio/summary, /portfolio/daily 6 个端点已拆到
+# backend/api_routes/portfolio.py。
 
 
 # ============================================================
@@ -394,48 +341,6 @@ def record_signal():
         body.get('reason', ''),
     )
     return ok(message="Signal recorded")
-
-
-# ============================================================
-# Portfolio summary
-# ============================================================
-
-@app.route('/portfolio/summary', methods=['GET'])
-def portfolio_summary():
-    """
-    GET /portfolio/summary?refresh=1
-
-    Query params:
-        refresh=1  — fetch latest prices before calculating P&L
-    """
-    refresh = request.args.get('refresh', '1') != '0'
-    svc = get_svc()
-    return ok(**svc.get_portfolio_summary(refresh_prices_now=refresh))
-
-
-@app.route('/portfolio/daily', methods=['GET'])
-def portfolio_daily():
-    """GET /portfolio/daily — recent daily summaries."""
-    svc = get_svc()
-    limit = int(request.args.get('limit', 30))
-    return ok(daily=svc.get_daily_metas(limit=limit))
-
-
-@app.route('/portfolio/daily', methods=['POST'])
-def record_portfolio_daily():
-    """
-    POST /portfolio/daily - record daily meta.
-    Body: {equity, cash, n_signals, n_trades, notes}
-    """
-    body = request.get_json() or {}
-    get_svc().record_daily_meta(
-        equity=float(body.get('equity', 0)),
-        cash=float(body.get('cash', 0)),
-        n_signals=int(body.get('n_signals', 0)),
-        n_trades=int(body.get('n_trades', 0)),
-        note=str(body.get('notes', '')),
-    )
-    return ok(message='daily meta recorded')
 
 
 # ============================================================
@@ -1699,7 +1604,9 @@ def server_error(e):
 # `from backend.api import ...` 拿不到符号。未来新增 blueprint 都在这一段
 # 集中注册，方便审计 URL 命名空间冲突。
 from backend.api_routes.orders import orders_bp  # noqa: E402
+from backend.api_routes.portfolio import portfolio_bp  # noqa: E402
 app.register_blueprint(orders_bp)
+app.register_blueprint(portfolio_bp)
 
 
 if __name__ == '__main__':
