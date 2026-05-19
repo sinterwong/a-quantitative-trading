@@ -101,7 +101,7 @@ jobs:
                core/use_cases/analyze_stock/ \
                core/factors/base.py core/brokers/base.py \
                core/risk_state.py core/audit_log.py core/factor_pipeline.py \
-               core/data_quality.py
+               core/data_quality.py core/regime.py core/event_bus.py
 
       - name: Run pytest (full suite)
         run: |

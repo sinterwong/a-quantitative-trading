@@ -98,6 +98,9 @@ module = [
     "core.audit_log",
     "core.factor_pipeline",
     "core.data_quality",
+    # R3-2 批 4: regime + event_bus
+    "core.regime",
+    "core.event_bus",
 ]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
