@@ -32,14 +32,18 @@ _PATH_PARAM_RE = re.compile(r'<(?:[^:>]+:)?([^>]+)>')
 
 
 def _load_flask_app():
-    """加载 backend/api.py 的 Flask app(避免污染 sys.modules)。"""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        'api', os.path.join(BACKEND_DIR, 'api.py'),
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.app
+    """加载 backend/api.py 的 Flask app。
+
+    必须用 ``backend.api`` 的标准包名导入: R2-4 把 11 个 Blueprint
+    拆出去后, 每个 ``backend/api_routes/*.py`` 都会 ``from backend.api
+    import ...`` 共享 helper。若改用 ``spec_from_file_location('api', …)``
+    把模块塞进 ``sys.modules['api']``, Blueprint 模块再 import
+    ``backend.api`` 时 sys.modules 里没有匹配项, Python 会重头再执行一遍
+    ``backend/api.py`` —— 在第二次执行的底部 import 撞上半初始化的
+    ``backend.api_routes.analysis`` 就抛 ImportError (circular)。
+    """
+    from backend.api import app
+    return app
 
 
 def _convert_path(flask_rule: str) -> str:
