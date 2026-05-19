@@ -85,14 +85,16 @@ jobs:
           pip install ruff==0.15.13
           ruff check .
 
-      - name: Mypy strict (R3-1 选定核心基础设施)
+      - name: Mypy strict (R3-1 / R3-2 选定核心模块)
         run: |
-          # R3-1: 只对 R0-R2 新写、注解完整的核心模块开 strict。pyproject.toml
-          # [[tool.mypy.overrides]] 配置具体范围。存量代码 R3-2 持续整改后逐步纳入。
+          # R3-1 / R3-2: 对 R0-R2 新写模块 + 关键领域基类 (factor base /
+          # broker base) 开 strict。具体规则见 pyproject.toml
+          # [[tool.mypy.overrides]]。存量代码持续整改后逐步纳入。
           pip install mypy
           mypy core/singleton.py core/lifecycle.py core/idempotency.py \
                core/errors.py core/config_defaults.py \
-               core/use_cases/__init__.py core/use_cases/submit_order.py
+               core/use_cases/__init__.py core/use_cases/submit_order.py \
+               core/factors/base.py core/brokers/base.py
 
       - name: Run pytest (full suite)
         run: |

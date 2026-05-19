@@ -89,7 +89,7 @@ class Factor(ABC):
         默认逻辑：z > threshold → SELL，z < -threshold → BUY
         子类可覆盖。
         """
-        signals = []
+        signals: List[Signal] = []
         latest = factor_values.iloc[-1]
         direction: Literal['BUY', 'SELL']
         if latest < -threshold:

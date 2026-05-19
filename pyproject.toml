@@ -76,6 +76,10 @@ module = [
     "core.config_defaults",
     "core.use_cases",
     "core.use_cases.submit_order",
+    # R3-2: 关键公共接口纳入 strict (review 指出 factor / broker 是
+    # use_case 之外最重要的"领域基类")
+    "core.factors.base",
+    "core.brokers.base",
 ]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true

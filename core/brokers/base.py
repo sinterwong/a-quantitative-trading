@@ -60,7 +60,7 @@ from abc import abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Literal, Optional, Set
+from typing import Any, Dict, List, Literal, Optional, Set
 
 from core.oms import BrokerAdapter, Fill, Order, Position
 
@@ -98,7 +98,7 @@ class AccountInfo:
     margin_ratio: float = 0.0       # 保证金占用比（期货用）
     fetched_at: datetime = field(default_factory=datetime.now)
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             'account_id': self.account_id,
             'broker_name': self.broker_name,
@@ -145,7 +145,7 @@ class QuoteData:
     def mid(self) -> float:
         return (self.bid + self.ask) / 2 if self.bid > 0 and self.ask > 0 else self.last
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             'symbol': self.symbol,
             'last': self.last,
@@ -420,7 +420,7 @@ class BrokerBase(BrokerAdapter):
         """向后兼容 BrokerAdapter.cancel()。"""
         return self.cancel_order(order_id)
 
-    def quote(self, symbol: str) -> Dict:
+    def quote(self, symbol: str) -> Dict[str, Any]:
         """向后兼容 BrokerAdapter.quote()，返回旧式字典。"""
         q = self.get_quote(symbol)
         return {
