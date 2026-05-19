@@ -14,7 +14,12 @@ import sys
 def start_api_server(host: str, port: int, logger) -> None:
     """阻塞式启动 Flask app(werkzeug make_server,threaded=True)。
 
-    `backend/api.py` 通过 importlib 加载,避免在 sys.modules 内出现两份 api 实例。
+    必须用 ``backend.api`` 标准包名导入: R2-4 把 Blueprint 拆出去后,
+    ``backend/api_routes/*.py`` 都会 ``from backend.api import ...``。
+    若改用 ``spec_from_file_location('api', …)`` 把模块塞进
+    ``sys.modules['api']``, Blueprint 再 import ``backend.api`` 时找不到,
+    Python 会重头执行一遍 ``backend/api.py`` —— 撞上半初始化的
+    ``backend.api_routes.analysis`` 触发 ImportError。
     """
     BACKEND_DIR = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -26,15 +31,10 @@ def start_api_server(host: str, port: int, logger) -> None:
     os.environ['FLASK_ENV'] = 'production'
 
     from werkzeug.serving import make_server
-    import importlib.util
 
-    spec = importlib.util.spec_from_file_location(
-        'api', os.path.join(BACKEND_DIR, 'api.py'),
-    )
-    api = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(api)
+    from backend.api import app as flask_app
 
-    server = make_server(host, port, api.app, threaded=True, passthrough_errors=False)
+    server = make_server(host, port, flask_app, threaded=True, passthrough_errors=False)
     logger.info('API running on http://%s:%s', host, port)
     try:
         server.serve_forever()

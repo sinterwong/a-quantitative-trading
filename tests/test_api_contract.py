@@ -31,13 +31,12 @@ def _normalize_path(rule: str) -> str:
 class TestOpenAPIContract(unittest.TestCase):
 
     def setUp(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            'api', str(PROJ_DIR / 'backend' / 'api.py'),
-        )
-        self.api_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(self.api_module)
-        self.app = self.api_module.app
+        # R2-4 之后必须走标准包路径; spec_from_file_location('api', …) 会
+        # 让 backend.api_routes.* 的 `from backend.api import ...` 看不到
+        # 同一份模块,触发循环 import。
+        import backend.api as api_module
+        self.api_module = api_module
+        self.app = api_module.app
 
         with open(OPENAPI_PATH, encoding='utf-8') as f:
             self.spec = json.load(f)
@@ -93,12 +92,8 @@ class TestSmokeEndpoints(unittest.TestCase):
     """对 read-only GET 端点做冒烟回归(确保未引入 500)。"""
 
     def setUp(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            'api', str(PROJ_DIR / 'backend' / 'api.py'),
-        )
-        api = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(api)
+        # 走标准包路径,避免 spec_from_file_location 触发循环 import。
+        import backend.api as api
         self.client = api.app.test_client()
 
     def test_health_returns_200(self):
@@ -141,12 +136,8 @@ class TestResponseEnvelopeSchema(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            'api', str(PROJ_DIR / 'backend' / 'api.py'),
-        )
-        api = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(api)
+        # 走标准包路径,避免 spec_from_file_location 触发循环 import。
+        import backend.api as api
         cls.client = api.app.test_client()
 
         with open(OPENAPI_PATH, encoding='utf-8') as f:
