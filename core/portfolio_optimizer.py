@@ -36,10 +36,13 @@ core/portfolio_optimizer.py — 均值方差组合优化框架
 
 from __future__ import annotations
 
+import logging
 import warnings
 from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +129,12 @@ class PortfolioOptimizer:
         self._mu = self.returns.mean().values           # shape (N,)
         self._cov = self._compute_cov()                 # shape (N, N)
 
+        # R1-2: 显式 fallback 信号化。每次调用 max_sharpe / black_litterman /
+        # max_diversification 等"可能退化为 min_variance"的方法时，先清空
+        # 该字段；若发生降级再写入原因。调用方读取 `optimizer.last_fallback`
+        # 即可判断本次结果是否经过 fallback。None 表示无降级。
+        self.last_fallback: Optional[str] = None
+
     # ------------------------------------------------------------------
     # 1. 全局最小方差（GMV）
     # ------------------------------------------------------------------
@@ -180,12 +189,14 @@ class PortfolioOptimizer:
         -------
         pd.Series — 权重
         """
+        self.last_fallback = None
         rf = rf if rf is not None else self.rf
         excess_mu = self._mu - rf
 
         # 若超额收益均为负，退化为 GMV
         if np.all(excess_mu <= 0):
-            warnings.warn("所有资产超额收益为负，退化为最小方差组合")
+            self.last_fallback = 'max_sharpe→min_variance: 所有资产超额收益为负'
+            logger.warning(self.last_fallback)
             return self.min_variance()
 
         from scipy.optimize import minimize
@@ -322,7 +333,10 @@ class PortfolioOptimizer:
         -------
         pd.Series — 权重
         """
+        self.last_fallback = None
         if not views:
+            self.last_fallback = 'black_litterman→min_variance: views 为空'
+            logger.warning(self.last_fallback)
             return self.min_variance()
 
         cov = self._cov
@@ -336,6 +350,11 @@ class PortfolioOptimizer:
         # 步骤 2：构建观点矩阵
         valid_views = {k: v for k, v in views.items() if k in asset_idx}
         if not valid_views:
+            self.last_fallback = (
+                f'black_litterman→min_variance: 没有 view 命中已知资产 '
+                f'(views.keys={list(views)[:5]}…)'
+            )
+            logger.warning(self.last_fallback)
             return self.min_variance()
 
         k = len(valid_views)
@@ -365,8 +384,12 @@ class PortfolioOptimizer:
             A = tau_cov_inv + P.T @ omega_inv @ P
             b = tau_cov_inv @ pi + P.T @ omega_inv @ Q
             mu_bl = np.linalg.solve(A, b)
-        except np.linalg.LinAlgError:
-            warnings.warn("BL 矩阵求解失败，退化为最小方差")
+        except np.linalg.LinAlgError as exc:
+            self.last_fallback = (
+                f'black_litterman→min_variance: BL 矩阵求解失败 ({exc}); '
+                f'通常是 Omega 或 tau*Σ 奇异'
+            )
+            logger.warning(self.last_fallback)
             return self.min_variance()
 
         # 步骤 4：用 BL 后验均值替换样本均值，重新优化
