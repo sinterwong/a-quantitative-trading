@@ -5,9 +5,9 @@ Phase 6 核心组件：
 
 1. BacktestEngine        — 事件驱动回测（支持多标的/组合/风控）
 2. PerformanceAnalyzer    — 绩效归因（夏普/最大回撤/IC/IR/胜率/滑点）
-3. FactorResearcher       — 多因子研究（网格搜索/IC分析/WFA）
-4. SignalBacktester       — 快速单因子回测（用于因子筛选）
-5. WalkForwardAnalyzer    — Walk-Forward 滚动验证
+
+WalkForward 验证见 core/walkforward.py。
+（R2-3: core/research.py 已删除，0 外部消费者的死代码）
 
 设计原则：
   - 回测代码 = 实盘代码（同一 Signal 接口）

@@ -45,9 +45,9 @@ from core.backtest_engine import (
     BacktestEngine, BacktestConfig, BacktestResult,
     PerformanceAnalyzer, TradeRecord, PositionSnapshot,
 )
-from core.research import (
-    FactorResearcher, WalkForwardAnalyzer, FactorAnalysisResult,
-)
+# R2-3: 删除 core/research.py（1088 行死代码，0 个外部消费者）。
+# 之前 core.research 与 core.walkforward 同名 WalkForwardAnalyzer 是混淆源。
+# 实际使用的 WalkForwardAnalyzer 在 core.walkforward，按需直接 import。
 
 __all__ = [
     # EventBus
@@ -72,6 +72,4 @@ __all__ = [
     # Backtest
     'BacktestEngine', 'BacktestConfig', 'BacktestResult',
     'PerformanceAnalyzer', 'TradeRecord', 'PositionSnapshot',
-    # Research
-    'FactorResearcher', 'WalkForwardAnalyzer', 'FactorAnalysisResult',
 ]
