@@ -50,7 +50,11 @@ from core.data_gateway.capabilities import MacroIndicator
 app = Flask(__name__)
 
 # ─── Rate limiting (simple in-memory token bucket) ───────────────────
+# R0-2 收尾: Flask WSGI 多线程下，两个并发请求同时读-改-写 _RATE_LIMIT[key]
+# 列表会丢失 timestamp 或踩到"dictionary changed size during iteration"。
+# 用 _RATE_LIMIT_LOCK 序列化 bucket 维护。
 _RATE_LIMIT = {}          # client_key -> [timestamp, ...]
+_RATE_LIMIT_LOCK = threading.Lock()
 _RATE_WINDOW = 60           # seconds
 _RATE_MAX    = 10           # max requests per window
 
@@ -65,19 +69,18 @@ def rate_limit(max_per_window: int = None, window_seconds: int = None):
         def wrapped(*args, **kwargs):
             now = time.time()
             key = request.remote_addr or 'unknown'
-            # Prune old entries
             cutoff = now - ws
-            if key in _RATE_LIMIT:
-                _RATE_LIMIT[key] = [t for t in _RATE_LIMIT[key] if t > cutoff]
-            else:
-                _RATE_LIMIT[key] = []
-            if len(_RATE_LIMIT[key]) >= mw:
-                return jsonify({
-                    'status': 'error',
-                    'code': 429,
-                    'message': f'Too many requests (max {mw}/{ws}s). Please retry later.',
-                }), 429
-            _RATE_LIMIT[key].append(now)
+            with _RATE_LIMIT_LOCK:
+                bucket = [t for t in _RATE_LIMIT.get(key, []) if t > cutoff]
+                if len(bucket) >= mw:
+                    _RATE_LIMIT[key] = bucket
+                    return jsonify({
+                        'status': 'error',
+                        'code': 429,
+                        'message': f'Too many requests (max {mw}/{ws}s). Please retry later.',
+                    }), 429
+                bucket.append(now)
+                _RATE_LIMIT[key] = bucket
             return f(*args, **kwargs)
         return wrapped
     return decorator
@@ -93,6 +96,7 @@ def rate_limit(max_per_window: int = None, window_seconds: int = None):
 _PUBLIC_PATHS = frozenset({'/health', '/docs', '/metrics'})
 
 _GLOBAL_RATE_LIMIT: dict = {}    # ip -> [timestamps...]
+_GLOBAL_RATE_LIMIT_LOCK = threading.Lock()  # R0-2 收尾：同 _RATE_LIMIT
 
 
 def _global_rl_max() -> int:
@@ -145,18 +149,18 @@ def _check_auth_and_rate_limit():
         now = time.time()
         cutoff = now - 60.0
         key = request.remote_addr or 'unknown'
-        bucket = _GLOBAL_RATE_LIMIT.get(key, [])
-        bucket = [t for t in bucket if t > cutoff]
-        if len(bucket) >= rl_max:
+        with _GLOBAL_RATE_LIMIT_LOCK:
+            bucket = [t for t in _GLOBAL_RATE_LIMIT.get(key, []) if t > cutoff]
+            if len(bucket) >= rl_max:
+                _GLOBAL_RATE_LIMIT[key] = bucket
+                return jsonify({
+                    'status': 'error',
+                    'code': 429,
+                    'message': f'global rate limit exceeded (>{rl_max}/min)',
+                    'timestamp': datetime.now().isoformat(),
+                }), 429
+            bucket.append(now)
             _GLOBAL_RATE_LIMIT[key] = bucket
-            return jsonify({
-                'status': 'error',
-                'code': 429,
-                'message': f'global rate limit exceeded (>{rl_max}/min)',
-                'timestamp': datetime.now().isoformat(),
-            }), 429
-        bucket.append(now)
-        _GLOBAL_RATE_LIMIT[key] = bucket
 
     return None
 
