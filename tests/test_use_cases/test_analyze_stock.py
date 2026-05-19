@@ -58,24 +58,6 @@ def test_unknown_symbol_raises_use_case_error():
     assert exc_info.value.code == 'INVALID_SYMBOL'
 
 
-def test_backward_compat_imports_still_work():
-    """旧 import 路径 backend.services.single_stock_analysis 仍可用。"""
-    from backend.services.single_stock_analysis import (
-        AnalysisRequest as ARShim,
-        AnalysisReport as ARpShim,
-        analyze_a_share as a_shim,
-        analyze_hk_share as hk_shim,
-        detect_market,
-        _compute_risk_metrics,
-        _make_recommendation,
-        _safe_json_extract,
-    )
-    from core.use_cases.analyze_stock import (
-        AnalysisRequest, AnalysisReport,
-        analyze_a_share, analyze_hk_share,
-    )
-    # 完全是同一个对象,不是副本
-    assert ARShim is AnalysisRequest
-    assert ARpShim is AnalysisReport
-    assert a_shim is analyze_a_share
-    assert hk_shim is analyze_hk_share
+# R2-2 收尾(本 PR): backend.services.single_stock_analysis 转发 shim
+# 已删除,所有调用方直接 import core.use_cases.analyze_stock。
+# 对应的 test_backward_compat_imports_still_work 用例同步删除。
