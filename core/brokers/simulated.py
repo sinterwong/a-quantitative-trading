@@ -34,6 +34,7 @@ from typing import Dict, List, Literal, Optional, Set
 
 import numpy as np
 
+from core import config_defaults as _defaults
 from core.brokers.base import (
     AccountInfo, BrokerBase, MarketType, OrderStatus, QuoteData,
 )
@@ -48,12 +49,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SimConfig:
-    """SimulatedBroker 配置。"""
-    initial_cash: float = 1_000_000.0  # 初始资金
-    commission_rate: float = 0.0003    # 佣金率（万3）
-    min_commission: float = 5.0        # 最低佣金
-    stamp_tax_rate: float = 0.001      # 印花税（A股卖出 0.1%）
-    slippage_bps: float = 5.0          # 滑点（基点），买贵卖便宜
+    """SimulatedBroker 配置。R3-4: 数值默认从 core.config_defaults 统一引用。"""
+    initial_cash: float = 1_000_000.0  # 初始资金（仿真专属，不放 config_defaults）
+    commission_rate: float = _defaults.COMMISSION_RATE
+    min_commission: float = 5.0        # 最低佣金（仿真特有，不放 config_defaults）
+    stamp_tax_rate: float = _defaults.STAMP_TAX_RATE
+    slippage_bps: float = _defaults.SLIPPAGE_BPS
     lot_size: int = 100                # 最小下单单位（A股1手=100股）
     enforce_lot: bool = True           # 是否强制手数检查
     enforce_market_hours: bool = False # 是否模拟市场时间限制（默认关闭方便测试）
