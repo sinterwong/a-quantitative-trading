@@ -101,6 +101,8 @@ class Fundamentals:
     roe_ttm: float = 0.0         # %
     eps_ttm: float = 0.0
     bps: float = 0.0
+    net_margin: float = 0.0        # % 销售净利率（npMargin）
+    gross_margin: float = 0.0      # % 销售毛利率（gpMargin）
 
     # 财报
     revenue_ttm: float = 0.0     # 元
