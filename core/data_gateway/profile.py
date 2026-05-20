@@ -120,16 +120,17 @@ def build_profile(
     prof.provenance = _collect_profile_provenance(gw, symbol, prof)
 
     # completeness: 7 个切片(headlines 用是否非空计) 平均
-    slots_filled = [
-        prof.quote is not None,
-        prof.fundamentals is not None,
-        prof.balance_sheet is not None,
-        prof.margin is not None,
-        prof.fund_flow_latest is not None,
-        bool(prof.headlines),
-        prof.macro is not None,
+    slots = [
+        ("quote", prof.quote is not None),
+        ("fundamentals", prof.fundamentals is not None),
+        ("balance_sheet", prof.balance_sheet is not None),
+        ("margin", prof.margin is not None),
+        ("fund_flow", prof.fund_flow_latest is not None),
+        ("headlines", bool(prof.headlines)),
+        ("macro", prof.macro is not None),
     ]
-    prof.completeness = sum(slots_filled) / len(slots_filled)
+    prof.completeness = sum(1 for _, ok in slots if ok) / len(slots)
+    prof.missing_capabilities = [name for name, ok in slots if not ok]
 
     return prof
 

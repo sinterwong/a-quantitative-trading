@@ -136,6 +136,7 @@ def merge_field_level(
     if len(cands) == 1:
         only = cands[0]
         prov = {f.name: only.provider for f in fields(only.obj)}
+        _stamp_confidence(only.obj, [only.health])
         return only.obj, prov
 
     cls = type(cands[0].obj)
@@ -187,7 +188,26 @@ def merge_field_level(
             if div > 0.0:
                 provenance[f"{fname}{DIVERGENCE_SUFFIX}"] = f"{div:.4f}"
 
-    return cls(**merged_values), provenance
+    merged_obj = cls(**merged_values)
+    _stamp_confidence(merged_obj, [c.health for c in cands])
+    return merged_obj, provenance
+
+
+def _stamp_confidence(obj: Any, healths: List[float]) -> None:
+    """如果 dataclass 有 `confidence` 字段，写入贡献源健康度平均值。
+
+    Quote 等 schema 在 schemas.py 中声明了 `confidence: float = 1.0`，
+    其他没有该字段的 dataclass 不受影响（getattr 守卫）。
+    """
+    if not hasattr(obj, "confidence"):
+        return
+    if not healths:
+        return
+    avg = sum(healths) / len(healths)
+    try:
+        obj.confidence = max(0.0, min(1.0, float(avg)))
+    except (TypeError, ValueError):  # pragma: no cover - 数据类型保护
+        pass
 
 
 __all__ = [

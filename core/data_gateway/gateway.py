@@ -217,6 +217,20 @@ def _breaker_for(provider_name: str, capability: Capability):
         return None
 
 
+def _stale_seconds(ts: datetime) -> int:
+    """从 dataclass.timestamp 计算缓存陈旧度（秒）。
+
+    时区无关：用本地 datetime.now() 与 ts 直接相减，假设 provider 写入时也
+    用本地时间（schemas.py 默认值就是 datetime.now()）。负值（时钟漂移）
+    归零，避免下游策略误判。
+    """
+    try:
+        delta = (datetime.now() - ts).total_seconds()
+    except (TypeError, ValueError):
+        return 0
+    return max(0, int(delta))
+
+
 # ─── Gateway ──────────────────────────────────────────────────────────────────
 
 
@@ -881,6 +895,7 @@ class DataGateway:
         cache_key = f"fundamentals:{symbol}"
         cached = self._cache.get(cache_key)
         if cached is not None:
+            cached.stale_seconds = _stale_seconds(cached.timestamp)
             return cached
 
         market = Market.GLOBAL  # 基本面数据跨市场统一，用 GLOBAL 查所有 provider
@@ -1020,6 +1035,7 @@ class DataGateway:
         # BalanceSheet 是 dataclass 不是 DataFrame，L2 落盘对它无意义，只用 L1
         cached = self._cache.get(cache_key)
         if cached is not None:
+            cached.stale_seconds = _stale_seconds(cached.timestamp)
             return cached
 
         market = detect_market(symbol)
