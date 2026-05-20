@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -364,10 +363,10 @@ class TestRateLimiter(unittest.TestCase):
         self.assertFalse(rl.can_send('test_key'))
 
     def test_can_send_after_interval(self):
+        """R3-3: 不再依赖 time.sleep(0.01)；间隔=0 时 mark_sent 后立即可再发。"""
         from core.alerting import _RateLimiter
-        rl = _RateLimiter(min_interval_sec=0)  # 0秒间隔 → 立即可再发
+        rl = _RateLimiter(min_interval_sec=0)
         rl.mark_sent('test_key')
-        time.sleep(0.01)
         self.assertTrue(rl.can_send('test_key'))
 
     def test_different_keys_independent(self):

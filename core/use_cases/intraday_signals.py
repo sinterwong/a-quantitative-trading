@@ -16,7 +16,7 @@ core/use_cases/intraday_signals.py — 盘中信号生成 use case (P2-3)
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 
 @dataclass
@@ -36,7 +36,7 @@ class IntradaySignalCandidate:
     direction: str = 'BUY'
     reason: str = ''
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             'symbol': self.symbol,
             'score': round(float(self.score), 6),
@@ -48,10 +48,10 @@ class IntradaySignalCandidate:
 @dataclass
 class IntradaySignalResponse:
     candidates: List[IntradaySignalCandidate] = field(default_factory=list)
-    skipped: List[dict] = field(default_factory=list)
+    skipped: List[Dict[str, Any]] = field(default_factory=list)
     threshold_used: float = 0.0
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             'candidates': [c.to_dict() for c in self.candidates],
             'skipped': self.skipped,
@@ -73,7 +73,7 @@ def generate_intraday_signals(
     返回的候选按 score 降序,便于 caller 取 top-N。
     """
     candidates: List[IntradaySignalCandidate] = []
-    skipped: List[dict] = []
+    skipped: List[Dict[str, Any]] = []
 
     for sym in req.watched_symbols:
         if sym in req.excluded_symbols:

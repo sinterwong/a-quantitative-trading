@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 CASH_RATIO_WARN = 0.05      # 现金占比 <5% 触发 WARN
@@ -27,7 +27,7 @@ class SystemHealthReport:
     equity: float = 0.0
     latest_analysis: Optional[str] = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             'level': self.level,
             'reasons': self.reasons,

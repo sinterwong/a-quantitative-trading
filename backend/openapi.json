@@ -14,7 +14,7 @@
     "/alerts/clear": {
       "post": {
         "summary": "POST /alerts/clear",
-        "operationId": "post_clear_alerts",
+        "operationId": "post_watchlist_alerts.clear_alerts",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -81,7 +81,7 @@
     "/alerts/history": {
       "get": {
         "summary": "GET /alerts/history",
-        "operationId": "get_alerts_history",
+        "operationId": "get_watchlist_alerts.alerts_history",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -148,7 +148,7 @@
     "/analysis/health": {
       "get": {
         "summary": "GET /analysis/health — 系统健康状态 (use case: system_health)。",
-        "operationId": "get_analysis_health",
+        "operationId": "get_analysis.analysis_health",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -214,8 +214,8 @@
     },
     "/analysis/monthly": {
       "get": {
-        "summary": "GET /analysis/monthly?year=2026&month=4&include_chart=1",
-        "operationId": "get_monthly_performance",
+        "summary": "GET /analysis/monthly?year=2026&month=4&include_chart=1 — 月度报告。",
+        "operationId": "get_analysis.monthly_performance",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -281,8 +281,8 @@
     },
     "/analysis/monthly/history": {
       "get": {
-        "summary": "GET /analysis/monthly/history?limit=12",
-        "operationId": "get_monthly_history",
+        "summary": "GET /analysis/monthly/history?limit=12 — 历史月度快照。",
+        "operationId": "get_analysis.monthly_history",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -348,8 +348,8 @@
     },
     "/analysis/monthly/snapshot": {
       "post": {
-        "summary": "POST /analysis/monthly/snapshot",
-        "operationId": "post_record_monthly_snapshot",
+        "summary": "POST /analysis/monthly/snapshot — 写入月度快照 (Cron 月末调用)。",
+        "operationId": "post_analysis.record_monthly_snapshot",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -415,8 +415,8 @@
     },
     "/analysis/pairs_trading": {
       "post": {
-        "summary": "POST /analysis/pairs_trading",
-        "operationId": "post_pairs_trading_signal",
+        "summary": "POST /analysis/pairs_trading — 协整配对筛选 + 当前信号。",
+        "operationId": "post_analysis.pairs_trading_signal",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -483,7 +483,7 @@
     "/analysis/run": {
       "post": {
         "summary": "POST /analysis/run — 触发每日分析 (use case: daily_analysis)。",
-        "operationId": "post_run_analysis",
+        "operationId": "post_analysis.run_analysis",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -549,8 +549,8 @@
     },
     "/analysis/sector/compare": {
       "post": {
-        "summary": "POST /analysis/sector/compare",
-        "operationId": "post_sector_compare",
+        "summary": "POST /analysis/sector/compare — 行业板块横向对比。",
+        "operationId": "post_analysis.sector_compare",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -616,8 +616,8 @@
     },
     "/analysis/sector_rotation": {
       "post": {
-        "summary": "POST /analysis/sector_rotation",
-        "operationId": "post_sector_rotation_signal",
+        "summary": "POST /analysis/sector_rotation — 基于动量的行业 ETF 轮动。",
+        "operationId": "post_analysis.sector_rotation_signal",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -684,7 +684,7 @@
     "/analysis/status": {
       "get": {
         "summary": "GET /analysis/status — 最近一次每日分析: daily_meta + 持久化 JSON 内容。",
-        "operationId": "get_analysis_status",
+        "operationId": "get_analysis.analysis_status",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -750,8 +750,8 @@
     },
     "/analysis/stock/a": {
       "post": {
-        "summary": "POST /analysis/stock/a",
-        "operationId": "post_analyze_a_stock_endpoint",
+        "summary": "POST /analysis/stock/a — A 股综合分析（行情 + 因子 + 风险 + 可选 ML/NLP/LLM）。",
+        "operationId": "post_analysis.analyze_a_stock_endpoint",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -817,8 +817,8 @@
     },
     "/analysis/stock/hk": {
       "post": {
-        "summary": "POST /analysis/stock/hk",
-        "operationId": "post_analyze_hk_stock_endpoint",
+        "summary": "POST /analysis/stock/hk — 港股综合分析（行情 + 因子 + 风险 + 可选 LLM）。",
+        "operationId": "post_analysis.analyze_hk_stock_endpoint",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -884,8 +884,8 @@
     },
     "/backtest/run": {
       "post": {
-        "summary": "POST /backtest/run",
-        "operationId": "post_backtest_run",
+        "summary": "POST /backtest/run — 单标的回测，返回绩效 KPI（不含 equity 序列）。",
+        "operationId": "post_research.backtest_run",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -952,7 +952,7 @@
     "/cash": {
       "get": {
         "summary": "GET /cash — available cash.",
-        "operationId": "get_get_cash",
+        "operationId": "get_portfolio.get_cash",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -1018,8 +1018,8 @@
     },
     "/data/daily/{code}": {
       "get": {
-        "summary": "GET /data/daily/<code>",
-        "operationId": "get_data_daily",
+        "summary": "GET /data/daily/<code>?days=30&start=YYYY-MM-DD&end=YYYY-MM-DD",
+        "operationId": "get_data.data_daily",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -1095,8 +1095,8 @@
     },
     "/data/fund_flow": {
       "get": {
-        "summary": "GET /data/fund_flow",
-        "operationId": "get_data_fund_flow",
+        "summary": "GET /data/fund_flow?source=market|top|<code>&period=5日排行&top=20",
+        "operationId": "get_data.data_fund_flow",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -1162,8 +1162,8 @@
     },
     "/data/macro/{indicator}": {
       "get": {
-        "summary": "GET /data/macro/PMI",
-        "operationId": "get_get_macro_data",
+        "summary": "GET /data/macro/{PMI|M2|CREDIT} — 宏观指标最新值。",
+        "operationId": "get_market.get_macro_data",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -1239,8 +1239,8 @@
     },
     "/data/news/{symbol}": {
       "get": {
-        "summary": "GET /data/news/<symbol>?n=5 — 标的最新新闻标题列表(东方财富)。",
-        "operationId": "get_data_news",
+        "summary": "GET /data/news/<symbol>?n=5 — 最新新闻标题（东方财富）。",
+        "operationId": "get_market.data_news",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -1316,8 +1316,8 @@
     },
     "/data/realtime/{symbol}": {
       "get": {
-        "summary": "GET /data/realtime/<symbol> — 轻量实时行情接口。",
-        "operationId": "get_data_realtime",
+        "summary": "GET /data/realtime/<symbol> — 轻量实时行情。",
+        "operationId": "get_data.data_realtime",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -1393,8 +1393,8 @@
     },
     "/data/status": {
       "get": {
-        "summary": "GET /data/status",
-        "operationId": "get_data_status",
+        "summary": "GET /data/status — registered fetchers + circuit breaker state.",
+        "operationId": "get_data.data_status",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -1527,8 +1527,8 @@
     },
     "/fundamentals/{symbol}": {
       "get": {
-        "summary": "GET /fundamentals/600036.SH",
-        "operationId": "get_get_fundamentals",
+        "summary": "GET /fundamentals/<symbol> — PE / PB / 股息率 / 总市值 等。",
+        "operationId": "get_market.get_fundamentals",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -1671,8 +1671,8 @@
     },
     "/llm/analyze": {
       "post": {
-        "summary": "POST /llm/analyze — LLM 独立信号审核 (services.llm.service.signal_review 入口)。",
-        "operationId": "post_llm_analyze",
+        "summary": "POST /llm/analyze — LLM 独立信号审核 (services.llm.service.signal_review)。",
+        "operationId": "post_ops.llm_analyze",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -1738,8 +1738,8 @@
     },
     "/market/status": {
       "get": {
-        "summary": "GET /market/status — 当前 A 股是否开盘、当前时段、下次切换时间。",
-        "operationId": "get_market_status",
+        "summary": "GET /market/status — A 股是否开盘、当前时段、下次切换时间。",
+        "operationId": "get_market.market_status",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -1805,8 +1805,8 @@
     },
     "/metrics": {
       "get": {
-        "summary": "GET /metrics — Prometheus 格式监控指标（in-process 刷新，无自调 HTTP）。",
-        "operationId": "get_metrics_endpoint",
+        "summary": "GET /metrics — Prometheus 格式监控指标（in-process 刷新）。",
+        "operationId": "get_ops.metrics_endpoint",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -1872,8 +1872,8 @@
     },
     "/monitor/status": {
       "get": {
-        "summary": "GET /monitor/status",
-        "operationId": "get_monitor_status",
+        "summary": "GET /monitor/status — IntradayMonitor 实时运行状态。",
+        "operationId": "get_ops.monitor_status",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -1939,8 +1939,8 @@
     },
     "/northbound/flow": {
       "get": {
-        "summary": "GET /northbound/flow?refresh=1",
-        "operationId": "get_northbound_flow",
+        "summary": "GET /northbound/flow?refresh=1 — 沪深港通北向资金实时流量。",
+        "operationId": "get_market.northbound_flow",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -2007,7 +2007,7 @@
     "/orders/{order_id}/cancel": {
       "post": {
         "summary": "POST /orders/<order_id>/cancel — 撤销挂单。",
-        "operationId": "post_cancel_order",
+        "operationId": "post_orders.cancel_order",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -2084,7 +2084,7 @@
     "/orders/pending": {
       "get": {
         "summary": "GET /orders/pending — 所有挂起/部分成交的订单。",
-        "operationId": "get_pending_orders",
+        "operationId": "get_orders.pending_orders",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -2151,7 +2151,7 @@
     "/orders/recent": {
       "get": {
         "summary": "GET /orders/recent?symbol=600036.SH&status=filled&limit=50",
-        "operationId": "get_recent_orders",
+        "operationId": "get_orders.recent_orders",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -2218,7 +2218,7 @@
     "/orders/submit": {
       "post": {
         "summary": "POST /orders/submit — 通过共享 broker 提交订单(simulation 模式下 PaperBroker 即时撮合)。",
-        "operationId": "post_submit_order",
+        "operationId": "post_orders.submit_order",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -2284,8 +2284,8 @@
     },
     "/params": {
       "get": {
-        "summary": "GET /params — 全量参数列表（params.json + live_params.json 合并视图）。",
-        "operationId": "get_list_all_params",
+        "summary": "GET /params — 全量参数（params.json + live_params.json 合并视图）。",
+        "operationId": "get_trades_signals_params.list_all_params",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -2351,8 +2351,8 @@
     },
     "/params/{symbol}": {
       "get": {
-        "summary": "GET /params/<symbol> — 查询单股参数（WFA + 手工配置合并后）。",
-        "operationId": "get_get_symbol_params",
+        "summary": "GET /params/<symbol> — WFA + 手工配置合并后的单股参数。",
+        "operationId": "get_trades_signals_params.get_symbol_params",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -2426,8 +2426,8 @@
         ]
       },
       "patch": {
-        "summary": "PATCH /params/<symbol> — 更新单股参数（写入 params.json）。",
-        "operationId": "patch_update_symbol_params",
+        "summary": "PATCH /params/<symbol> — 更新单股参数 (写入 params.json)。",
+        "operationId": "patch_trades_signals_params.update_symbol_params",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -2503,8 +2503,8 @@
     },
     "/performance/summary": {
       "get": {
-        "summary": "GET /performance/summary?year=2026&month=4&include_chart=1 — 月度绩效聚合。",
-        "operationId": "get_performance_summary",
+        "summary": "GET /performance/summary?year=2026&month=4&include_chart=1",
+        "operationId": "get_market.performance_summary",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -2571,7 +2571,7 @@
     "/portfolio/cash": {
       "post": {
         "summary": "POST /portfolio/cash — set cash amount.",
-        "operationId": "post_set_cash",
+        "operationId": "post_portfolio.set_cash",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -2637,8 +2637,8 @@
     },
     "/portfolio/compose": {
       "post": {
-        "summary": "POST /portfolio/compose",
-        "operationId": "post_portfolio_compose",
+        "summary": "POST /portfolio/compose — 基于 universe 收益的组合权重建议（不下单）。",
+        "operationId": "post_research.portfolio_compose",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -2704,8 +2704,8 @@
     },
     "/portfolio/daily": {
       "get": {
-        "summary": "GET /portfolio/daily — recent daily summaries.",
-        "operationId": "get_portfolio_daily",
+        "summary": "GET /portfolio/daily?limit=30 — recent daily summaries.",
+        "operationId": "get_portfolio.portfolio_daily",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -2769,8 +2769,8 @@
         }
       },
       "post": {
-        "summary": "POST /portfolio/daily - record daily meta.",
-        "operationId": "post_record_portfolio_daily",
+        "summary": "POST /portfolio/daily — record daily meta.",
+        "operationId": "post_portfolio.record_portfolio_daily",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -2837,7 +2837,7 @@
     "/portfolio/positions": {
       "post": {
         "summary": "POST /portfolio/positions — upsert a position.",
-        "operationId": "post_upsert_position",
+        "operationId": "post_portfolio.upsert_position",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -2903,8 +2903,8 @@
     },
     "/portfolio/summary": {
       "get": {
-        "summary": "GET /portfolio/summary?refresh=1",
-        "operationId": "get_portfolio_summary",
+        "summary": "GET /portfolio/summary?refresh=1 — cash + positions + realized/unrealized P&L.",
+        "operationId": "get_portfolio.portfolio_summary",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -2970,8 +2970,8 @@
     },
     "/positions": {
       "get": {
-        "summary": "GET /positions?refresh=1",
-        "operationId": "get_get_positions",
+        "summary": "GET /positions?refresh=1 — positions with unrealized P&L.",
+        "operationId": "get_portfolio.get_positions",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -3038,7 +3038,7 @@
     "/risk/status": {
       "get": {
         "summary": "GET /risk/status — 风控快照（组合敞口、板块集中度、回撤、Kelly）。",
-        "operationId": "get_risk_status",
+        "operationId": "get_ops.risk_status",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -3105,7 +3105,7 @@
     "/signals": {
       "get": {
         "summary": "GET /signals — recent signals.",
-        "operationId": "get_get_signals",
+        "operationId": "get_trades_signals_params.get_signals",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -3170,7 +3170,7 @@
       },
       "post": {
         "summary": "POST /signals — record a signal.",
-        "operationId": "post_record_signal",
+        "operationId": "post_trades_signals_params.record_signal",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -3237,7 +3237,7 @@
     "/trades": {
       "get": {
         "summary": "GET /trades — recent trades.",
-        "operationId": "get_get_trades",
+        "operationId": "get_trades_signals_params.get_trades",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -3302,7 +3302,7 @@
       },
       "post": {
         "summary": "POST /trades — record a completed trade.",
-        "operationId": "post_record_trade",
+        "operationId": "post_trades_signals_params.record_trade",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -3368,8 +3368,8 @@
     },
     "/trading/mode": {
       "get": {
-        "summary": "Return current trading mode (simulation or live).",
-        "operationId": "get_get_trading_mode",
+        "summary": "GET /trading/mode — current trading mode (simulation | live).",
+        "operationId": "get_ops.get_trading_mode",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -3433,8 +3433,8 @@
         }
       },
       "put": {
-        "summary": "Set trading mode. Body: {\"mode\": \"simulation\"|\"live\"}",
-        "operationId": "put_set_trading_mode",
+        "summary": "PUT /trading/mode — Body: {\"mode\": \"simulation\"|\"live\"}",
+        "operationId": "put_ops.set_trading_mode",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -3500,8 +3500,8 @@
     },
     "/watchlist": {
       "get": {
-        "summary": "GET /watchlist — 返回当前自选股列表",
-        "operationId": "get_get_watchlist",
+        "summary": "GET /watchlist — 返回当前自选股列表。",
+        "operationId": "get_watchlist_alerts.get_watchlist",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -3567,8 +3567,8 @@
     },
     "/watchlist/{symbol}": {
       "delete": {
-        "summary": "DELETE /watchlist/<symbol> — 移除自选股（软删除）",
-        "operationId": "delete_remove_watchlist",
+        "summary": "DELETE /watchlist/<symbol> — 移除自选股（软删除）。",
+        "operationId": "delete_watchlist_alerts.remove_watchlist",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -3643,7 +3643,7 @@
       },
       "patch": {
         "summary": "PATCH /watchlist/<symbol>",
-        "operationId": "patch_patch_watchlist",
+        "operationId": "patch_watchlist_alerts.patch_watchlist",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -3720,7 +3720,7 @@
     "/watchlist/add": {
       "post": {
         "summary": "POST /watchlist/add",
-        "operationId": "post_add_watchlist",
+        "operationId": "post_watchlist_alerts.add_watchlist",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -3786,8 +3786,8 @@
     },
     "/wfa/history": {
       "get": {
-        "summary": "GET /wfa/history?symbol=600036.SH&strategy=RSI&limit=30",
-        "operationId": "get_wfa_history",
+        "summary": "GET /wfa/history?symbol=600036.SH&strategy=RSI&limit=30 — WFA 历史。",
+        "operationId": "get_research.wfa_history",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",
@@ -3853,8 +3853,8 @@
     },
     "/wfa/summary": {
       "get": {
-        "summary": "GET /wfa/summary?symbol=600036.SH",
-        "operationId": "get_wfa_summary",
+        "summary": "GET /wfa/summary?symbol=600036.SH — 最新 RSI / ATR WFA 结果。",
+        "operationId": "get_research.wfa_summary",
         "responses": {
           "200": {
             "description": "Success (ok envelope)",

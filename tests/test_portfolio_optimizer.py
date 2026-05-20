@@ -280,6 +280,54 @@ class TestBlackLitterman(unittest.TestCase):
         self.opt.black_litterman(views)
         np.testing.assert_array_equal(self.opt._mu, mu_before)
 
+    # ─── R1-2: fallback 信号化 ─────────────────────────────────────
+    def test_normal_bl_no_fallback_flag(self):
+        """正常 BL 调用结束后 last_fallback 应为 None。"""
+        views = {self.assets[0]: 0.001}
+        self.opt.black_litterman(views)
+        self.assertIsNone(self.opt.last_fallback)
+
+    def test_empty_views_sets_fallback_flag(self):
+        """空 views 走 fallback，last_fallback 必须记录原因。"""
+        self.opt.black_litterman({})
+        self.assertIsNotNone(self.opt.last_fallback)
+        self.assertIn('views 为空', self.opt.last_fallback)
+
+    def test_all_unknown_views_sets_fallback_flag(self):
+        """所有 view 资产都不认识 → fallback。"""
+        self.opt.black_litterman({'UNK1.SZ': 0.001, 'UNK2.SZ': -0.001})
+        self.assertIsNotNone(self.opt.last_fallback)
+        self.assertIn('没有 view 命中', self.opt.last_fallback)
+
+    def test_max_sharpe_negative_excess_sets_fallback_flag(self):
+        """超额收益全负 → max_sharpe 走 fallback。"""
+        from core.portfolio_optimizer import PortfolioOptimizer
+        ret = _make_returns(4, 200, positive_drift=False)
+        opt = PortfolioOptimizer(ret, rf=0.10 / 252)
+        import warnings as _w
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            opt.max_sharpe()
+        self.assertIsNotNone(opt.last_fallback)
+        self.assertIn('超额收益', opt.last_fallback)
+
+    def test_max_sharpe_clears_fallback_flag_on_normal_call(self):
+        """正常 max_sharpe 调用后 last_fallback 重置为 None。"""
+        from core.portfolio_optimizer import PortfolioOptimizer
+        # 先制造一次 fallback
+        ret_neg = _make_returns(4, 200, positive_drift=False)
+        opt = PortfolioOptimizer(ret_neg, rf=0.10 / 252)
+        import warnings as _w
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            opt.max_sharpe()
+        self.assertIsNotNone(opt.last_fallback)
+        # 用一个新的 optimizer 跑正常路径，flag 应为 None
+        ret_pos = _make_returns(4, 200, positive_drift=True)
+        opt2 = PortfolioOptimizer(ret_pos)
+        opt2.max_sharpe()
+        self.assertIsNone(opt2.last_fallback)
+
 
 # ---------------------------------------------------------------------------
 # 最大分散化

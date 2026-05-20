@@ -4,7 +4,8 @@ EventBus + FactorExpression + OMS + RiskEngine + DataSources
 
 Phase 1 (✅): EventBus + FactorExpression + SignalEngine
 Phase 2 (✅): DataSources (SP期货/VIX/恒指/北向) + OMS抽象层 + RiskEngine
-Phase 3 (✅): BrokerFactory + SafetyMode + 真实券商 STUB
+Phase 3 (✅): 券商接口 + PaperBroker（R2-2 后删除 BrokerFactory / SafetyMode，
+              本系统不接入真实券商，工厂层无需要）
 Phase 4 (✅): Level2 数据源 + 订单簿因子
 Phase 5 (✅): 组合优化器 (BL + MeanVariance + RiskParity)
 Phase 6 (✅): 回测引擎 + 因子研究框架
@@ -45,9 +46,9 @@ from core.backtest_engine import (
     BacktestEngine, BacktestConfig, BacktestResult,
     PerformanceAnalyzer, TradeRecord, PositionSnapshot,
 )
-from core.research import (
-    FactorResearcher, WalkForwardAnalyzer, FactorAnalysisResult,
-)
+# R2-3: 删除 core/research.py（1088 行死代码，0 个外部消费者）。
+# 之前 core.research 与 core.walkforward 同名 WalkForwardAnalyzer 是混淆源。
+# 实际使用的 WalkForwardAnalyzer 在 core.walkforward，按需直接 import。
 
 __all__ = [
     # EventBus
@@ -72,6 +73,4 @@ __all__ = [
     # Backtest
     'BacktestEngine', 'BacktestConfig', 'BacktestResult',
     'PerformanceAnalyzer', 'TradeRecord', 'PositionSnapshot',
-    # Research
-    'FactorResearcher', 'WalkForwardAnalyzer', 'FactorAnalysisResult',
 ]

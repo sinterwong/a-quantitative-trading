@@ -22,7 +22,7 @@ class TestAuditEvents(unittest.TestCase):
         from core import audit_log
         # 重定向全局 audit dir + 注入新 logger 单例（直接构造避免默认参数缓存）
         audit_log._AUDIT_DIR = self.tmpdir
-        audit_log._default_audit_logger = audit_log.AuditLogger(audit_dir=self.tmpdir)
+        audit_log.reset_audit_logger(audit_log.AuditLogger(audit_dir=self.tmpdir))
 
     def tearDown(self):
         import shutil

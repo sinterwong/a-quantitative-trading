@@ -260,13 +260,13 @@ class MonteCarloSimulator:
         print(f"{'=' * 60}")
 
         print(f"\n  初始资金:  ¥{r.initial_capital:,.0f}")
-        print(f"\n  ── 终值分布 ──")
+        print("\n  ── 终值分布 ──")
         print(f"    中位数终值:  ¥{r.median_final:,.0f}")
         print(f"    平均终值:    ¥{r.mean_final:,.0f}")
         print(f"    标准差:      ¥{r.std_final:,.0f}")
         print(f"    最低/最高:   ¥{r.min_final:,.0f} / ¥{r.max_final:,.0f}")
 
-        print(f"\n  ── 收益率分布 ──")
+        print("\n  ── 收益率分布 ──")
         print(f"    中位数收益:  {r.median_return_pct:+.1%}")
         print(f"    平均收益:    {r.mean_return_pct:+.1%}")
         print(f"    5th 分位:   {r.percentile_5_return:+.1%}  ← 最坏情况")
@@ -275,11 +275,11 @@ class MonteCarloSimulator:
         print(f"    95th 分位:  {r.percentile_95_return:+.1%}  ← 最好情况")
         print(f"    正收益概率:  {r.prob_positive:.1%}")
 
-        print(f"\n  ── 最大回撤分布 ──")
+        print("\n  ── 最大回撤分布 ──")
         print(f"    中位数回撤: {r.median_maxdd_pct:.1%}")
         print(f"    95th 回撤:  {r.percentile_95_maxdd:.1%}  ← 极端情况")
 
-        print(f"\n  ── 综合风险 ──")
+        print("\n  ── 综合风险 ──")
         print(f"    夏普（中位数）: {r.median_sharpe:.2f}")
         print(f"    破产风险:       {r.prob_bust:.1%}  (< 50% 初始资金)")
         print(f"{'=' * 60}\n")

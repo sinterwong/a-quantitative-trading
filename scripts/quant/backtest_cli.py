@@ -535,10 +535,13 @@ def _profit_factor(r: dict) -> float:
     trades = r.get('trades', [])
     if not trades:
         return 0.0
-    gross_profit = sum(t.get('value', 0) for t in trades
+    # value 是卖出总收益，pnl_pct 是收益率；实际盈亏 = value * |pnl_pct|
+    gross_profit = sum(t.get('value', 0) * t.get('pnl_pct', 0)
+                       for t in trades
                        if t.get('action') in ('sell', 'close_final') and t.get('pnl_pct', 0) > 0)
-    gross_loss = abs(sum(t.get('value', 0) for t in trades
-                          if t.get('action') in ('sell', 'close_final') and t.get('pnl_pct', 0) < 0))
+    gross_loss = abs(sum(t.get('value', 0) * t.get('pnl_pct', 0)
+                         for t in trades
+                         if t.get('action') in ('sell', 'close_final') and t.get('pnl_pct', 0) < 0))
     if gross_loss == 0:
         return gross_profit if gross_profit > 0 else 0.0
     return gross_profit / gross_loss
@@ -626,6 +629,7 @@ def run_single_backtest(symbol: str,
     )
 
     result = engine.run(kline, signal_func, f"RSI({rsi_buy}/{rsi_sell})")
+    result['trades'] = engine.get_trades()
     result['_params'] = {
         'rsi_buy': rsi_buy, 'rsi_sell': rsi_sell, 'rsi_period': rsi_period,
         'stop_loss': stop_loss, 'take_profit': take_profit,

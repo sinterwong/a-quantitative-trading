@@ -189,7 +189,7 @@ check(isinstance(results, list), "run() 返回 list")
 expected_windows = wfa5._split_windows()
 check(
     len(results) <= len(expected_windows),
-    f"结果窗口数 ≤ 切分窗口数"
+    "结果窗口数 ≤ 切分窗口数"
 )
 
 for r in results:
@@ -218,7 +218,7 @@ mock_results = [
 summary = WalkForwardAnalyzer.summarize(mock_results)
 check(summary.n_windows == 7, f"n_windows=7, 实际={summary.n_windows}")
 check(summary.n_positive_sharpe == 5, f"正 Sharpe 窗口=5, 实际={summary.n_positive_sharpe}")
-check(abs(summary.positive_sharpe_pct - 5/7) < 1e-9, f"positive_sharpe_pct=5/7")
+check(abs(summary.positive_sharpe_pct - 5/7) < 1e-9, "positive_sharpe_pct=5/7")
 check(abs(summary.avg_test_sharpe - np.mean([r.test_sharpe for r in mock_results])) < 1e-9,
       "avg_test_sharpe 正确")
 check(summary.min_test_sharpe < 0, "min_test_sharpe < 0（存在亏损窗口）")
@@ -247,8 +247,8 @@ matrix = SensitivityAnalyzer.run(
 
 check(isinstance(matrix, pd.DataFrame), "返回 pd.DataFrame")
 check(matrix.shape == (3, 3), f"矩阵形状=(3,3), 实际={matrix.shape}")
-check(list(matrix.index) == oversold_vals, f"行索引 = oversold_vals")
-check(list(matrix.columns) == overbought_vals, f"列索引 = overbought_vals")
+check(list(matrix.index) == oversold_vals, "行索引 = oversold_vals")
+check(list(matrix.columns) == overbought_vals, "列索引 = overbought_vals")
 
 # ─── Section 7: peak_sensitivity_ratio ──────────────────────────────────────
 

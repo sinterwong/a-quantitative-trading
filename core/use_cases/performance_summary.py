@@ -19,7 +19,7 @@ class PerformanceSummaryRequest:
     month: int = 0  # 0 → today.month
     include_chart: bool = True
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         today = date.today()
         self.year = self.year or today.year
         self.month = self.month or today.month
@@ -40,7 +40,7 @@ class PerformanceSummaryResponse:
     chart_base64: Optional[str] = None
     generated_at: Optional[str] = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         returns = self.returns or {}
         trade_stats = self.trade_stats or {}
         # Flatten nested structures into top-level keys for UI convenience.

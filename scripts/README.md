@@ -4,13 +4,13 @@
 
 ## scripts/ 顶层
 
-### 定时任务(由 Scheduler 触发,见 backend/README.md)
+### 定时任务（由 Scheduler 触发，见 backend/README.md）
 
 | 文件 | 说明 |
 |---|---|
-| `morning_runner.py` | 09:30 盘前流程入口(选股 + 信号 + 早报) |
+| `morning_runner.py` | 09:30 盘前流程入口（选股 + 信号 + 早报） |
 | `morning_report.py` | 盘前市场分析报告 |
-| `afternoon_report.py` | 15:00 收盘晚报(持仓快照 + 收益) |
+| `afternoon_report.py` | 15:00 收盘晚报（持仓快照 + 收益） |
 | `daily_risk_report.py` | 15:30 CVaR + 蒙特卡洛压力测试 |
 | `daily_tca.py` | 15:45 TCA 反馈闭环 |
 | `walkforward_job.py` | Walk-Forward 参数验证定时任务 |
@@ -23,35 +23,34 @@
 
 | 文件 | 说明 |
 |---|---|
-| `dynamic_selector.py` | 动态选股器(`DynamicStockSelector`,日终 15:10 跑) |
+| `dynamic_selector.py` | 动态选股器（`DynamicStockSelector`，日终 15:10 跑） |
 | `bayesian_optimize.py` | 贝叶斯参数优化 |
 | `run_morning_report.py` | 盘前报告手动入口 |
-| `generate_openapi.py` | 从 `backend/api.py` 生成 `backend/openapi.json`,支持 `--check` |
+| `generate_openapi.py` | 从 `backend/` 包自动生成 `backend/openapi.json`，支持 `--check` |
 
 ## scripts/quant/
 
-回测 / 信号 / 因子研究脚本。部分文件是早期实现,已被 `core/` 替代但
-保留兼容性,新代码不要往这里加。
+回测 / 信号 / 因子研究脚本。部分文件是早期实现，已被 `core/` 替代但保留兼容性，新代码不要往这里加。
 
 ### 仍在使用
 
 | 文件 | 用途 |
 |---|---|
-| `backtest_cli.py` | 主回测 CLI,接 `core/use_cases/backtest.py` |
+| `backtest_cli.py` | 主回测 CLI，接 `core/use_cases/backtest.py` |
 | `backtest.py` | 提供 `RSISignalFunc / MACDSignalFunc` 给 `intraday_signals.py` |
-| `walkforward.py` | 早期 WFA,被 `walkforward_job.py` 与 `regime_wfa.py` 依赖 |
-| `signal_generator.py` | 老信号层,被 WFA 和测试依赖 |
+| `walkforward.py` | 早期 WFA，被 `walkforward_job.py` 与 `regime_wfa.py` 依赖 |
+| `signal_generator.py` | 老信号层，被 WFA 和测试依赖 |
 | `data_loader.py` | 回测专用 OHLCV 加载 |
 | `benchmark.py` | `quick_benchmark` 基准对比 |
 | `monte_carlo.py` | `MonteCarloSimulator` |
-| `position_sizer.py` | `compute_kelly_from_trades`,被 IntradayMonitor 引用 |
-| `news_quality.py` / `news_scorer.py` | 新闻打分,被 `dynamic_selector.py` 引用 |
+| `position_sizer.py` | `compute_kelly_from_trades`，被 IntradayMonitor 引用 |
+| `news_quality.py` / `news_scorer.py` | 新闻打分，被 `dynamic_selector.py` 引用 |
 | `regime_detector.py` | 提供 `get_cached_regime / get_params_for_regime` |
 | `config_stock_pool.py` | 标的池配置 |
 | `atr_sweep.py` / `atr_threshold_scan.py` / `atr_wfa_scan.py` | ATR 因子扫描 |
 | `llm_connect_test.py` | LLM 连通性烟测 |
 
-### 已 deprecated(代码保留,下个清理周期删)
+### 已 deprecated（代码保留，下个清理周期删）
 
 `combo_signal.py` / `daily_journal.py` / `daily_reporter.py` /
 `data_provider.py` / `institutional_live.py` / `intraday_signals.py` /
@@ -79,5 +78,5 @@ python scripts/quant/backtest_cli.py --symbol 600519.SH --start 20240101
 
 ## 备注
 
-- 调试脚本依赖外网,不进 CI
-- `scripts/quant/__init__.py` 让本目录是包,统一用 `from scripts.quant.xxx` import
+- 调试脚本依赖外网，不进 CI
+- `scripts/quant/__init__.py` 让本目录是包，统一用 `from scripts.quant.xxx` import

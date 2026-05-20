@@ -35,7 +35,7 @@ class SectorRotationResponse:
     top_n: int
     universe_size: int
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             'rebalance_date': self.rebalance_date,
             'buy': self.buy,
@@ -50,7 +50,7 @@ class SectorRotationResponse:
 def run_sector_rotation(req: SectorRotationRequest,
                         portfolio_svc: Optional[Any] = None,
                         *,
-                        data_layer=None) -> SectorRotationResponse:
+                        data_layer: Optional[Any] = None) -> SectorRotationResponse:
     """
     执行行业轮动信号生成。
 

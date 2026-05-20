@@ -10,6 +10,8 @@ OMS 类：PreTrade 风控 → 发送订单 → 记录成交
 """
 
 from __future__ import annotations
+import logging
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -19,6 +21,8 @@ import os
 import sys
 import json
 import urllib.request
+
+logger = logging.getLogger('core.oms')
 
 if TYPE_CHECKING:
     from core.event_bus import EventBus, FillEvent
@@ -149,6 +153,14 @@ class EventDrivenPaperBroker(BrokerAdapter):
     def __init__(self):
         self._orders: Dict[str, Order] = {}
         self._positions: Dict[str, Position] = {}
+        # R0-2 残留：多线程下 send/cancel/_update_position/get_positions 并发
+        # 操作 _orders 和 _positions 会触发 RuntimeError: dictionary changed
+        # size during iteration。RLock 是因为 _update_position 在 send 内被
+        # 调用，加锁不能被自己阻塞。
+        # 注意 quote() 是网络 IO，本不该在锁内，但 send() 整体加锁可保证
+        # "同 symbol 并发下单"的撮合次序确定。EventDrivenPaperBroker 是
+        # 验证场景，性能不关键，正确性优先。
+        self._lock = threading.RLock()
         self._load_positions()
 
     def _load_positions(self):
@@ -158,96 +170,101 @@ class EventDrivenPaperBroker(BrokerAdapter):
             base = 'http://127.0.0.1:5555'
             resp = urllib.request.urlopen(f'{base}/positions', timeout=5)
             data = jsonlib.loads(resp.read())
-            for p in data.get('positions', []):
-                self._positions[p['symbol']] = Position(
-                    symbol=p['symbol'],
-                    shares=int(p.get('shares', 0)),
-                    avg_price=float(p.get('avg_price', 0)),
-                    current_price=float(p.get('current_price', 0)),
-                )
-        except Exception as e:
-            print(f"[EventDrivenPaperBroker] Failed to load positions: {e}")
+            with self._lock:
+                for p in data.get('positions', []):
+                    self._positions[p['symbol']] = Position(
+                        symbol=p['symbol'],
+                        shares=int(p.get('shares', 0)),
+                        avg_price=float(p.get('avg_price', 0)),
+                        current_price=float(p.get('current_price', 0)),
+                    )
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            # OSError: urlopen 失败 / 连接拒绝（Backend 未启动）
+            # ValueError / JSONDecodeError: 响应不是合法 JSON
+            logger.warning('[EventDrivenPaperBroker] Failed to load positions: %s', e)
 
     def send(self, order: Order) -> Fill:
-        """模拟撮合"""
-        self._orders[order.order_id] = order
+        """模拟撮合。整个流程在 RLock 内，确保 _orders / _positions 一致。"""
+        with self._lock:
+            self._orders[order.order_id] = order
 
-        # 获取实时报价
-        quote = self.quote(order.symbol)
-        last = quote.get('last', 0)
+            # 获取实时报价（注意：在锁内做 HTTP 是有意的，让"同 symbol 并发
+            # 下单"按到达顺序串行化撮合）
+            quote = self.quote(order.symbol)
+            last = quote.get('last', 0)
 
-        if last <= 0:
-            order.status = 'REJECTED'
-            self._record_status('rejected')
-            return Fill(
+            if last <= 0:
+                order.status = 'REJECTED'
+                self._record_status('rejected')
+                return Fill(
+                    order_id=order.order_id,
+                    symbol=order.symbol,
+                    direction=order.direction,
+                    shares=order.shares,
+                    price=0,
+                    commission=0,
+                )
+
+            # P2-14: 沿用共享 fill_simulator（commission/limit_breach），
+            # 滑点保持原有方向化模型（买稍贵 / 卖稍便宜），不引入随机性以维持
+            # 事件驱动测试可复现
+            from core.brokers.fill_simulator import is_limit_breach, compute_commission
+
+            slippage_bps = 5.0
+            if order.direction == 'BUY':
+                fill_price = round(last * 1.0005, 2)
+            else:
+                fill_price = round(last * 0.9995, 2)
+
+            # 涨跌停检查（共享工具，prev_close 此处用 last 估算）
+            if is_limit_breach(order.direction, fill_price, last):
+                order.status = 'REJECTED'
+                self._record_status('rejected')
+                return Fill(order_id=order.order_id, symbol=order.symbol,
+                            direction=order.direction, shares=0, price=0)
+
+            commission = compute_commission(fill_price, order.shares)
+
+            order.status = 'FILLED'
+            order.fill_price = fill_price
+            order.fill_time = datetime.now()
+            self._record_status('filled')
+
+            fill = Fill(
                 order_id=order.order_id,
                 symbol=order.symbol,
                 direction=order.direction,
                 shares=order.shares,
-                price=0,
-                commission=0,
+                price=fill_price,
+                commission=commission,
+                slippage_bps=slippage_bps,
             )
 
-        # P2-14: 沿用共享 fill_simulator（commission/limit_breach），
-        # 滑点保持原有方向化模型（买稍贵 / 卖稍便宜），不引入随机性以维持
-        # 事件驱动测试可复现
-        from core.brokers.fill_simulator import is_limit_breach, compute_commission
+            # 更新模拟持仓（RLock 重入，_update_position 内还能再 with）
+            self._update_position(fill)
 
-        slippage_bps = 5.0
-        if order.direction == 'BUY':
-            fill_price = round(last * 1.0005, 2)
-        else:
-            fill_price = round(last * 0.9995, 2)
-
-        # 涨跌停检查（共享工具，prev_close 此处用 last 估算）
-        if is_limit_breach(order.direction, fill_price, last):
-            order.status = 'REJECTED'
-            self._record_status('rejected')
-            return Fill(order_id=order.order_id, symbol=order.symbol,
-                        direction=order.direction, shares=0, price=0)
-
-        commission = compute_commission(fill_price, order.shares)
-
-        order.status = 'FILLED'
-        order.fill_price = fill_price
-        order.fill_time = datetime.now()
-        self._record_status('filled')
-
-        fill = Fill(
-            order_id=order.order_id,
-            symbol=order.symbol,
-            direction=order.direction,
-            shares=order.shares,
-            price=fill_price,
-            commission=commission,
-            slippage_bps=slippage_bps,
-        )
-
-        # 更新模拟持仓
-        self._update_position(fill)
-
-        # 持久化到 Backend API
+        # _persist_fill 走 HTTP，跨进程持久化，移出锁外避免阻塞其他撮合
         self._persist_fill(fill)
-
         return fill
 
     def _update_position(self, fill: Fill):
-        pos = self._positions.get(fill.symbol)
-        if pos is None:
-            pos = Position(symbol=fill.symbol)
-            self._positions[fill.symbol] = pos
+        with self._lock:
+            pos = self._positions.get(fill.symbol)
+            if pos is None:
+                pos = Position(symbol=fill.symbol)
+                self._positions[fill.symbol] = pos
 
-        if fill.direction == 'BUY':
-            total_cost = pos.shares * pos.avg_price + fill.shares * fill.price
-            pos.shares += fill.shares
-            pos.avg_price = total_cost / pos.shares if pos.shares > 0 else 0
-        else:
-            realized = (fill.price - pos.avg_price) * fill.shares
-            pos.realized_pnl += realized
-            pos.shares -= fill.shares
-            if pos.shares == 0:
-                pos.avg_price = 0
-                del self._positions[fill.symbol]
+            if fill.direction == 'BUY':
+                total_cost = pos.shares * pos.avg_price + fill.shares * fill.price
+                pos.shares += fill.shares
+                pos.avg_price = total_cost / pos.shares if pos.shares > 0 else 0
+            else:
+                realized = (fill.price - pos.avg_price) * fill.shares
+                pos.realized_pnl += realized
+                pos.shares -= fill.shares
+                if pos.shares == 0:
+                    pos.avg_price = 0
+                    del self._positions[fill.symbol]
 
     def _persist_fill(self, fill: Fill):
         """持久化成交到 Backend API"""
@@ -271,31 +288,37 @@ class EventDrivenPaperBroker(BrokerAdapter):
             )
             with urllib.request.urlopen(req, timeout=5) as r:
                 jsonlib.loads(r.read())
-        except Exception as e:
-            print(f"[EventDrivenPaperBroker] persist_fill error: {e}")
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            # 与 _load_positions 同：Backend 不可达 / 响应损坏
+            logger.warning('[EventDrivenPaperBroker] persist_fill error: %s', e)
 
     def cancel(self, order_id: str, reason: str = 'manual',
                origin: str = 'manual') -> bool:
-        if order_id in self._orders:
+        with self._lock:
+            if order_id not in self._orders:
+                return False
             order = self._orders[order_id]
             order.status = 'CANCELLED'
             self._record_status('cancelled')
-            try:
-                from core.audit_log import log_order_cancel
-                log_order_cancel(order_id=order_id, symbol=order.symbol,
-                                 reason=reason, origin=origin)
-            except Exception:
-                pass
-            return True
-        return False
+        # audit_log 持久化走 IO，移出锁外
+        try:
+            from core.audit_log import log_order_cancel
+            log_order_cancel(order_id=order_id, symbol=order.symbol,
+                             reason=reason, origin=origin)
+        except (ImportError, OSError) as e:
+            # ImportError: audit_log 模块不可用; OSError: 写文件失败
+            logger.debug('[OMS] audit cancel skipped: %s', e)
+        return True
 
     @staticmethod
     def _record_status(status: str) -> None:
         try:
             from core.metrics import get_registry
             get_registry().record_order_status(status)
-        except Exception:
-            pass
+        except (ImportError, AttributeError) as e:
+            # metrics 模块缺失（脚本独立运行）或 registry 方法不存在；
+            # 监控失败不应阻塞订单链路。
+            logger.debug('[OMS] _record_status skipped: %s', e)
 
     def quote(self, symbol: str) -> Dict[str, float]:
         """腾讯实时报价"""
@@ -317,12 +340,17 @@ class EventDrivenPaperBroker(BrokerAdapter):
                     'low': float(fields[34]),
                     'volume': float(fields[6]),
                 }
-        except Exception as e:
-            print(f"[EventDrivenPaperBroker] quote error for {symbol}: {e}")
+        except (OSError, ValueError, IndexError) as e:
+            # OSError: 网络 / urlopen 失败
+            # ValueError: float() 转换失败（fields 内容不是数字）
+            # IndexError: 腾讯响应格式变化（fields 数量异常）
+            logger.warning('[EventDrivenPaperBroker] quote error for %s: %s', symbol, e)
         return {'last': 0}
 
     def get_positions(self) -> List[Position]:
-        return list(self._positions.values())
+        # snapshot under lock — 否则可能在 _update_position 的 del 同时遍历
+        with self._lock:
+            return list(self._positions.values())
 
 
 # ─── OMS ─────────────────────────────────────────────────────────────────────
@@ -391,8 +419,8 @@ class OMS:
                 try:
                     from core.audit_log import log_fill
                     log_fill(fill, signal=signal, risk_passed=True)
-                except Exception:
-                    pass
+                except (ImportError, OSError) as e:
+                    logger.debug('[OMS] audit fill log skipped: %s', e)
                 if self.bus:
                     from core.event_bus import FillEvent
                     fe = FillEvent(
@@ -404,8 +432,10 @@ class OMS:
                         commission=fill.commission,
                     )
                     self.bus.emit(fe)
-        except Exception as e:
-            print(f"[OMS] submit error: {e}")
+        except Exception as e:  # noqa: BLE001 — OMS.submit 是业务边界，
+            # 任意下层 bug（broker / audit / EventBus）都要 fail-safe 转为
+            # RiskEvent('CRITICAL')，否则订单链路死锁。
+            logger.exception('[OMS] submit error: %s', e)
             if self.bus:
                 from core.event_bus import RiskEvent
                 self.bus.emit(RiskEvent(
@@ -460,7 +490,9 @@ class OMS:
             with urllib.request.urlopen(f'{base}/portfolio/summary', timeout=5) as r:
                 summary = jsonlib.loads(r.read())
             return float(summary.get('position_value', 0) + summary.get('cash', 0))
-        except Exception:
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            # Backend 未启动 / 响应损坏 → 等权 0.0，Kelly 会跳过仓位检查
+            logger.debug('[OMS] portfolio/summary fetch skipped: %s', e)
             return 0.0
 
     def _drawdown_discount(self, equity: float, max_dd_limit: float) -> float:
@@ -503,7 +535,9 @@ class OMS:
             cfg = load_config()
             max_dd_limit = float(cfg.risk.max_drawdown)
             max_position_pct = float(cfg.portfolio.max_position_pct)
-        except Exception:
+        except (ImportError, FileNotFoundError, AttributeError, KeyError) as e:
+            # 配置缺失 / YAML 解析失败 / 字段缺失 → 安全默认值
+            logger.warning('[OMS] config load failed, using safe defaults: %s', e)
             max_dd_limit = 0.15
             max_position_pct = 0.25
 
@@ -567,10 +601,9 @@ class OMS:
                     avg_price=float(p.get('avg_price', 0)),
                     current_price=float(p.get('current_price', 0)),
                 )
-        except Exception as e:
+        except (OSError, ValueError, json.JSONDecodeError) as e:
             # Backend 未启动时静默跳过；_position_book 保持空字典
-            import logging
-            logging.getLogger('core.oms').debug('[OMS] position pre-load skipped: %s', e)
+            logger.debug('[OMS] position pre-load skipped: %s', e)
 
     @dataclass
     class PreTradeResult:
@@ -595,8 +628,9 @@ class OMS:
                             passed=False,
                             reason=f'Position {order.symbol} exceeds 25% limit'
                         )
-                except Exception:
-                    pass
+                except (ZeroDivisionError, TypeError, AttributeError) as e:
+                    # equity=0 / pos 字段类型异常 → 跳过本规则，让后续规则继续
+                    logger.debug('[OMS] position-limit check skipped: %s', e)
 
         # 2. 止损检查（已有持仓价格相比下跌超 5% → 禁止加仓）
         if pos and order.direction == 'BUY':
@@ -620,7 +654,7 @@ class OMS:
         reference_price: float = 0.0,
         slice_interval: int = 5,
         volume_profile: Optional[List[float]] = None,
-    ) -> 'AlgoOrderResult':
+    ) -> 'AlgoOrderResult':  # noqa: F821 — lazy import below
         """
         提交算法订单（VWAP / TWAP），返回模拟执行结果。
 

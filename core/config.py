@@ -28,7 +28,9 @@ from __future__ import annotations
 import copy
 import json
 import os
-from dataclasses import dataclass, field
+
+from core import config_defaults as _defaults
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -58,22 +60,23 @@ class PortfolioConfig:
 
 @dataclass
 class RiskConfig:
+    # R3-4: 默认值统一从 core.config_defaults 引用，YAML 仍可覆盖。
     # PreTrade
-    max_net_exposure: float = 0.90
-    max_daily_loss: float = 0.02
+    max_net_exposure: float = _defaults.MAX_NET_EXPOSURE
+    max_daily_loss: float = _defaults.MAX_DAILY_LOSS
     # InTrade
-    atr_stop_multiplier: float = 3.0
-    take_profit_pct: float = 0.20
-    trailing_drawdown: float = 0.10
+    atr_stop_multiplier: float = _defaults.ATR_STOP_MULTIPLIER
+    take_profit_pct: float = _defaults.TAKE_PROFIT_PCT
+    trailing_drawdown: float = _defaults.TRAILING_DRAWDOWN
     # Portfolio-level
-    max_drawdown: float = 0.15
-    max_sector_weight: float = 0.30
-    var_limit: float = 0.03
-    max_correlation: float = 0.85
+    max_drawdown: float = _defaults.MAX_DRAWDOWN
+    max_sector_weight: float = _defaults.MAX_SECTOR_WEIGHT
+    var_limit: float = _defaults.VAR_LIMIT
+    max_correlation: float = _defaults.MAX_CORRELATION
     # Cost
-    commission_rate: float = 0.0003
-    stamp_tax: float = 0.001
-    slippage_bps: float = 5.0
+    commission_rate: float = _defaults.COMMISSION_RATE
+    stamp_tax: float = _defaults.STAMP_TAX_RATE
+    slippage_bps: float = _defaults.SLIPPAGE_BPS
 
 
 @dataclass
@@ -280,9 +283,9 @@ def _parse_risk(d: Dict) -> RiskConfig:
         max_sector_weight=float(d.get('max_sector_weight', 0.30)),
         var_limit=float(d.get('var_limit', 0.03)),
         max_correlation=float(d.get('max_correlation', 0.85)),
-        commission_rate=float(d.get('commission_rate', 0.0003)),
-        stamp_tax=float(d.get('stamp_tax', 0.001)),
-        slippage_bps=float(d.get('slippage_bps', 5.0)),
+        commission_rate=float(d.get('commission_rate', _defaults.COMMISSION_RATE)),
+        stamp_tax=float(d.get('stamp_tax', _defaults.STAMP_TAX_RATE)),
+        slippage_bps=float(d.get('slippage_bps', _defaults.SLIPPAGE_BPS)),
     )
 
 
@@ -454,11 +457,13 @@ def load_from_json(
     # risk
     r = params.get('risk', {})
     cfg.risk = RiskConfig(
-        commission_rate=float(r.get('commission', 0.0003)),
-        stamp_tax=float(r.get('stamp_tax', 0.001)),
-        slippage_bps=float(r.get('slippage', 0.0005)) * 10_000,
-        max_drawdown=float(r.get('max_drawdown_limit', 0.15)),
-        max_net_exposure=0.90,
+        commission_rate=float(r.get('commission', _defaults.COMMISSION_RATE)),
+        stamp_tax=float(r.get('stamp_tax', _defaults.STAMP_TAX_RATE)),
+        # 注意：params.json 历史用 fraction 表示滑点（0.0005=5bps），乘 10000
+        # 转 bps；config_defaults.SLIPPAGE_BPS 已是 bps，这里走兼容路径。
+        slippage_bps=float(r.get('slippage', _defaults.SLIPPAGE_BPS / 10_000)) * 10_000,
+        max_drawdown=float(r.get('max_drawdown_limit', _defaults.MAX_DRAWDOWN)),
+        max_net_exposure=_defaults.MAX_NET_EXPOSURE,
     )
 
     # strategies
@@ -488,3 +493,46 @@ def load_from_json(
                 ))
 
     return cfg
+
+
+# ─── R3-4: dump-effective CLI ──────────────────────────────────────────────
+def _dump_effective_cli(argv: List[str]) -> int:
+    """Print the fully resolved config (defaults < YAML < env) as JSON.
+
+    Useful for ops: lets you audit what's actually being used in production
+    without grep-ing across YAML / env / hardcoded fallbacks.
+
+    Usage::
+
+        python -m core.config dump-effective
+        python -m core.config dump-effective --env live
+    """
+    import argparse
+    parser = argparse.ArgumentParser(prog='python -m core.config dump-effective')
+    parser.add_argument('--env', default=None,
+                        help='TRADING_ENV override (live | dev)')
+    args = parser.parse_args(argv)
+
+    cfg = load_config(env=args.env)
+
+    snapshot = {
+        'portfolio': asdict(cfg.portfolio) if cfg.portfolio else None,
+        'risk': asdict(cfg.risk) if cfg.risk else None,
+        'runner': asdict(cfg.runner) if cfg.runner else None,
+        'strategies': {
+            name: asdict(s) for name, s in cfg.strategies.items()
+        } if cfg.strategies else {},
+        'live_symbols': [asdict(s) for s in cfg.live_symbols],
+        '_defaults_source': 'core.config_defaults (constants)',
+    }
+    print(json.dumps(snapshot, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+if __name__ == '__main__':
+    import sys
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ''
+    if cmd == 'dump-effective':
+        sys.exit(_dump_effective_cli(sys.argv[2:]))
+    print('Usage: python -m core.config dump-effective [--env live|dev] [--source yaml|params_json]')
+    sys.exit(1)

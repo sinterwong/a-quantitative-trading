@@ -190,7 +190,7 @@ def run_walkforward_for_symbol(symbol: str,
             listing_info = f'（数据范围: {kline[0]["date"][:10]} ~ {kline[-1]["date"][:10]}）'
         print(
             f'  [SKIP] 数据不足: 需要 ~{required} 天（{train_years}y train + {test_years}y test），实际 {len(kline)} 天 {listing_info}')
-        print(f'  提示: 如数据不足，可减少 train-years 或 test-years 参数，或检查股票上市时间')
+        print('  提示: 如数据不足，可减少 train-years 或 test-years 参数，或检查股票上市时间')
         return None
 
     print(
@@ -249,7 +249,7 @@ def run_walkforward_for_symbol(symbol: str,
             bench_result = quick_benchmark(
                 results[-1]['equity_curve'], '510310.SH')
             if 'error' not in bench_result:
-                print(f"\n  [Benchmark] 沪深300 对比:")
+                print("\n  [Benchmark] 沪深300 对比:")
                 print(
                     f"     Alpha(年化): {bench_result['alpha_annualized']:+.2%}")
                 print(f"     Beta: {bench_result['beta']:.2f}")
@@ -287,8 +287,9 @@ def update_backend_params(symbol: str, strategy: str, params: Dict, test_sharpe:
         try:
             with open(param_file) as f:
                 live_params = json.load(f)
-        except:
-            pass
+        except (OSError, json.JSONDecodeError) as exc:
+            # 参数文件损坏 → 视作首次写入，重建一份
+            print(f'[walkforward_job] live_params 文件损坏,重建: {exc}')
 
     key = f"{symbol}_{strategy}"
     live_params[key] = {
@@ -364,7 +365,7 @@ def main():
     if args.bayesian:
         print(f"  [模式] 贝叶斯优化 (trials={args.n_trials})")
     else:
-        print(f"  [模式] 网格搜索 WFA")
+        print("  [模式] 网格搜索 WFA")
 
     if args.symbol:
         symbols = [args.symbol]
@@ -376,7 +377,9 @@ def main():
                 data = json.loads(r.read())
                 holdings = [p['symbol'] for p in data.get(
                     'positions', []) if p.get('shares', 0) > 0]
-        except:
+        except (OSError, json.JSONDecodeError) as exc:
+            # Backend 不可达 / 响应非 JSON → 退化为空持仓（全市场训练）
+            print(f'[walkforward_job] 拉持仓失败,空持仓继续: {exc}')
             holdings = []
         symbols = get_symbols_to_train(portfolio_symbols=holdings)
 

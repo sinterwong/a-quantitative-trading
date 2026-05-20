@@ -33,7 +33,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -186,7 +186,7 @@ def _fetch_vix_percentile(lookback_days: int = VIX_LOOKBACK_DAYS) -> float:
     return round(pct, 2)
 
 
-def _fetch_index_data(lookback: int = 320) -> Optional[dict]:
+def _fetch_index_data(lookback: int = 320) -> Optional[Dict[str, Any]]:
     """
     通过 DataGateway 获取上证综指历史数据。
 
@@ -233,7 +233,9 @@ def _fetch_index_data(lookback: int = 320) -> Optional[dict]:
         return None
 
 
-def _compute_indicators(closes, highs, lows) -> Optional[dict]:
+def _compute_indicators(
+    closes: Any, highs: Any, lows: Any,
+) -> Optional[Dict[str, Any]]:
     """从 OHLC 计算所有 regime 用指标。可单测。"""
     closes = np.asarray(closes, dtype=float)
     highs = np.asarray(highs, dtype=float)
@@ -316,7 +318,7 @@ def detect_regime() -> RegimeInfo:
 
 
 def _classify_regime(
-    data: dict, date_str: str, source: str = "gateway",
+    data: Dict[str, Any], date_str: str, source: str = "gateway",
     vix_percentile: float = 0.0,
 ) -> RegimeInfo:
     """从计算好的 indicators dict 分类 regime。可单测。

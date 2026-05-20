@@ -22,7 +22,7 @@ import json
 import logging
 import math
 from datetime import datetime, date, timedelta
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 BK_DIR   = os.path.join(os.path.dirname(THIS_DIR), '..', 'backend')
@@ -368,7 +368,7 @@ def format_report(
     """将所有分析结果格式化为飞书推送文本。"""
 
     lines = [
-        f"📊 周度绩效归因报告",
+        "📊 周度绩效归因报告",
         f"{week_start.isoformat()} ~ {week_end.isoformat()}",
         "",
     ]

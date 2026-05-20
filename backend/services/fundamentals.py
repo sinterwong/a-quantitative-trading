@@ -61,7 +61,7 @@ def check_fundamentals_filter(symbol: str,
     # ETF 类品种（价格>0 但 PE/PB 为 0）直接通过
     if pe <= 0 and pb <= 0:
         # 可能是 ETF 或特殊品种，跳过基本面过滤
-        return True, f'PE/PB 均无效（可能是 ETF），跳过过滤'
+        return True, 'PE/PB 均无效（可能是 ETF），跳过过滤'
 
     if pe <= 0:
         return False, f'PE={pe:.1f}无效或亏损'
@@ -90,10 +90,10 @@ if __name__ == '__main__':
     for sym in test_symbols:
         data = fetch_fundamentals(sym)
         if data:
-            print('\n[%s %s]' % (sym, data.get('name', '')))
-            print('  PE=%.2f  PB=%.2f  股息率=%.2f%%  市值=%.0f亿' % (
+            print('\n[{} {}]'.format(sym, data.get('name', '')))
+            print('  PE={:.2f}  PB={:.2f}  股息率={:.2f}%  市值={:.0f}亿'.format(
                 data['pe'], data['pb'], data['dividend_yield'], data['market_cap']))
             ok, reason = check_fundamentals_filter(sym)
-            print('  filter: pass=%s  reason=%s' % (ok, reason))
+            print(f'  filter: pass={ok}  reason={reason}')
         else:
-            print('\n[%s] 数据获取失败' % sym)
+            print(f'\n[{sym}] 数据获取失败')

@@ -1,10 +1,11 @@
 """
 quant_app — 启动器包（P3-2）
 
-把原 backend/main.py 的 API/Worker 启动逻辑解耦为 3 个模块:
+按 mode 装配的进程入口:
   - serve_api.py — Flask API HTTP server 进程
   - run_worker.py — Scheduler + IntradayMonitor + StrategyRunner
   - main.py — 按 mode (all / api / worker) 装配启动器
 
-backend/main.py 保留为薄壳 shim,转发到本包,保证既有调用入口/测试兼容。
+启动命令: `python -m quant_app.main --mode all`
+（R2-2: backend/main.py 旧 shim 已删除，所有调用方直接走 quant_app。）
 """

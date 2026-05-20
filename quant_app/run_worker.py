@@ -2,7 +2,7 @@
 quant_app/run_worker.py — Scheduler + IntradayMonitor + StrategyRunner (P3-2)
 
 仅 Worker 子系统:
-  - Scheduler 类(原 backend/main.py 同类搬入)
+  - Scheduler 类
   - 交易日历 / 交易日判断 / PID 锁 / next-time 计算等纯工具
   - build_intraday_monitor / start_strategy_runner_thread 装配函数
 
@@ -182,7 +182,7 @@ def _acquire_pid_lock(pid_file: str) -> bool:
                 pass
         pf.seek(0)
         pf.truncate()
-        pf.write('%d' % os.getpid())
+        pf.write(f'{os.getpid()}')
         pf.flush()
         os.fsync(pf.fileno())
         return True

@@ -44,7 +44,7 @@ class MorningReport:
     notes_for_daily_meta: str = ''
     fallback_text: str = ''   # 降级文本(structured report 不可用时使用)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             'date': self.date,
             'regime': self.regime,

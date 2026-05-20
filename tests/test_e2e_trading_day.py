@@ -37,13 +37,13 @@ sys.path.insert(0, str(PROJ_DIR / 'backend'))
 
 @pytest.fixture(scope='module')
 def app():
-    """加载 Flask app(test_client + 模块级 _svc)。"""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        'api', str(PROJ_DIR / 'backend' / 'api.py'),
-    )
-    api = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(api)
+    """加载 Flask app(test_client + 模块级 _svc)。
+
+    R2-4 之后必须走标准包路径 ``import backend.api``:Blueprint 把 helper
+    留在 ``backend.api``,route 模块再 ``from backend.api import ...``;
+    若用 ``spec_from_file_location('api', …)`` 加载,sys.modules 里会出现
+    ``'api'`` 和 ``'backend.api'`` 两份,触发循环 import。"""
+    import backend.api as api
     return api.app
 
 

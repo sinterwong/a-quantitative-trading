@@ -42,7 +42,7 @@ class _FakeResponse:
 class TestPairsTradingScheduler(unittest.TestCase):
 
     def _build_scheduler(self):
-        from backend.main import Scheduler
+        from quant_app.run_worker import Scheduler
         return Scheduler(api_port=5555)
 
     def test_skip_when_watchlist_too_small(self):
@@ -140,7 +140,7 @@ class TestWeekdayDispatch(unittest.TestCase):
 
     def test_pairs_trading_called_on_wednesday(self):
         """_trigger_analysis 在周三调用 _trigger_pairs_trading。"""
-        from backend.main import Scheduler
+        from quant_app.run_worker import Scheduler
         sched = Scheduler(api_port=5555)
         sched._trigger_pairs_trading = MagicMock()
         sched._trigger_sector_rotation = MagicMock()
@@ -160,7 +160,7 @@ class TestWeekdayDispatch(unittest.TestCase):
         sched._trigger_sector_rotation.assert_not_called()  # 周三不触发轮动
 
     def test_sector_rotation_called_on_monday(self):
-        from backend.main import Scheduler
+        from quant_app.run_worker import Scheduler
         sched = Scheduler(api_port=5555)
         sched._trigger_pairs_trading = MagicMock()
         sched._trigger_sector_rotation = MagicMock()

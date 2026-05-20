@@ -44,6 +44,7 @@ from typing import Optional
 import pandas as pd
 
 from core.data_gateway import get_gateway
+from core.errors import DataSourceError
 
 logger = logging.getLogger('core.fundamental_data')
 
@@ -85,22 +86,29 @@ class FundamentalDataManager:
             revenue_yoy / profit_yoy / ocf_to_profit
             若获取失败返回空 DataFrame。
         """
+        # R0-5: 区分"该标的本就无基本面数据"（返回空 DF）与"获取过程出错"
+        # （抛 DataSourceError），避免上层把网络故障当作"数据缺失"静默降级为
+        # 0 分继续跑策略，市场恢复后却仍在用错值。
         try:
             gw = get_gateway()
             df = gw.fundamentals_history(symbol, start=start, end=end)
-            if df is None or df.empty:
-                return pd.DataFrame()
-            # 确保索引类型一致
-            if not pd.api.types.is_datetime64_any_dtype(df.index):
-                df.index = pd.to_datetime(df.index, errors='coerce')
-                df = df[~df.index.isna()]
-            return df.sort_index()
         except Exception as exc:
             logger.warning(
-                'FundamentalDataManager.get_fundamentals(%s) 失败: %s',
+                'FundamentalDataManager.get_fundamentals(%s) 数据源失败: %s',
                 symbol, exc,
             )
+            raise DataSourceError(
+                f'fetch fundamentals_history failed for {symbol}: {exc}'
+            ) from exc
+
+        if df is None or df.empty:
+            # 合法的"无数据"——例如 ETF / 港股没有 A 股财务字段。
             return pd.DataFrame()
+        # 确保索引类型一致
+        if not pd.api.types.is_datetime64_any_dtype(df.index):
+            df.index = pd.to_datetime(df.index, errors='coerce')
+            df = df[~df.index.isna()]
+        return df.sort_index()
 
     def invalidate(self, symbol: str) -> None:
         """清除指定标的的缓存（委托 DataGateway 精确清除该标的基本面历史缓存）。"""

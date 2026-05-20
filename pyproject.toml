@@ -1,0 +1,108 @@
+# R1-1: lint 基线
+#
+# 当前阶段只锁住"安全相关 + 0 误报"的小集合规则。E722（裸 except）和
+# F-系列（pyflakes 真实 bug）必须 0 违规；其他规则后续在 R3-1 工程化基线
+# sprint 里逐步加严。
+#
+# 不开 BLE001（broad except）：仓库现有 ~570 处 `except Exception`，
+# 一次性整改不现实——R1-1 先建 gate，R1 后续按业务模块批量收窄类型。
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+extend-exclude = [
+    ".venv", "venv", ".git", "__pycache__", "build", "dist",
+    # 长期不维护的脚本（R2-3 计划合并到 core 后删除）
+    "scripts/quant/backtest_cli.py",
+]
+
+[tool.ruff.lint]
+select = [
+    "E722",   # 裸 except —— 零容忍
+    "F",      # pyflakes 真实 bug (undefined-name, unused-var-in-fn, ...)
+    "B006",   # mutable default argument
+    "B008",   # function call in default arg
+    "B017",   # assert raises Exception 太宽
+    "UP031",  # R3-5: 禁止 printf-style "%s" % x（已全仓库 0 违规）
+    "UP032",  # R3-5: 禁止 .format()（已全仓库 0 违规）
+]
+# 已修一批后续 sprint 引入：
+#   "B007"   — 未用循环变量（仓库现 19 处，R3 风格 sprint 处理）
+#   "B904"   — raise from（仓库现 16 处，R1-2 fallback 信号化时统一处理）
+#   "BLE001" — broad-except（仓库 ~570 处，需按业务模块分批收窄）
+#   "UP"     — pyupgrade 其他规则（typing.List → list 等，量大谨慎引入）
+#   "I"      — isort
+#   "SIM"    — simplify
+
+ignore = [
+    "F401",   # 未用 import：~350 处历史 import，R3-1 阶段统一清理
+    "F811",   # 重复定义：~6 处，R3-1 一并清理
+    "F841",   # 未用本地变量：常见于调试残留，R3 处理
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试文件允许更多自由（pytest 风格）
+"tests/**/*.py" = ["B017"]
+
+[tool.ruff.format]
+quote-style = "preserve"  # 不强制改引号风格，等大批量 ruff format 单独 PR
+indent-style = "space"
+
+
+# ─── R3-1: mypy 配置 ─────────────────────────────────────────────────────────
+# 仓库现有代码类型注解不齐（R3-2 持续整改），全仓库 mypy strict 会爆 ~300
+# 个错。本批仅对"R0-R2 新写、注解完整、零警告"的核心基础设施模块开启
+# strict mode，新写代码默认进入这一档；存量按模块逐步迁入。
+#
+# 用法：mypy（依据 pyproject.toml 自动找配置）
+
+[tool.mypy]
+python_version = "3.11"
+follow_imports = "silent"        # 不下钻历史代码
+ignore_missing_imports = true    # 第三方库（pandas / akshare / flask 等）无 stubs
+# 全局松：仓库存量代码类型注解不齐，R3-2 持续整改。CI 只检查 strict 模块。
+disallow_untyped_defs = false
+strict_optional = false
+warn_redundant_casts = true      # 全局开（不会误报）
+warn_unused_ignores = true
+
+# 选择性 strict：新写、注解完整的核心基础设施。R0-R2 引入的模块默认进入
+# 这一档；后续按模块逐步迁入更多老代码。
+[[tool.mypy.overrides]]
+module = [
+    "core.singleton",
+    "core.lifecycle",
+    "core.idempotency",
+    "core.errors",
+    "core.config_defaults",
+    "core.use_cases",
+    "core.use_cases.submit_order",
+    # R3-2 批 1: 领域基类
+    "core.factors.base",
+    "core.brokers.base",
+    # R3-2 批 2: use_cases 多模块批量纳入（依然有 compose_portfolio /
+    # pairs_trading_signal 两个 use_case 没进，因为它们触及更深层类型 bug
+    # 留待单独 PR）
+    "core.use_cases.backtest",
+    "core.use_cases.daily_analysis",
+    "core.use_cases.intraday_signals",
+    "core.use_cases.morning_workflow",
+    "core.use_cases.performance_summary",
+    "core.use_cases.risk_snapshot",
+    "core.use_cases.sector_rotation_signal",
+    "core.use_cases.system_health",
+    "core.use_cases.analyze_stock.*",
+    # R3-2 批 3: 核心运行时基础设施
+    "core.risk_state",
+    "core.audit_log",
+    "core.factor_pipeline",
+    "core.data_quality",
+    # R3-2 批 4: regime + event_bus
+    "core.regime",
+    "core.event_bus",
+]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+no_implicit_optional = true

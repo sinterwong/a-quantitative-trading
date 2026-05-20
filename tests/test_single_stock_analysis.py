@@ -35,23 +35,23 @@ import numpy as np   # noqa: E402
 class TestDetectMarket(unittest.TestCase):
 
     def test_a_share_sh(self):
-        from backend.services.single_stock_analysis import detect_market
+        from core.use_cases.analyze_stock import detect_market
         self.assertEqual(detect_market('603369.SH'), 'A')
         self.assertEqual(detect_market('600519.SH'), 'A')
 
     def test_a_share_sz(self):
-        from backend.services.single_stock_analysis import detect_market
+        from core.use_cases.analyze_stock import detect_market
         self.assertEqual(detect_market('000858.SZ'), 'A')
 
     def test_hk_share_formats(self):
-        from backend.services.single_stock_analysis import detect_market
+        from core.use_cases.analyze_stock import detect_market
         self.assertEqual(detect_market('HK:00700'), 'HK')
         self.assertEqual(detect_market('00700.HK'), 'HK')
         self.assertEqual(detect_market('hk00700'), 'HK')
         self.assertEqual(detect_market('HK:9988'), 'HK')   # 4 位
 
     def test_unknown_format(self):
-        from backend.services.single_stock_analysis import detect_market
+        from core.use_cases.analyze_stock import detect_market
         self.assertEqual(detect_market('AAPL'), 'unknown')
         self.assertEqual(detect_market(''), 'unknown')
 
@@ -59,16 +59,16 @@ class TestDetectMarket(unittest.TestCase):
 class TestNormalizers(unittest.TestCase):
 
     def test_normalize_a_share_uppercase(self):
-        from backend.services.single_stock_analysis import normalize_a_share_symbol
+        from core.use_cases.analyze_stock import normalize_a_share_symbol
         self.assertEqual(normalize_a_share_symbol('603369.sh'), '603369.SH')
 
     def test_normalize_a_share_invalid_raises(self):
-        from backend.services.single_stock_analysis import normalize_a_share_symbol
+        from core.use_cases.analyze_stock import normalize_a_share_symbol
         with self.assertRaises(ValueError):
             normalize_a_share_symbol('00700.HK')
 
     def test_normalize_hk_pads_to_5(self):
-        from backend.services.single_stock_analysis import normalize_hk_symbol
+        from core.use_cases.analyze_stock import normalize_hk_symbol
         self.assertEqual(normalize_hk_symbol('HK:700'), 'hk00700')   # 3 位 -> 不匹配 (需 4-5 位)
         # 4 位补 5
         self.assertEqual(normalize_hk_symbol('HK:9988'), 'hk09988')
@@ -82,7 +82,7 @@ class TestNormalizers(unittest.TestCase):
 class TestAnalysisRequest(unittest.TestCase):
 
     def test_minimal_body(self):
-        from backend.services.single_stock_analysis import AnalysisRequest
+        from core.use_cases.analyze_stock import AnalysisRequest
         req = AnalysisRequest.from_body({'symbol': '603369.SH'})
         self.assertEqual(req.symbol, '603369.SH')
         self.assertEqual(req.lookback_days, 250)
@@ -90,12 +90,12 @@ class TestAnalysisRequest(unittest.TestCase):
         self.assertTrue(req.include_regime)
 
     def test_missing_symbol_raises(self):
-        from backend.services.single_stock_analysis import AnalysisRequest
+        from core.use_cases.analyze_stock import AnalysisRequest
         with self.assertRaises(ValueError):
             AnalysisRequest.from_body({})
 
     def test_full_body(self):
-        from backend.services.single_stock_analysis import AnalysisRequest
+        from core.use_cases.analyze_stock import AnalysisRequest
         req = AnalysisRequest.from_body({
             'symbol': '600519.SH', 'lookback_days': 60,
             'include_llm': True, 'include_news': True, 'include_ml': True,
@@ -125,7 +125,7 @@ class TestRiskMetrics(unittest.TestCase):
         })
 
     def test_compute_risk_basic_fields(self):
-        from backend.services.single_stock_analysis import _compute_risk_metrics
+        from core.use_cases.analyze_stock import _compute_risk_metrics
         df = self._fake_df()
         last = float(df['close'].iloc[-1])
         m = _compute_risk_metrics(df, last)
@@ -135,13 +135,13 @@ class TestRiskMetrics(unittest.TestCase):
             self.assertIn(k, m, f'missing {k}')
 
     def test_compute_risk_insufficient(self):
-        from backend.services.single_stock_analysis import _compute_risk_metrics
+        from core.use_cases.analyze_stock import _compute_risk_metrics
         df = self._fake_df(n=10)
         m = _compute_risk_metrics(df, 50.0)
         self.assertEqual(m.get('error'), 'insufficient_bars')
 
     def test_compute_risk_stop_below_close(self):
-        from backend.services.single_stock_analysis import _compute_risk_metrics
+        from core.use_cases.analyze_stock import _compute_risk_metrics
         df = self._fake_df()
         last = float(df['close'].iloc[-1])
         m = _compute_risk_metrics(df, last)
@@ -156,7 +156,7 @@ class TestRiskMetrics(unittest.TestCase):
 class TestRecommendation(unittest.TestCase):
 
     def test_strong_buy_score_triggers_buy(self):
-        from backend.services.single_stock_analysis import _make_recommendation
+        from core.use_cases.analyze_stock import _make_recommendation
         rec = _make_recommendation(
             combined_score=1.5, dominant='BUY',
             regime={'regime': 'BULL', 'signal_threshold_multiplier': 1.0,
@@ -168,7 +168,7 @@ class TestRecommendation(unittest.TestCase):
         self.assertGreater(rec['confidence'], 0.8)
 
     def test_bear_blocks_new_buys(self):
-        from backend.services.single_stock_analysis import _make_recommendation
+        from core.use_cases.analyze_stock import _make_recommendation
         rec = _make_recommendation(
             combined_score=2.0, dominant='BUY',
             regime={'regime': 'BEAR', 'signal_threshold_multiplier': 1.4,
@@ -179,7 +179,7 @@ class TestRecommendation(unittest.TestCase):
         self.assertIn('BEAR', rec['reasoning'])
 
     def test_negative_roe_penalty(self):
-        from backend.services.single_stock_analysis import _make_recommendation
+        from core.use_cases.analyze_stock import _make_recommendation
         rec_with_neg_roe = _make_recommendation(
             combined_score=0.50, dominant='HOLD',
             regime=None,
@@ -191,7 +191,7 @@ class TestRecommendation(unittest.TestCase):
         self.assertIn('ROE', rec_with_neg_roe['reasoning'])
 
     def test_high_vol_discount(self):
-        from backend.services.single_stock_analysis import _make_recommendation
+        from core.use_cases.analyze_stock import _make_recommendation
         # 高波动应折损置信度
         rec = _make_recommendation(
             combined_score=0.6, dominant='BUY', regime=None,
@@ -208,21 +208,21 @@ class TestRecommendation(unittest.TestCase):
 class TestSafeJsonExtract(unittest.TestCase):
 
     def test_pure_json(self):
-        from backend.services.single_stock_analysis import _safe_json_extract
+        from core.use_cases.analyze_stock import _safe_json_extract
         self.assertEqual(_safe_json_extract('{"a": 1}'), {'a': 1})
 
     def test_fenced_codeblock(self):
-        from backend.services.single_stock_analysis import _safe_json_extract
+        from core.use_cases.analyze_stock import _safe_json_extract
         text = '前置说明\n```json\n{"action": "BUY"}\n```\n后续'
         self.assertEqual(_safe_json_extract(text), {'action': 'BUY'})
 
     def test_text_with_braces(self):
-        from backend.services.single_stock_analysis import _safe_json_extract
+        from core.use_cases.analyze_stock import _safe_json_extract
         text = '分析：\n{"x": 2, "y": [1,2,3]}\n以上为输出。'
         self.assertEqual(_safe_json_extract(text), {'x': 2, 'y': [1, 2, 3]})
 
     def test_invalid_returns_none(self):
-        from backend.services.single_stock_analysis import _safe_json_extract
+        from core.use_cases.analyze_stock import _safe_json_extract
         self.assertIsNone(_safe_json_extract('not json'))
         self.assertIsNone(_safe_json_extract(''))
 
@@ -247,15 +247,15 @@ class TestAnalyzeAShare(unittest.TestCase):
         })
 
     def test_unknown_format_raises(self):
-        from backend.services.single_stock_analysis import analyze_a_share, AnalysisRequest
+        from core.use_cases.analyze_stock import analyze_a_share, AnalysisRequest
         req = AnalysisRequest(symbol='HK:00700')
         with self.assertRaises(ValueError):
             analyze_a_share(req)
 
     def test_returns_minimal_when_data_empty(self):
         """数据层完全失败 → 返回最小化报告而非崩溃。"""
-        from backend.services import single_stock_analysis as ssa
-        from backend.services.single_stock_analysis import AnalysisRequest
+        from core.use_cases import analyze_stock as ssa
+        from core.use_cases.analyze_stock import AnalysisRequest
 
         fake_dl = MagicMock()
         fake_dl.get_bars = MagicMock(return_value=pd.DataFrame())
@@ -272,8 +272,8 @@ class TestAnalyzeAShare(unittest.TestCase):
 
     def test_full_path_returns_structure(self):
         """完整路径：mock 数据层 + 因子，验证报告字段齐全。"""
-        from backend.services import single_stock_analysis as ssa
-        from backend.services.single_stock_analysis import AnalysisRequest
+        from core.use_cases import analyze_stock as ssa
+        from core.use_cases.analyze_stock import AnalysisRequest
 
         df = self._fake_df()
         fake_dl = MagicMock()
@@ -338,8 +338,8 @@ class TestAnalyzeHkShare(unittest.TestCase):
         )
 
     def test_normalizes_symbol(self):
-        from backend.services import single_stock_analysis as ssa
-        from backend.services.single_stock_analysis import AnalysisRequest
+        from core.use_cases import analyze_stock as ssa
+        from core.use_cases.analyze_stock import AnalysisRequest
 
         fake_gw = MagicMock()
         fake_gw.quote = MagicMock(return_value=self._make_quote())
@@ -355,8 +355,8 @@ class TestAnalyzeHkShare(unittest.TestCase):
         self.assertEqual(report.regime['regime'], 'N/A')
 
     def test_no_history_falls_back_to_52w_risk(self):
-        from backend.services import single_stock_analysis as ssa
-        from backend.services.single_stock_analysis import AnalysisRequest
+        from core.use_cases import analyze_stock as ssa
+        from core.use_cases.analyze_stock import AnalysisRequest
 
         fake_gw = MagicMock()
         fake_gw.quote = MagicMock(return_value=self._make_quote())
@@ -384,14 +384,14 @@ class TestEndpoints(unittest.TestCase):
         from services.portfolio import PortfolioService
         import tempfile
         self.tmp = tempfile.mkdtemp()
-        api_mod._svc = PortfolioService(db_path=os.path.join(self.tmp, 'p.db'))
+        api_mod.reset_svc(PortfolioService(db_path=os.path.join(self.tmp, 'p.db')))
         api_mod._GLOBAL_RATE_LIMIT.clear()
         api_mod.app.config['TESTING'] = True
         self.client = api_mod.app.test_client()
 
     def tearDown(self):
         import backend.api as api_mod
-        api_mod._svc = None
+        api_mod.reset_svc(None)
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
 

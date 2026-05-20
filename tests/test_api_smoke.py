@@ -27,13 +27,13 @@ sys.path.insert(0, str(PROJ_DIR / 'backend'))
 
 @pytest.fixture(scope='module')
 def client():
-    """加载 backend/api.py 的 Flask app 并返回 test_client。"""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        'api', str(PROJ_DIR / 'backend' / 'api.py'),
-    )
-    api = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(api)
+    """加载 backend.api 的 Flask app 并返回 test_client。
+
+    R2-4: 之前用 ``importlib.util.spec_from_file_location('api', …)`` 把
+    backend/api.py 作为顶级 'api' 模块加载，但 blueprint 拆分后 api.py
+    末尾会 import backend.api_routes.orders，触发"另一份 backend.api 第二
+    次加载"导致循环导入。直接走包路径解决。"""
+    import backend.api as api
     return api.app.test_client()
 
 

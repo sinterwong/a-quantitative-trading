@@ -61,7 +61,8 @@ def get_quarterly_institutional_holdings(quarter: str = '20241') -> dict:
         try:
             with open(cache_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except:
+        except (OSError, json.JSONDecodeError):
+            # 缓存文件损坏 → 视作 miss，下面重新调 AkShare
             pass
 
     try:
@@ -328,12 +329,12 @@ if __name__ == '__main__':
     if result:
         # 测试计算创新药ETF评分
         score = get_etf_institutional_score('159992.SZ', '20243')
-        print(f"\n159992.SZ (创新药ETF):")
+        print("\n159992.SZ (创新药ETF):")
         print(f"  Total Score: {score['total_score']:.2f}")
         print(f"  Avg Fund Count: {score['avg_fund_count']:.1f}")
         print(f"  Avg Hold Ratio: {score['avg_hold_ratio']:.2f}%")
         print(f"  Signal: {score['signal']}")
         if score['top_stocks']:
-            print(f"  Top Holdings:")
+            print("  Top Holdings:")
             for code, name, count, ratio in score['top_stocks'][:3]:
                 print(f"    {code} {name}: {int(count)} funds, {ratio:.2f}%")

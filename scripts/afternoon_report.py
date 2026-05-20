@@ -196,7 +196,7 @@ def build_closing_report(snapshot: dict, return_info: dict) -> str:
     """生成收盘晚报文本。"""
     lines = [
         f"【收盘晚报】{date.today().isoformat()}",
-        f"",
+        "",
     ]
 
     # 大盘快照
@@ -210,7 +210,7 @@ def build_closing_report(snapshot: dict, return_info: dict) -> str:
     lines.append(f"  - 已实现: {snapshot['realized_pnl']:+.0f}")
     lines.append(f"  - 浮动:   {snapshot['unrealized_pnl']:+.0f}")
     lines.append(f"现金: {snapshot['cash']:.0f}")
-    lines.append(f"")
+    lines.append("")
 
     # 持仓状态
     positions = format_positions(snapshot['positions'])
@@ -238,7 +238,7 @@ def build_closing_report(snapshot: dict, return_info: dict) -> str:
             pnl = t.get('pnl', 0)
             lines.append(
                 f"  {direction} {sym} {shares}股 @{px:.2f}"
-                f"{' pnl=%+.0f' % pnl if pnl else ''}"
+                f"{f' pnl={pnl:+.0f}' if pnl else ''}"
             )
     else:
         lines.append("今日成交: 无")

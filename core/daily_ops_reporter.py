@@ -7,7 +7,7 @@ core/daily_ops_reporter.py — 每日运营报告生成器
   - 通过 AlertManager 发送 Markdown 格式日报（支持企业微信/钉钉/邮件）
 
 触发方式：
-  - backend/main.py Scheduler 每日 16:00（收盘后）自动触发
+  - quant_app/run_worker.py Scheduler 每日 16:00（收盘后）自动触发
   - 也可独立调用：DailyOpsReporter().run(api_port=5555)
 
 数据来源（均为本地 API，无需外部平台）：

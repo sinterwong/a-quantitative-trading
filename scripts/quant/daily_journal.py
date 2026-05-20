@@ -188,11 +188,11 @@ def analyze_journal(trades: list, signals: list) -> dict:
 def format_journal_summary(stats: dict) -> str:
     """将分析结果格式化为易读文本。"""
     lines = [
-        f"【绩效归因】",
-        f"",
+        "【绩效归因】",
+        "",
         f"总交易: {stats['total_trades']}笔  胜率: {stats['win_rate']:.0f}%  "
         f"场均: {stats['avg_pnl']:+.0f}  累计: {stats['total_pnl']:+.0f}",
-        f"",
+        "",
     ]
 
     # 按信号统计

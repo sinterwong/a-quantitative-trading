@@ -148,13 +148,20 @@ def main():
         sched = Scheduler(api_port=args.port)
         sched_thread = sched.start()
 
+    # R0-6: 统一的进程级 Shutdown 协调器。
+    # 把 sched.stop / monitor.stop 注册为 handler；进程级 is_shutting_down
+    # 标志供 enqueue 点检查（详见 core/lifecycle.py）。
+    from core.lifecycle import get_shutdown
+    shutdown = get_shutdown()
+
     def _on_shutdown():
         logger.info('Shutdown signal received...')
-        if sched is not None:
-            sched.stop()
 
-    signal.signal(signal.SIGINT, lambda *_: _on_shutdown())
-    signal.signal(signal.SIGTERM, lambda *_: _on_shutdown())
+    shutdown.register_handler(_on_shutdown)
+    if sched is not None:
+        shutdown.register_handler(sched.stop)
+    # monitor 在下面才创建,这里只声明意图;稍后再 register_handler(monitor.stop)
+    shutdown.install_signal_handlers()
 
     global _monitor, _broker
     monitor = None
@@ -163,6 +170,8 @@ def main():
             monitor, broker = build_intraday_monitor(args.port, logger)
             _monitor = monitor
             _broker = broker
+            # R0-6: monitor 创建成功后挂入 shutdown handler 链。
+            shutdown.register_handler(monitor.stop)
         except Exception as e:
             logger.warning('IntradayMonitor init failed (non-fatal): %s', e)
 
@@ -196,12 +205,13 @@ def main():
             while sched_thread.is_alive():
                 sched_thread.join(timeout=5)
         else:
-            # mode=api: 阻塞等待信号
-            signal.pause()
+            # mode=api: 阻塞等待 shutdown 信号（不再依赖 signal.pause()，
+            # 因为 Shutdown.install_signal_handlers 已经接管 SIGINT/SIGTERM）
+            shutdown.wait()
     except KeyboardInterrupt:
-        _on_shutdown()
-        if monitor:
-            monitor.stop()
+        # 双保险——signal handler 应该已经触发 shutdown.request()，
+        # 但万一是 main thread 直接收到 KeyboardInterrupt 就手动触发一次。
+        shutdown.request(reason='KeyboardInterrupt')
 
 
 if __name__ == '__main__':

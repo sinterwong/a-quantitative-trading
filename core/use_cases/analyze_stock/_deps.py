@@ -8,13 +8,13 @@ analyze_stock._deps — 依赖解析辅助。
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ._types import AnalysisRequest
 
 
-def resolve_gateway(req: 'AnalysisRequest'):
+def resolve_gateway(req: 'AnalysisRequest') -> Any:
     """req.gateway > get_gateway()。"""
     if getattr(req, 'gateway', None) is not None:
         return req.gateway
@@ -22,7 +22,7 @@ def resolve_gateway(req: 'AnalysisRequest'):
     return get_gateway()
 
 
-def resolve_data_layer(req: 'AnalysisRequest'):
+def resolve_data_layer(req: 'AnalysisRequest') -> Any:
     """req.data_layer > get_data_layer()。"""
     if getattr(req, 'data_layer', None) is not None:
         return req.data_layer

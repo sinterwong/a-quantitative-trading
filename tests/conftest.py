@@ -24,6 +24,11 @@ def _isolate_db_session():
     """
     在任何测试运行前，把 sqlite3.connect 劫持到 session-scoped temp file。
     所有测试进程共享这一个隔离 DB，测试结束后自动清理。
+
+    R3-3: 同时把 QUANT_RISK_STATE_PATH 指到 tmp 文件，避免某些测试调
+    write_risk_state() 污染真实 data/risk_state.json 导致 HALT_NEW_BUYS
+    state 跨测试泄漏（前置测试已暴露问题，pytest-randomly 下 3 个
+    intraday 测试随机失败）。
     """
     _original_connect = sqlite3.connect
 
@@ -45,10 +50,19 @@ def _isolate_db_session():
 
     sqlite3.connect = _patched_connect
 
+    # R3-3: 风险状态文件隔离
+    _orig_risk_state = os.environ.get('QUANT_RISK_STATE_PATH')
+    tmp_risk_state = os.path.join(tmp_db, 'risk_state.json')
+    os.environ['QUANT_RISK_STATE_PATH'] = tmp_risk_state
+
     yield tmp_db_file
 
     # ── restore ──────────────────────────────────────────────────────────────
     sqlite3.connect = _original_connect
+    if _orig_risk_state is None:
+        os.environ.pop('QUANT_RISK_STATE_PATH', None)
+    else:
+        os.environ['QUANT_RISK_STATE_PATH'] = _orig_risk_state
     shutil.rmtree(tmp_db, ignore_errors=True)
 
 
@@ -90,3 +104,21 @@ def _reset_module_caches():
         wm._trade_calendar_date = ''
     except (ImportError, AttributeError):
         pass
+
+    # R0-2: 通过 SingletonRegistry 一次性清掉所有迁移到 LockedSingleton 的全局态，
+    # 避免新增单例时再来这里手写 reset_*。
+    try:
+        from core.singleton import SingletonRegistry
+        SingletonRegistry.reset_all()
+    except ImportError:
+        pass
+
+    # R3-3: 清理 risk_state.json halt 状态。test_daily_risk_report 可能写入
+    # halt_new_buys=True, 后续 intraday 测试读到会跳过 submit_order, 导致
+    # pytest-randomly 顺序下随机失败。
+    risk_path = os.environ.get('QUANT_RISK_STATE_PATH')
+    if risk_path and os.path.exists(risk_path):
+        try:
+            os.unlink(risk_path)
+        except OSError:
+            pass

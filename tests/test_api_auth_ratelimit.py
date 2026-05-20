@@ -44,7 +44,7 @@ def app(tmp_path, monkeypatch):
     db_path = str(tmp_path / 'portfolio.db')
     svc = PortfolioService(db_path=db_path)
     svc.set_cash(100_000.0)
-    api_mod._svc = svc
+    api_mod.reset_svc(svc)
     api_mod._GLOBAL_RATE_LIMIT.clear()
     api_mod.app.config['TESTING'] = True
 
@@ -54,7 +54,7 @@ def app(tmp_path, monkeypatch):
 
     yield test_client
 
-    api_mod._svc = None
+    api_mod.reset_svc(None)
     api_mod._GLOBAL_RATE_LIMIT.clear()
 
 

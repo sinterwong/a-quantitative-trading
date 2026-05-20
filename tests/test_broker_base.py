@@ -299,25 +299,11 @@ class TestStubBrokers(unittest.TestCase):
         self.assertIsInstance(fill, Fill)
         self.assertEqual(fill.shares, 0)
 
-    def test_tiger_is_broker_base(self):
-        from core.brokers.tiger import TigerBroker
-        b = TigerBroker()
-        self.assertIsInstance(b, BrokerBase)
-
-    def test_ibkr_is_broker_base(self):
-        from core.brokers.ibkr import IBBroker
-        b = IBBroker()
-        self.assertIsInstance(b, BrokerBase)
-
     def test_futu_supported_markets(self):
         from core.brokers.futu import FutuBroker
         markets = FutuBroker().supported_markets()
         self.assertIn(MarketType.HK_STOCK, markets)
-
-    def test_ibkr_supported_markets(self):
-        from core.brokers.ibkr import IBBroker
-        markets = IBBroker().supported_markets()
-        self.assertIn(MarketType.US_STOCK, markets)
+    # R2-2: 删除了 core/brokers/{ibkr,tiger}.py 死代码 stub，对应测试一并移除。
 
 
 if __name__ == '__main__':

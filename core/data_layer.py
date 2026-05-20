@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -386,20 +385,16 @@ class BacktestDataLayer(DataLayer):
 
 # ─── 全局单例 ──────────────────────────────────────────────────────────────────
 
+from core.singleton import LockedSingleton
 
-_global_layer: Optional[DataLayer] = None
-_global_lock = threading.Lock()
+_layer_singleton: LockedSingleton[DataLayer] = LockedSingleton(
+    DataLayer, name="data_layer"
+)
 
 
 def get_data_layer() -> DataLayer:
-    global _global_layer
-    with _global_lock:
-        if _global_layer is None:
-            _global_layer = DataLayer()
-    return _global_layer
+    return _layer_singleton.get()
 
 
 def reset_data_layer() -> None:
-    global _global_layer
-    with _global_lock:
-        _global_layer = None
+    _layer_singleton.reset()

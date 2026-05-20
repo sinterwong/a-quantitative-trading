@@ -13,9 +13,10 @@ tests/test_circuit_breaker.py — P2-16 熔断器测试
 
 from __future__ import annotations
 
-import time
 import unittest
 from unittest.mock import patch
+
+from freezegun import freeze_time
 
 
 class TestCircuitBreakerCore(unittest.TestCase):
@@ -51,33 +52,37 @@ class TestCircuitBreakerCore(unittest.TestCase):
         self.assertEqual(cb.state(), 'closed')   # 重置后只 1 次失败
 
     def test_cooldown_transitions_to_half_open(self):
+        """R3-3: freeze_time 替代 time.sleep(0.06)。"""
         from core.circuit_breaker import CircuitBreaker
-        cb = CircuitBreaker('x', failure_threshold=2, cooldown_seconds=0.05)
-        cb.on_failure()
-        cb.on_failure()
-        self.assertEqual(cb.state(), 'open')
-        time.sleep(0.06)
-        self.assertEqual(cb.state(), 'half_open')
-        self.assertTrue(cb.allow())
+        with freeze_time('2026-05-19 10:00:00') as frozen:
+            cb = CircuitBreaker('x', failure_threshold=2, cooldown_seconds=60)
+            cb.on_failure()
+            cb.on_failure()
+            self.assertEqual(cb.state(), 'open')
+            frozen.tick(delta=61)  # 跨过 cooldown
+            self.assertEqual(cb.state(), 'half_open')
+            self.assertTrue(cb.allow())
 
     def test_half_open_failure_reopens(self):
         from core.circuit_breaker import CircuitBreaker
-        cb = CircuitBreaker('x', failure_threshold=2, cooldown_seconds=0.05)
-        cb.on_failure()
-        cb.on_failure()
-        time.sleep(0.06)
-        # half_open 状态下再失败应立即 re-open
-        cb.on_failure()
-        self.assertEqual(cb.state(), 'open')
+        with freeze_time('2026-05-19 10:00:00') as frozen:
+            cb = CircuitBreaker('x', failure_threshold=2, cooldown_seconds=60)
+            cb.on_failure()
+            cb.on_failure()
+            frozen.tick(delta=61)
+            # half_open 状态下再失败应立即 re-open
+            cb.on_failure()
+            self.assertEqual(cb.state(), 'open')
 
     def test_half_open_success_closes(self):
         from core.circuit_breaker import CircuitBreaker
-        cb = CircuitBreaker('x', failure_threshold=2, cooldown_seconds=0.05)
-        cb.on_failure()
-        cb.on_failure()
-        time.sleep(0.06)
-        cb.on_success()
-        self.assertEqual(cb.state(), 'closed')
+        with freeze_time('2026-05-19 10:00:00') as frozen:
+            cb = CircuitBreaker('x', failure_threshold=2, cooldown_seconds=60)
+            cb.on_failure()
+            cb.on_failure()
+            frozen.tick(delta=61)
+            cb.on_success()
+            self.assertEqual(cb.state(), 'closed')
 
     def test_on_open_callback(self):
         from core.circuit_breaker import CircuitBreaker

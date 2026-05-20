@@ -54,12 +54,13 @@ class MarketEvent(Event):
 
 @dataclass
 class SignalEvent(Event):
-    """信号事件"""
-    signal: 'Signal' = None  # Forward reference
+    """信号事件。
 
-    @property
-    def signal(self) -> Signal:
-        return self.signal
+    注意：``signal`` 既是属性也是字段（dataclass）。原来的 @property 与字段
+    同名导致 mypy 报 no-redef，且属性 getter 调用自己会无限递归。这里仅
+    保留 dataclass 字段，去掉冗余 @property。
+    """
+    signal: Optional['Signal'] = None
 
 
 @dataclass
@@ -149,7 +150,7 @@ class EventBus:
     _instance: Optional['EventBus'] = None
     _lock = threading.Lock()
 
-    def __new__(cls, *args, **kwargs):
+    def __new__(cls, *args: Any, **kwargs: Any) -> 'EventBus':
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -164,8 +165,8 @@ class EventBus:
         if hasattr(self, '_initialized'):
             return
         self._initialized = True
-        self._handlers: Dict[str, List[Callable]] = {}
-        self._queue: queue.Queue = queue.Queue()
+        self._handlers: Dict[str, List[Callable[[Event], None]]] = {}
+        self._queue: queue.Queue[Event] = queue.Queue()
         self._async_mode = async_mode
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -204,7 +205,7 @@ class EventBus:
         """异步触发（线程安全）"""
         self._queue.put(event)
 
-    def _async_loop(self):
+    def _async_loop(self) -> None:
         """异步处理循环"""
         while self._running:
             try:
@@ -215,14 +216,14 @@ class EventBus:
             except Exception as e:
                 print(f"[EventBus] Async error: {e}")
 
-    def start_async(self):
+    def start_async(self) -> None:
         """启动异步处理线程"""
         if self._async_mode and not self._running:
             self._running = True
             self._thread = threading.Thread(target=self._async_loop, daemon=True)
             self._thread.start()
 
-    def stop_async(self):
+    def stop_async(self) -> None:
         """停止异步处理"""
         self._running = False
         if self._thread:
@@ -235,7 +236,7 @@ class EventBus:
         链式处理：上一个处理器的输出作为下一个的输入。
         常用于：MarketEvent → SignalGenerator → RiskEngine → OMS
         """
-        def wrapper(event: Event):
+        def wrapper(event: Event) -> None:
             result = event
             for h in handlers:
                 result = h(result)

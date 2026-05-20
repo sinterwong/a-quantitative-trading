@@ -437,7 +437,8 @@ class BacktestEngine:
             end = datetime.strptime(end_str, '%Y-%m-%d')
             years = max((end - start).days / 365, 0.01)
             annualized = ((final_value / self.initial_capital) ** (1 / years) - 1) * 100
-        except:
+        except Exception:
+            # 日期解析失败 → 按总回报近似年化（误差仅影响展示，不影响成交）
             years = 1
             annualized = total_return_pct
 

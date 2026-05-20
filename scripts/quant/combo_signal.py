@@ -180,7 +180,7 @@ def run_comparison(symbol, start_date=None, end_date=None, capital=200000):
                              stop_loss=stop_loss, take_profit=take_profit,
                              max_position_pct=0.20)
     r_rsi = engine.run(kline, sig_rsi, 'RSI_Only')
-    r_rsi['_name'] = f'RSI_Only'
+    r_rsi['_name'] = 'RSI_Only'
     r_rsi['_trades'] = len([t for t in engine.trades if t['action']=='buy'])
     results.append(r_rsi)
     print(f"  RSI_Only:       Sharpe={r_rsi['sharpe_ratio']:+.3f}  "
@@ -215,7 +215,7 @@ def run_comparison(symbol, start_date=None, end_date=None, capital=200000):
 
     # ── 汇总表 ──
     print(f"\n{'='*60}")
-    print(f"  汇总对比")
+    print("  汇总对比")
     print(f"{'='*60}")
     print(f"  {'Signal':<15} {'Sharpe':>8} {'Return':>9} {'Annual':>9} {'MaxDD':>8} {'WinRate':>7} {'Trades':>6}")
     print(f"  {'-'*60}")
@@ -225,7 +225,7 @@ def run_comparison(symbol, start_date=None, end_date=None, capital=200000):
               f"{r['max_drawdown_pct']:>7.1f}% {r['win_rate_pct']:>6.0f}% {r['_trades']:>5d}")
 
     # ── 结论 ──
-    print(f"\n  结论:")
+    print("\n  结论:")
     rsi_only = results[0]
     rsi_vol = results[1]
 
@@ -236,9 +236,9 @@ def run_comparison(symbol, start_date=None, end_date=None, capital=200000):
             print(f"    夏普提升: {rsi_only['sharpe_ratio']:+.3f} -> {best['sharpe_ratio']:+.3f}")
             print(f"    交易次数减少: {rsi_only['_trades']} -> {best['_trades']} (减少假信号)")
         else:
-            print(f"    放量确认无效。RSI 单独信号更优。")
+            print("    放量确认无效。RSI 单独信号更优。")
     else:
-        print(f"    所有 RSI+Vol 组合均不如 RSI 单独。")
+        print("    所有 RSI+Vol 组合均不如 RSI 单独。")
 
     return results
 

@@ -3,11 +3,14 @@
 基于真实机构持仓数据（基金重仓、社保、QFII）
 """
 
+import logging
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backtest import TechnicalIndicators as TI
+
+logger = logging.getLogger(__name__)
 
 # ========== 真实数据源接入 ==========
 
@@ -57,11 +60,12 @@ def get_institutional_holdings_change(symbol):
                         'type': 'fund',
                         'change': row.get('持股变化', 0)
                     })
-        except:
-            pass
+        except Exception as exc:  # noqa: BLE001 — 上游 ak API 不抛具体类型
+            logger.debug('inner fund hold parse failed: %s', exc)
 
         return changes
-    except:
+    except Exception as exc:  # noqa: BLE001 — 同上
+        logger.debug('institutional changes outer fetch failed: %s', exc)
         return []
 
 

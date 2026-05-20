@@ -356,7 +356,7 @@ class AlertManager:
 
         lines = [
             f"**{report_date} 每日交易报告**",
-            f"",
+            "",
             f"**总体 P&L：** {pnl_sign}{total_pnl:.2f} 元 ({pct_sign}{pnl_pct*100:.2f}%) {status}",
             f"**成交笔数：** {n_trades}",
         ]
@@ -550,18 +550,18 @@ class AlertManager:
 # 全局单例（可选）
 # ---------------------------------------------------------------------------
 
-_global_alert_manager: Optional[AlertManager] = None
+from core.singleton import LockedSingleton
+
+_alert_singleton: LockedSingleton[AlertManager] = LockedSingleton(
+    AlertManager, name="alert_manager"
+)
 
 
 def get_alert_manager() -> AlertManager:
-    """获取全局 AlertManager 单例（懒初始化）。"""
-    global _global_alert_manager
-    if _global_alert_manager is None:
-        _global_alert_manager = AlertManager()
-    return _global_alert_manager
+    """获取全局 AlertManager 单例（懒初始化、线程安全）。"""
+    return _alert_singleton.get()
 
 
 def reset_alert_manager(manager: Optional[AlertManager] = None) -> None:
     """重置全局单例（测试用）。"""
-    global _global_alert_manager
-    _global_alert_manager = manager
+    _alert_singleton.reset(manager)

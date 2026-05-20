@@ -47,7 +47,8 @@ class DataLoader:
             try:
                 with open(cache_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except:
+            except (OSError, json.JSONDecodeError):
+                # Cache 损坏或读取失败 → 视作 miss，由调用方重拉
                 pass
         return None
 
@@ -330,7 +331,8 @@ class DataLoader:
                         'low': float(item['low']),
                         'volume': float(item['volume'])
                     })
-                except:
+                except (KeyError, TypeError, ValueError):
+                    # 单条数据格式异常跳过，整批继续
                     continue
 
             if data:

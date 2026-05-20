@@ -316,7 +316,8 @@ class StrategyRunner:
         # 1. 获取历史 K 线
         try:
             data = self.data_layer.get_bars(symbol, days=self.config.bars_lookback)
-        except Exception as exc:
+        except (OSError, ValueError, KeyError) as exc:
+            # 数据层失败：网络 IO / 缓存损坏 / 列缺失 → 该 symbol 跳过本轮
             logger.warning("[StrategyRunner] get_bars(%s) failed: %s", symbol, exc)
             return RunResult(
                 symbol=symbol, timestamp=ts,
@@ -336,9 +337,12 @@ class StrategyRunner:
         try:
             quote = self.data_layer.get_realtime(symbol)
             if quote:
+                # quote 可能是 dict (DataLayer) 或 Quote dataclass (DataGateway)
                 price = quote.get('price') or quote.get('close')
-        except Exception:
-            pass  # 用 DataFrame 末行 close 作为 fallback，由 pipeline 处理
+        except (OSError, ValueError, KeyError, AttributeError) as exc:
+            # 实时报价失败 / quote 不是 dict → 让 pipeline 用 DataFrame 末行 close 兜底
+            logger.debug("[StrategyRunner] get_realtime(%s) failed (using bar fallback): %s",
+                         symbol, exc)
 
         # 3. 运行因子流水线
         try:
@@ -733,7 +737,10 @@ class StrategyRunner:
             try:
                 quote = self.data_layer.get_realtime(sym)
                 price = float(quote.get('price') or quote.get('close') or 0)
-            except Exception:
+            except (OSError, ValueError, KeyError, AttributeError) as exc:
+                # 实时报价失败 → 跳过本 symbol 的 rebalance
+                logger.debug("[StrategyRunner] rebalance get_realtime(%s) failed: %s",
+                             sym, exc)
                 price = 0.0
             if price <= 0:
                 continue
@@ -771,7 +778,9 @@ class StrategyRunner:
                 if df is None or len(df) < 30:
                     continue
                 cols[sym] = df['close'].pct_change().dropna()
-            except Exception:
+            except (OSError, ValueError, KeyError) as exc:
+                # 数据层失败 → 跳过该 symbol，不影响整个矩阵
+                logger.debug("[StrategyRunner] returns matrix skip %s: %s", sym, exc)
                 continue
         if not cols:
             return None
@@ -796,8 +805,13 @@ class StrategyRunner:
                     })
                 if positions:
                     return positions
-            except Exception:
-                pass
+            except Exception as exc:
+                # R0-4: 不再静默吞错。RiskEngine.book 读取失败若不出声，
+                # 后续再平衡会被当作"没历史数据"静默跳过，无人察觉。
+                logger.warning(
+                    '[StrategyRunner] read positions from RiskEngine failed: %s',
+                    exc,
+                )
 
         if self.oms is not None:
             try:
@@ -812,7 +826,10 @@ class StrategyRunner:
                     for p in self.oms.broker.get_positions()
                     if p.shares > 0
                 ]
-            except Exception:
-                pass
+            except Exception as exc:
+                # R0-4: 同上——OMS 持仓读取失败必须留痕，不能假装"无持仓"。
+                logger.warning(
+                    '[StrategyRunner] read positions from OMS failed: %s', exc,
+                )
 
         return []
