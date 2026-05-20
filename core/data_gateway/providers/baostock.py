@@ -205,7 +205,7 @@ class BaostockProvider(Provider):
             try:
                 rs = session._bs.query_history_k_data_plus(
                     bs_code,
-                    "date,open,high,low,close,volume,amount",
+                    "date,open,high,low,close,volume,amount,peTTM,pbMRQ,psTTM,pcfNcfTTM",
                     start_date=start_date,
                     end_date=end_date,
                     frequency="d",
@@ -220,7 +220,8 @@ class BaostockProvider(Provider):
                 df = rs.get_data()
                 if df is None or df.empty:
                     return pd.DataFrame()
-                for col in ["open", "high", "low", "close", "volume", "amount"]:
+                for col in ["open", "high", "low", "close", "volume", "amount",
+                             "peTTM", "pbMRQ", "psTTM", "pcfNcfTTM"]:
                     if col in df.columns:
                         df[col] = pd.to_numeric(df[col], errors="coerce")
                 df = df.rename(columns={"date": "timestamp"})
@@ -292,6 +293,19 @@ class BaostockProvider(Provider):
             if total_share > 0:
                 eps_ttm = net_profit / total_share
 
+        # BPS = 归属母公司股东权益 / 总股本
+        total_share = _safe_float(row.get("totalShare"))
+        equity_attr = _safe_float(row.get("nIncomeAttrP"))  # 归属净利润，临时用
+        # totalShare 单位是股（整数），MBRevenue/roeAvg 可间接算 BPS
+        # 已知 roeAvg = 归属净利润 / 平均净资产 => 净资产 ≈ 归属净利润 / roeAvg
+        roe_avg = _safe_float(row.get("roeAvg"))
+        net_profit_attr = _safe_float(row.get("nIncomeAttrP"))
+        if roe_avg > 0 and total_share > 0:
+            equity_attr = net_profit_attr / roe_avg  # 估算平均净资产
+            bps_val = equity_attr / total_share
+        else:
+            bps_val = 0.0
+
         fundamentals = Fundamentals(
             symbol=symbol,
             name=name,
@@ -300,7 +314,13 @@ class BaostockProvider(Provider):
             profit_ttm=_safe_float(row.get("netProfit")),
             revenue_ttm=revenue_val,
             industry=industry,
+            net_margin=_safe_float(row.get("npMargin")) * 100,   # 小数→%
+            gross_margin=_safe_float(row.get("gpMargin")) * 100,  # 小数→%
+            bps=bps_val,
         )
+
+        # 股息率：近12个月每股股利之和 / 当前股价（从 K 线 peTTM 反推）
+        self._fill_dividend_yield(fundamentals, session, bs_code, eps_ttm)
 
         # 现金流
         if cashflow is not None and not cashflow.empty:
@@ -472,21 +492,189 @@ class BaostockProvider(Provider):
 
     # ─── FUNDAMENTALS_HISTORY ────────────────────────────────────────────────
 
+    def _fetch_all_financials(
+        self, session: _BaostockSession, bs_code: str, years: int = 4,
+    ) -> Dict[str, pd.DataFrame]:
+        """批量拉取近 N 年 6 张季频财务报表，返回 dict[表名, DataFrame]。"""
+        tables: Dict[str, pd.DataFrame] = {}
+        year = datetime.now().year
+
+        fetchers = {
+            "profit": session._bs.query_profit_data,
+            "cashflow": session._bs.query_cash_flow_data,
+            "operation": session._bs.query_operation_data,
+            "dupont": session._bs.query_dupont_data,
+            "growth": session._bs.query_growth_data,
+            "balance": session._bs.query_balance_data,
+        }
+
+        for name, fetcher in fetchers.items():
+            all_rows = []
+            for offset in range(years):
+                y = year - offset
+                for q in [4, 3, 2, 1]:
+                    rs = fetcher(bs_code, year=y, quarter=q)
+                    if rs.error_msg == "success":
+                        df = rs.get_data()
+                        if df is not None and not df.empty:
+                            all_rows.append(df)
+            if all_rows:
+                tables[name] = pd.concat(all_rows, ignore_index=True)
+        return tables
+
+    def _normalize_financial_history(
+        self, tables: Dict[str, pd.DataFrame], start: str | None, end: str | None,
+    ) -> pd.DataFrame:
+        """将多张季频财报 DataFrame 合并归一化为日频前向填充序列。
+
+        输出列（来自 Baostock 六表）:
+          gross_margin   %   销售毛利率     profit.gpMargin
+          net_margin     %   销售净利率     profit.npMargin
+          eps_ttm              每股收益TTM  profit.epsTTM
+          roe_ttm        %   ROE(平均)     profit.roeAvg
+          revenue_ttm     元  主营收入      profit.MBRevenue
+          profit_ttm      元  净利润        profit.netProfit
+          debt_to_equity  %   资产负债率    balance.liabilityToAsset
+          current_ratio         流动比率      balance.currentRatio
+          quick_ratio           速动比率      balance.quickRatio
+          cfo_to_profit         CFO/净利润   cashflow.CFOToNP
+          cfo_to_revenue        CFO/营收     cashflow.CFOToOR
+          asset_turn      次   总资产周转率  operation.assetTurnRatio
+          inv_turn_days   天   存货周转天数  operation.INVTurnDays
+          nr_turn_days    天   应收周转天数  operation.NRTurnDays
+          equity_yoy      %   净资产同比    growth.YOYEquity
+          profit_yoy      %   净利润同比    growth.YOYNI
+          revenue_yoy     %   营收同比      (自算)
+          dupont_roe      %   杜邦ROE       dupont.dupontROE
+          equity_multiplier     权益乘数     dupont.dupontAssetStoEquity
+        """
+        dfs = {}
+        for name, raw in tables.items():
+            if raw is None or raw.empty or "statDate" not in raw.columns:
+                continue
+            df = raw.copy()
+            df["_dt"] = pd.to_datetime(df["statDate"], errors="coerce")
+            df = df.dropna(subset=["_dt"]).sort_values("_dt")
+            df = df.drop_duplicates(subset=["_dt"], keep="last").set_index("_dt")
+            dfs[name] = df
+
+        if not dfs:
+            return pd.DataFrame()
+
+        # 逐表提取目标字段
+        result: Dict[str, pd.Series] = {}
+
+        if "profit" in dfs:
+            p = dfs["profit"]
+            for col, out in [
+                ("gpMargin", "gross_margin"),
+                ("npMargin", "net_margin"),
+                ("epsTTM", "eps_ttm"),
+                ("roeAvg", "roe_ttm"),
+                ("MBRevenue", "revenue_ttm"),
+                ("netProfit", "profit_ttm"),
+            ]:
+                if col in p.columns:
+                    s = pd.to_numeric(p[col], errors="coerce")
+                    if out in ("gross_margin", "net_margin", "roe_ttm"):
+                        s = s * 100
+                    result[out] = s
+
+        if "balance" in dfs:
+            b = dfs["balance"]
+            for col, out in [
+                ("liabilityToAsset", "debt_to_equity"),
+                ("currentRatio", "current_ratio"),
+                ("quickRatio", "quick_ratio"),
+            ]:
+                if col in b.columns:
+                    s = pd.to_numeric(b[col], errors="coerce")
+                    if out == "debt_to_equity":
+                        s = s * 100
+                    result[out] = s
+
+        if "cashflow" in dfs:
+            c = dfs["cashflow"]
+            for col, out in [
+                ("CFOToNP", "cfo_to_profit"),
+                ("CFOToOR", "cfo_to_revenue"),
+            ]:
+                if col in c.columns:
+                    result[out] = pd.to_numeric(c[col], errors="coerce")
+
+        if "operation" in dfs:
+            o = dfs["operation"]
+            for col, out in [
+                ("AssetTurnRatio", "asset_turn"),
+                ("INVTurnDays", "inv_turn_days"),
+                ("NRTurnDays", "nr_turn_days"),
+            ]:
+                if col in o.columns:
+                    result[out] = pd.to_numeric(o[col], errors="coerce")
+
+        if "growth" in dfs:
+            g = dfs["growth"]
+            for col, out in [
+                ("YOYEquity", "equity_yoy"),
+                ("YOYNI", "profit_yoy"),
+            ]:
+                if col in g.columns:
+                    result[out] = pd.to_numeric(g[col], errors="coerce") * 100
+
+        if "dupont" in dfs:
+            d = dfs["dupont"]
+            for col, out in [
+                ("dupontROE", "dupont_roe"),
+                ("dupontAssetStoEquity", "equity_multiplier"),
+            ]:
+                if col in d.columns:
+                    s = pd.to_numeric(d[col], errors="coerce")
+                    if out == "dupont_roe":
+                        s = s * 100
+                    result[out] = s
+
+        # revenue_yoy：自算同期比（Q4 vs Q4）
+        if "profit" in dfs:
+            p = dfs["profit"].copy()
+            p = p[p["MBRevenue"].notna()]
+            p["MBRevenue"] = pd.to_numeric(p["MBRevenue"], errors="coerce")
+            p = p.dropna(subset=["MBRevenue"])
+            p = p.sort_index()
+            if not p.empty and len(p) >= 2:
+                p["rev_yoy"] = p["MBRevenue"].pct_change(periods=4) * 100
+                p = p.dropna(subset=["rev_yoy"])
+                if not p.empty:
+                    result["revenue_yoy"] = p["rev_yoy"]
+
+        if not result:
+            return pd.DataFrame()
+
+        quarterly = pd.DataFrame(result).sort_index()
+        quarterly = quarterly.drop_duplicates(keep="last")
+
+        # 季频 → 日频
+        start_dt = pd.Timestamp(start) if start else quarterly.index.min()
+        end_dt = pd.Timestamp(end) if end else pd.Timestamp.now()
+        daily_idx = pd.bdate_range(start=start_dt, end=end_dt)
+        union_idx = quarterly.index.union(daily_idx).sort_values()
+        daily = quarterly.reindex(union_idx).ffill().reindex(daily_idx)
+        return daily
+
     def fetch_fundamentals_history(
         self, symbol: str, start: str | None = None, end: str | None = None,
     ) -> pd.DataFrame:
-        """A股财务历史时序(日频,前向填充季报)。
+        """A股财务历史时序（日频，前向填充季报）。
 
-        当前仅输出 balance sheet 衍生字段(W1-2),与 AkshareProvider 提供的
-        利润表字段(roe_ttm/eps_ttm/...)互为字段级互补。
+        Baostock 六表全量输出：profit / cashflow / operation / dupont / growth / balance。
+        与 AkshareProvider 的 roe_ttm/eps_ttm/... 字段级互补。
 
         Returns
         -------
         pd.DataFrame
-            DatetimeIndex(工作日),列:
-              debt_to_equity (%)   - liabilityToAsset × 100
-              current_ratio        - 流动比率
-              quick_ratio          - 速动比率
+            DatetimeIndex（工作日），列: gross_margin, net_margin, eps_ttm, roe_ttm,
+            revenue_ttm, profit_ttm, debt_to_equity, current_ratio, quick_ratio,
+            cfo_to_profit, cfo_to_revenue, asset_turn, inv_turn_days, nr_turn_days,
+            equity_yoy, profit_yoy, revenue_yoy, dupont_roe, equity_multiplier
         """
         try:
             session = _get_session()
@@ -495,16 +683,16 @@ class BaostockProvider(Provider):
 
         bs_code = _symbol_to_bs(symbol)
         try:
-            raw = self._fetch_balance_history(session, bs_code)
+            tables = self._fetch_all_financials(session, bs_code)
         except Exception as exc:
             raise ProviderError(
                 f"baostock fetch_fundamentals_history({symbol}): {exc}"
             ) from exc
 
-        if raw is None or raw.empty:
+        if not tables:
             return pd.DataFrame()
 
-        return self._normalize_balance_history(raw, start, end)
+        return self._normalize_financial_history(tables, start, end)
 
     @staticmethod
     def _normalize_balance_history(
@@ -548,6 +736,70 @@ class BaostockProvider(Provider):
         union_idx = quarterly.index.union(daily_idx).sort_values()
         daily = quarterly.reindex(union_idx).ffill().reindex(daily_idx)
         return daily
+
+    def _fill_dividend_yield(
+        self, fundamentals: Fundamentals, session: _BaostockSession,
+        bs_code: str, eps_ttm: float,
+    ):
+        """根据近4期除权除息记录计算股息率，写入 fundamentals.dividend_yield。
+
+        股息率 = 近4期每股税前股利之和 / 当前股价 × 100
+        当前股价 = pe_ttm × eps_ttm（pe_ttm 从最新日 K 线取）。
+        """
+        try:
+            # 取最近1天 K 线拿到 peTTM，然后反推股价
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = _offset_date(end_date, 5)
+            rs = session._bs.query_history_k_data_plus(
+                bs_code,
+                "date,close,peTTM",
+                start_date=start_date,
+                end_date=end_date,
+                frequency="d",
+                adjustflag="3",  # 不复权
+            )
+            if rs.error_msg != "success":
+                return
+            df_kline = rs.get_data()
+            if df_kline is None or df_kline.empty:
+                return
+            latest = df_kline.iloc[0]
+            pe_ttm = _safe_float(latest.get("peTTM"))
+            if pe_ttm <= 0:
+                pe_ttm = _safe_float(latest.get("close"))
+                if pe_ttm <= 0 or eps_ttm <= 0:
+                    return
+                # 没有 PE，用 eps 反推作罢（此时 pe = price/eps）
+                price = pe_ttm
+            else:
+                price = pe_ttm * eps_ttm
+            if price <= 0:
+                return
+
+            # 拉取近4年除权除息数据（每期年报/中报最多一条）
+            total_cash_per_share = 0.0
+            count = 0
+            year = datetime.now().year
+            for offset in range(4):
+                y = str(year - offset)
+                rs_div = session._bs.query_dividend_data(bs_code, year=y, yearType="operate")
+                if rs_div.error_msg == "success":
+                    df_div = rs_div.get_data()
+                    if df_div is not None and not df_div.empty:
+                        for _, div_row in df_div.iterrows():
+                            cps = _safe_float(div_row.get("dividCashPsBeforeTax"))
+                            if cps > 0:
+                                total_cash_per_share += cps
+                                count += 1
+                                if count >= 4:
+                                    break
+                if count >= 4:
+                    break
+
+            if total_cash_per_share > 0 and price > 0:
+                fundamentals.dividend_yield = total_cash_per_share / price * 100
+        except Exception:
+            pass
 
     def _fetch_stock_name(self, session: _BaostockSession, bs_code: str) -> str:
         """通过 stock_basic 查询股票名称。"""
