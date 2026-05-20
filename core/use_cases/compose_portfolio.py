@@ -20,11 +20,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import pandas as pd
 
 from core.use_cases import UseCaseError
+
+if TYPE_CHECKING:
+    from core.data_gateway.gateway import DataGateway
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +58,7 @@ class PortfolioAdvice:
     sharpe: float = 0.0
     diagnostics: Dict[str, str] = field(default_factory=dict)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, object]:
         return {
             'method': self.method,
             'weights': {k: round(float(v), 6) for k, v in self.weights.items()},
@@ -74,8 +77,10 @@ _SUPPORTED_METHODS = {
 
 
 def _build_returns_matrix(
-    universe: List[str], days: int, gateway=None,
-) -> Tuple[pd.DataFrame, List[dict]]:
+    universe: List[str],
+    days: int,
+    gateway: Optional["DataGateway"] = None,
+) -> Tuple[pd.DataFrame, List[Dict[str, str]]]:
     """从 DataGateway 拉每只 symbol 的日 K,组装收益率矩阵。
 
     返回 (returns_df, excluded) — excluded 中的每条记录形如
@@ -85,14 +90,11 @@ def _build_returns_matrix(
     Args:
         gateway: 可选注入的 DataGateway 实例;None 时走 ``get_gateway()``。
     """
-    from core.data_gateway import normalize_kline_index
-    if gateway is None:
-        from core.data_gateway import get_gateway
-        gateway = get_gateway()
-    gw = gateway
+    from core.data_gateway import get_gateway, normalize_kline_index
+    gw: "DataGateway" = gateway if gateway is not None else get_gateway()
 
     series_dict: Dict[str, pd.Series] = {}
-    excluded: List[dict] = []
+    excluded: List[Dict[str, str]] = []
     for sym in universe:
         try:
             df = gw.kline(sym, interval='daily', days=days, limit=days)
@@ -120,7 +122,7 @@ def _build_returns_matrix(
 def compose_portfolio(
     req: ComposePortfolioRequest,
     *,
-    gateway=None,
+    gateway: Optional["DataGateway"] = None,
 ) -> PortfolioAdvice:
     """生成组合权重建议。
 
@@ -144,7 +146,7 @@ def compose_portfolio(
             'need at least 2 assets in universe', code='TOO_FEW_ASSETS',
         )
 
-    excluded: List[dict] = []
+    excluded: List[Dict[str, str]] = []
     if req.injected_returns is not None:
         returns = req.injected_returns
         if returns.empty or returns.shape[1] < 2:

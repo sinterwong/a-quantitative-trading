@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import List
+from typing import Any, Dict, List
 
 from . import UseCaseError
 
@@ -29,13 +29,13 @@ class PairsTradingRequest:
 
 @dataclass
 class PairsTradingResponse:
-    pairs: List[dict] = field(default_factory=list)
+    pairs: List[Dict[str, Any]] = field(default_factory=list)
     n_pairs_found: int = 0
     # 每个 entry: {"pair": "A|B", "error": "<message>"}
     # 单对计算失败不阻塞整体,但调用方能看到失败明细。
-    warnings: List[dict] = field(default_factory=list)
+    warnings: List[Dict[str, str]] = field(default_factory=list)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             'pairs': self.pairs,
             'n_pairs_found': self.n_pairs_found,
@@ -46,7 +46,7 @@ class PairsTradingResponse:
 def find_pairs_signals(
     req: PairsTradingRequest,
     *,
-    data_layer=None,
+    data_layer: Any = None,
 ) -> PairsTradingResponse:
     """筛选协整配对并返回当前 z-score 信号。
 
@@ -77,16 +77,17 @@ def find_pairs_signals(
     price_df = pd.DataFrame(price_dict).dropna()
     pairs = find_cointegrated_pairs(price_df, lookback_days=req.screen_days)
 
-    results: List[dict] = []
-    warnings: List[dict] = []
-    for sym_a, sym_b in pairs[:req.max_pairs]:
+    results: List[Dict[str, Any]] = []
+    warnings: List[Dict[str, str]] = []
+    for sym_a, sym_b, _corr, _pval in pairs[:req.max_pairs]:
         try:
             strat = PairsTradingStrategy(
                 symbol_a=sym_a, symbol_b=sym_b,
                 entry_z=req.entry_z, exit_z=req.exit_z, stop_z=req.stop_z,
                 lookback_days=req.lookback_days,
             )
-            signal = strat.latest_signal(price_df)
+            all_signals = strat.generate_signals(price_df)
+            signal = all_signals[-1] if all_signals else None
             if signal:
                 results.append({
                     'symbol_a': sym_a,

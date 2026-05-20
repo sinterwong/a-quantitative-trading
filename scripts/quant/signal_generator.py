@@ -18,7 +18,7 @@ QUANT_DIR = os.path.dirname(THIS)
 sys.path.insert(0, QUANT_DIR)
 
 from data_loader import DataLoader
-from backtest import TechnicalIndicators as TI
+from technical_indicators import TechnicalIndicators as TI
 import numpy as np
 import institutional_live as inst_live
 

@@ -101,6 +101,11 @@ module = [
     # R3-2 批 4: regime + event_bus
     "core.regime",
     "core.event_bus",
+    # P2 roadmap 收尾：剩余 4 个模块纳入 strict
+    "core.use_cases.compose_portfolio",
+    "core.use_cases.pairs_trading_signal",
+    "core.oms",
+    "core.risk_engine",
 ]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true

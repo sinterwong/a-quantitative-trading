@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, date
-from typing import Dict, List, Literal, Optional, Any, Callable
+from typing import Dict, List, Literal, Optional, Any, Callable, Tuple
 import threading
 import time
 import os, sys
@@ -38,15 +38,15 @@ class RiskResult:
         return cls(passed=True, level='OK')
 
     @classmethod
-    def warn(cls, reason: str, **kwargs) -> 'RiskResult':
+    def warn(cls, reason: str, **kwargs: Any) -> 'RiskResult':
         return cls(passed=True, level='WARN', reason=reason, details=kwargs)
 
     @classmethod
-    def reject(cls, reason: str, **kwargs) -> 'RiskResult':
+    def reject(cls, reason: str, **kwargs: Any) -> 'RiskResult':
         return cls(passed=False, level='REJECT', reason=reason, details=kwargs)
 
     @classmethod
-    def critical(cls, reason: str, **kwargs) -> 'RiskResult':
+    def critical(cls, reason: str, **kwargs: Any) -> 'RiskResult':
         return cls(passed=False, level='CRITICAL', reason=reason, details=kwargs)
 
 
@@ -76,7 +76,7 @@ class RiskPosition:
             return 0
         return (self.current_price - self.avg_price) / self.avg_price
 
-    def update_price(self, price: float, atr: float = 0, rsi: float = 50):
+    def update_price(self, price: float, atr: float = 0, rsi: float = 50) -> None:
         self.current_price = price
         self.atr_14 = atr
         self.rsi_14 = rsi
@@ -101,7 +101,7 @@ class PositionBook:
         if not lazy:
             self._ensure_initialized()
 
-    def _ensure_initialized(self):
+    def _ensure_initialized(self) -> None:
         """首次使用时才加载 API 数据并启动刷新线程，避免构造时阻塞。"""
         if self._initialized:
             return
@@ -112,7 +112,7 @@ class PositionBook:
             self._load_from_api()
             self._start_refresh_thread()
 
-    def _load_from_api(self):
+    def _load_from_api(self) -> None:
         try:
             import urllib.request, json
             base = 'http://127.0.0.1:5555'
@@ -137,11 +137,11 @@ class PositionBook:
             import logging
             logging.getLogger('core.risk_engine').debug('[PositionBook] load error: %s', e)
 
-    def _start_refresh_thread(self):
+    def _start_refresh_thread(self) -> None:
         """启动后台线程，每 refresh_interval 秒重新从 Backend API 同步持仓快照。"""
         import threading
 
-        def _refresh_loop():
+        def _refresh_loop() -> None:
             import time
             while not self._stop_refresh:
                 time.sleep(self._refresh_interval)
@@ -151,7 +151,7 @@ class PositionBook:
         t = threading.Thread(target=_refresh_loop, daemon=True, name='PositionBook-Refresh')
         t.start()
 
-    def stop_refresh(self):
+    def stop_refresh(self) -> None:
         """停止定期刷新线程（用于测试或优雅关闭）。"""
         self._stop_refresh = True
 
@@ -179,19 +179,19 @@ class PositionBook:
         total_mv = sum(p.shares * p.current_price for p in self._positions.values())
         return total_mv / self._equity
 
-    def update_equity(self, equity: float):
+    def update_equity(self, equity: float) -> None:
         self._equity = equity
         if equity > self._peak_equity:
             self._peak_equity = equity
 
-    def update_cash(self, cash: float):
+    def update_cash(self, cash: float) -> None:
         self._cash = cash
 
-    def update_position_price(self, symbol: str, price: float, atr: float = 0, rsi: float = 50):
+    def update_position_price(self, symbol: str, price: float, atr: float = 0, rsi: float = 50) -> None:
         if symbol in self._positions:
             self._positions[symbol].update_price(price, atr, rsi)
 
-    def add_position(self, fill):
+    def add_position(self, fill: Any) -> None:
         sym = fill.symbol
         if sym in self._positions:
             p = self._positions[sym]
@@ -209,7 +209,7 @@ class PositionBook:
                 entry_high=fill.price,
             )
 
-    def reduce_position(self, fill):
+    def reduce_position(self, fill: Any) -> None:
         sym = fill.symbol
         if sym in self._positions:
             p = self._positions[sym]
@@ -247,20 +247,20 @@ class RiskEngine:
       - on_fill()               — 更新账本 + 发射事件
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.book = PositionBook()
-        self.bus = None
+        self.bus: Optional[Any] = None
         self._stop_check_active = False
         self._stop_thread: Optional[threading.Thread] = None
 
-    def set_bus(self, bus):
+    def set_bus(self, bus: Any) -> None:
         self.bus = bus
         from core.event_bus import FillEvent
         bus.on('FillEvent', self._on_fill)
 
     # ── PreTrade ─────────────────────────────────────────────────────────────
 
-    def check(self, signal, order=None) -> RiskResult:
+    def check(self, signal: Any, order: Any = None) -> RiskResult:
         """
         综合 PreTrade 检查。
         返回 RiskResult，passed=False 时 OMS 拒绝下单。
@@ -428,14 +428,14 @@ class RiskEngine:
 
     # ── InTrade Monitoring Loop ─────────────────────────────────────────────
 
-    def start_monitoring(self, interval: int = 60, symbols: List[str] = None):
+    def start_monitoring(self, interval: int = 60, symbols: Optional[List[str]] = None) -> None:
         """启动持仓监控线程（每 interval 秒检查一次）"""
         if self._stop_check_active:
             return
         self._stop_check_active = True
-        self._symbols = symbols or []
+        self._symbols: List[str] = symbols or []
 
-        def loop():
+        def loop() -> None:
             while self._stop_check_active:
                 try:
                     self._monitor_cycle()
@@ -446,7 +446,7 @@ class RiskEngine:
         self._stop_thread = threading.Thread(target=loop, daemon=True)
         self._stop_thread.start()
 
-    def _monitor_cycle(self):
+    def _monitor_cycle(self) -> None:
         """一次监控循环：更新价格 + 检查退出"""
         for sym, pos in list(self.book.get_all().items()):
             if pos.shares == 0:
@@ -462,7 +462,7 @@ class RiskEngine:
             except Exception as e:
                 print(f"[RiskEngine] cycle error for {sym}: {e}")
 
-    def _fetch_risk_data(self, symbol: str) -> tuple:
+    def _fetch_risk_data(self, symbol: str) -> Tuple[float, float, float]:
         """获取当前价格 + ATR(14) + RSI(14)"""
         price = 0.0
         atr = 0.0
@@ -490,7 +490,7 @@ class RiskEngine:
         try:
             from core.data_layer import DataLayer
             dl = DataLayer()
-            df = dl.get_bars(symbol, limit=30)
+            df = dl.get_bars(symbol, days=30)
             if df is not None and len(df) >= 15:
                 high = df['high']
                 low = df['low']
@@ -529,16 +529,19 @@ class RiskEngine:
 
         return price, atr, rsi
 
-    def _emit_risk_event(self, result: RiskResult, symbol: str):
+    def _emit_risk_event(self, result: RiskResult, symbol: str) -> None:
         if self.bus:
             from core.event_bus import RiskEvent, AlertEvent
+            risk_level = result.level
+            if risk_level not in ('WARN', 'CRITICAL', 'REJECT'):
+                return
             self.bus.emit(RiskEvent(
-                level=result.level,
+                level=risk_level,
                 symbol=symbol,
                 reason=result.reason,
                 detail=result.details,
             ))
-            if result.level in ('WARN', 'CRITICAL'):
+            if risk_level in ('WARN', 'CRITICAL'):
                 self.bus.emit(AlertEvent(
                     level='WARN',
                     title=f'风控预警 {symbol}',
@@ -546,12 +549,12 @@ class RiskEngine:
                     channel='feishu',
                 ))
 
-    def stop_monitoring(self):
+    def stop_monitoring(self) -> None:
         self._stop_check_active = False
 
     # ── PostTrade ───────────────────────────────────────────────────────────
 
-    def _on_fill(self, event):
+    def _on_fill(self, event: Any) -> None:
         """成交回报 → 更新账本"""
         fill = event
         self.book.update_equity(

@@ -10,7 +10,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backtest import TechnicalIndicators as TI
+from technical_indicators import TechnicalIndicators as TI
 
 
 def rsi_strategy(data, params=None):
