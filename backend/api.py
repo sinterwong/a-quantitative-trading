@@ -37,14 +37,14 @@ from functools import wraps
 import pandas as pd
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-BACKEND_DIR = os.path.dirname(THIS_DIR)
-PROJ_DIR = os.path.dirname(BACKEND_DIR)
-sys.path.insert(0, PROJ_DIR)
+BACKEND_DIR = THIS_DIR
+PROJ_ROOT = os.path.dirname(THIS_DIR)
+sys.path.insert(0, PROJ_ROOT)
 
 from typing import Optional
 
 from flask import Flask, request, jsonify
-from services.portfolio import PortfolioService
+from backend.services.portfolio import PortfolioService
 from core.data_gateway.capabilities import MacroIndicator
 
 app = Flask(__name__)
