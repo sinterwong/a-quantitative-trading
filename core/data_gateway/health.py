@@ -82,6 +82,18 @@ class HealthTracker:
                 self._events[key] = dq
             dq.append(ev)
 
+        # Prometheus 旁路：失败软降级，metrics 不影响主流程。
+        try:
+            from core.metrics import get_registry
+            get_registry().observe_provider(
+                provider=provider,
+                capability=key[1],
+                status='ok' if success else 'error',
+                latency_ms=latency_ms,
+            )
+        except Exception:
+            pass
+
     def _live_events(self, key: Tuple[str, str]) -> list[_Event]:
         cutoff = time.time() - self._window_seconds
         with self._lock:

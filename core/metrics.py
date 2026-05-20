@@ -188,6 +188,21 @@ class MetricsRegistry:
                 registry=self.registry,
             )
 
+            # --- DataGateway provider 调用 ---
+            self.provider_requests = Counter(
+                'data_gateway_provider_requests_total',
+                'DataGateway provider 调用计数（按 status 区分 ok/error/circuit_open）',
+                ['provider', 'capability', 'status'],
+                registry=self.registry,
+            )
+            self.provider_latency = Histogram(
+                'data_gateway_provider_latency_seconds',
+                'DataGateway provider 调用延迟（秒）',
+                ['provider', 'capability'],
+                buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0],
+                registry=self.registry,
+            )
+
             self._available = True
             logger.info('MetricsRegistry initialized (prometheus_client available)')
 
@@ -337,6 +352,34 @@ class MetricsRegistry:
             self.data_source_failures.labels(source=source).inc()
         except Exception as e:
             logger.warning('record_data_source_failure failed: %s', e)
+
+    def observe_provider(
+        self,
+        provider: str,
+        capability: str,
+        status: str,
+        latency_ms: float,
+    ) -> None:
+        """DataGateway provider 调用观测。
+
+        status:
+          - 'ok'           调用成功（fetch 返回非空）
+          - 'error'        provider 抛异常或返回空被 health 计为失败
+          - 'circuit_open' 熔断器开，gateway 跳过此 provider
+        latency_ms: 不适用时（如熔断）传 0；observation 转换为秒。
+        """
+        if not self._available:
+            return
+        try:
+            self.provider_requests.labels(
+                provider=provider, capability=capability, status=status,
+            ).inc()
+            if status != 'circuit_open':
+                self.provider_latency.labels(
+                    provider=provider, capability=capability,
+                ).observe(max(0.0, latency_ms) / 1000.0)
+        except Exception as e:
+            logger.debug('observe_provider failed: %s', e)
 
     def record_api_request(self, endpoint: str, method: str,
                             latency_ms: float, status_code: int) -> None:

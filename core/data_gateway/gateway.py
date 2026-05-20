@@ -336,6 +336,17 @@ class DataGateway:
             # 熔断硬开关
             cb = _breaker_for(p.name, capability)
             if cb is not None and not cb.allow():
+                # Prometheus 旁路：记录跳过原因，便于运维定位降级链路。
+                try:
+                    from core.metrics import get_registry
+                    get_registry().observe_provider(
+                        provider=p.name,
+                        capability=capability.value,
+                        status='circuit_open',
+                        latency_ms=0.0,
+                    )
+                except Exception:
+                    pass
                 continue
             score = self._health.score(
                 p.name, capability, priority_hint=decl.priority_hint,
