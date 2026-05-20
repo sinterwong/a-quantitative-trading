@@ -13,7 +13,7 @@ sys.path.insert(0, quant_dir)
 
 from data_loader import DataLoader
 import institutional_live as inst_live
-from backtest import TechnicalIndicators as TI
+from technical_indicators import TechnicalIndicators as TI
 
 
 class StockSelectionPool:

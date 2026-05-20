@@ -70,6 +70,9 @@ class Quote:
     # ── 元数据 ──────────────────────────────────────────────────────────────
     currency: str = ""           # CNY / HKD / USD
     timestamp: datetime = field(default_factory=datetime.now)
+    # MERGE_FIELDS 合并时由贡献源的 HealthTracker.score() 平均值给出，单源直接
+    # 透传时为该源的健康度。范围 [0, 1]，越接近 1 表示数据可信度越高。
+    confidence: float = 1.0
 
     @property
     def is_valid(self) -> bool:
@@ -119,6 +122,9 @@ class Fundamentals:
     sector: str = ""
 
     timestamp: datetime = field(default_factory=datetime.now)
+    # 出口时由 gateway 据 timestamp 与当前时间差填入，反映该快照在内存/磁盘
+    # 缓存里待过的秒数。新鲜获取时 ≈ 0；命中 L1/L2 时为对应等待时长。
+    stale_seconds: int = 0
 
     @property
     def is_valid(self) -> bool:
@@ -189,6 +195,8 @@ class BalanceSheet:
     equity: float = 0.0           # 股东权益（元）
 
     timestamp: datetime = field(default_factory=datetime.now)
+    # 同 Fundamentals.stale_seconds，由 gateway 在出口处计算。
+    stale_seconds: int = 0
 
     @property
     def is_valid(self) -> bool:
@@ -284,6 +292,9 @@ class StockProfile:
     # 元数据
     completeness: float = 0.0                          # 0-1，已填充切片占比
     provenance: Dict[str, str] = field(default_factory=dict)  # slice → primary provider
+    # 任意切片为 None / 空时记录其名称（quote/fundamentals/balance_sheet/margin/
+    # fund_flow/headlines/macro），便于调用方分辨是"未启用"还是"启用但拉不到"。
+    missing_capabilities: List[str] = field(default_factory=list)
 
     @property
     def is_valid(self) -> bool:

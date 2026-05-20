@@ -16,7 +16,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loader import DataLoader
-from backtest import TechnicalIndicators as TI
+from technical_indicators import TechnicalIndicators as TI
 
 
 def run_trend_confirmed_rotation(symbols, start, end, initial_capital=3000000):

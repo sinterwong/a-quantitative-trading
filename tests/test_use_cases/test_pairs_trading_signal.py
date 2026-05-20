@@ -65,10 +65,10 @@ def patch_data_and_pairs():
     dl.get_bars.return_value = _price_series()
     with patch('core.data_layer.get_data_layer', return_value=dl), \
          patch('core.strategies.pairs_trading.find_cointegrated_pairs',
-               return_value=[('A.SH', 'B.SH')]), \
+               return_value=[('A.SH', 'B.SH', 0.95, 0.01)]), \
          patch('core.strategies.pairs_trading.PairsTradingStrategy') as mock_strat:
         strat = MagicMock()
-        strat.latest_signal.return_value = _fake_signal()
+        strat.generate_signals.return_value = [_fake_signal()]
         mock_strat.return_value = strat
         yield {'pairs_count': 1}
 
@@ -94,13 +94,13 @@ def test_pairs_trading_max_pairs_truncation():
     """若 find_cointegrated_pairs 返回多对,results 只取 max_pairs 个。"""
     dl = MagicMock()
     dl.get_bars.return_value = _price_series()
-    many_pairs = [(f'A{i}.SH', f'B{i}.SH') for i in range(10)]
+    many_pairs = [(f'A{i}.SH', f'B{i}.SH', 0.95, 0.01) for i in range(10)]
     with patch('core.data_layer.get_data_layer', return_value=dl), \
          patch('core.strategies.pairs_trading.find_cointegrated_pairs',
                return_value=many_pairs), \
          patch('core.strategies.pairs_trading.PairsTradingStrategy') as mock_strat:
         strat = MagicMock()
-        strat.latest_signal.return_value = _fake_signal()
+        strat.generate_signals.return_value = [_fake_signal()]
         mock_strat.return_value = strat
 
         req = PairsTradingRequest(
@@ -118,13 +118,13 @@ def test_pairs_trading_skips_failing_pair():
     dl.get_bars.return_value = _price_series()
 
     strat_ok = MagicMock()
-    strat_ok.latest_signal.return_value = _fake_signal()
+    strat_ok.generate_signals.return_value = [_fake_signal()]
     strat_bad = MagicMock()
-    strat_bad.latest_signal.side_effect = RuntimeError('regression failed')
+    strat_bad.generate_signals.side_effect = RuntimeError('regression failed')
 
     with patch('core.data_layer.get_data_layer', return_value=dl), \
          patch('core.strategies.pairs_trading.find_cointegrated_pairs',
-               return_value=[('A.SH', 'B.SH'), ('C.SH', 'D.SH')]), \
+               return_value=[('A.SH', 'B.SH', 0.95, 0.01), ('C.SH', 'D.SH', 0.92, 0.02)]), \
          patch('core.strategies.pairs_trading.PairsTradingStrategy',
                side_effect=[strat_bad, strat_ok]):
         req = PairsTradingRequest(symbols=['A.SH', 'B.SH', 'C.SH', 'D.SH'])

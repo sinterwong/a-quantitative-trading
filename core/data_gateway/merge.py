@@ -22,6 +22,12 @@ from dataclasses import fields, is_dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
+# Provenance 中 divergence 元数据的键后缀。形如 `price__divergence`，值是
+# 字符串化的浮点(0.0~1.0)。下游消费者(profile primary 源、调试导出)
+# 通过 `endswith(DIVERGENCE_SUFFIX)` 过滤掉这些元数据键。
+DIVERGENCE_SUFFIX = "__divergence"
+
+
 # ─── 默认值判定 ────────────────────────────────────────────────────────────────
 
 
@@ -84,6 +90,27 @@ class Candidate:
         return self.health * self.authority.get(field_name, 1.0)
 
 
+# ─── 字段级差异度 ──────────────────────────────────────────────────────────────
+
+
+def _field_divergence(values: List[Any]) -> float:
+    """同字段多源取值的差异度，0.0 表示一致。
+
+    - 数值(int/float/bool)：`(max - min) / max(|v|)`，纯零返回 0.0。
+    - 其他类型：值不全相等返回 1.0，否则 0.0。
+    """
+    if len(values) < 2:
+        return 0.0
+    if all(isinstance(v, bool) or isinstance(v, (int, float)) for v in values):
+        nums = [float(v) for v in values]
+        max_abs = max(abs(v) for v in nums)
+        if max_abs == 0.0:
+            return 0.0
+        return (max(nums) - min(nums)) / max_abs
+    first = values[0]
+    return 0.0 if all(v == first for v in values[1:]) else 1.0
+
+
 # ─── 字段级合并 ────────────────────────────────────────────────────────────────
 
 
@@ -109,6 +136,7 @@ def merge_field_level(
     if len(cands) == 1:
         only = cands[0]
         prov = {f.name: only.provider for f in fields(only.obj)}
+        _stamp_confidence(only.obj, [only.health])
         return only.obj, prov
 
     cls = type(cands[0].obj)
@@ -133,11 +161,13 @@ def merge_field_level(
         best_score = -1.0
         best_provider: Optional[str] = None
         has_real_value = False
+        real_values: List[Any] = []
 
         for cand in cands:
             value = getattr(cand.obj, fname, default)
             if not _has_value(value, default):
                 continue
+            real_values.append(value)
             score = cand.field_score(fname)
             if score > best_score:
                 best_score = score
@@ -153,7 +183,36 @@ def merge_field_level(
         merged_values[fname] = best_value
         provenance[fname] = best_provider or "unknown"
 
-    return cls(**merged_values), provenance
+        if len(real_values) >= 2:
+            div = _field_divergence(real_values)
+            if div > 0.0:
+                provenance[f"{fname}{DIVERGENCE_SUFFIX}"] = f"{div:.4f}"
+
+    merged_obj = cls(**merged_values)
+    _stamp_confidence(merged_obj, [c.health for c in cands])
+    return merged_obj, provenance
 
 
-__all__ = ["Candidate", "merge_field_level"]
+def _stamp_confidence(obj: Any, healths: List[float]) -> None:
+    """如果 dataclass 有 `confidence` 字段，写入贡献源健康度平均值。
+
+    Quote 等 schema 在 schemas.py 中声明了 `confidence: float = 1.0`，
+    其他没有该字段的 dataclass 不受影响（getattr 守卫）。
+    """
+    if not hasattr(obj, "confidence"):
+        return
+    if not healths:
+        return
+    avg = sum(healths) / len(healths)
+    try:
+        obj.confidence = max(0.0, min(1.0, float(avg)))
+    except (TypeError, ValueError):  # pragma: no cover - 数据类型保护
+        pass
+
+
+__all__ = [
+    "Candidate",
+    "DIVERGENCE_SUFFIX",
+    "merge_field_level",
+    "_field_divergence",
+]

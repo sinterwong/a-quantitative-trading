@@ -25,6 +25,7 @@ data_gateway.gateway — 统一数据网关
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -39,7 +40,9 @@ from .capabilities import (
     Capability, MacroIndicator, Market, RoutingStrategy, get_policy,
 )
 from .health import HealthTracker, get_health_tracker
-from .merge import Candidate, merge_field_level
+from .merge import (
+    Candidate, DIVERGENCE_SUFFIX, _field_divergence, merge_field_level,
+)
 from .providers.base import Provider, ProviderError
 from .schemas import (
     BalanceSheet, Fundamentals, MarketIndexSnapshot, NorthFlow,
@@ -214,6 +217,20 @@ def _breaker_for(provider_name: str, capability: Capability):
         return None
 
 
+def _stale_seconds(ts: datetime) -> int:
+    """从 dataclass.timestamp 计算缓存陈旧度（秒）。
+
+    时区无关：用本地 datetime.now() 与 ts 直接相减，假设 provider 写入时也
+    用本地时间（schemas.py 默认值就是 datetime.now()）。负值（时钟漂移）
+    归零，避免下游策略误判。
+    """
+    try:
+        delta = (datetime.now() - ts).total_seconds()
+    except (TypeError, ValueError):
+        return 0
+    return max(0, int(delta))
+
+
 # ─── Gateway ──────────────────────────────────────────────────────────────────
 
 
@@ -319,6 +336,17 @@ class DataGateway:
             # 熔断硬开关
             cb = _breaker_for(p.name, capability)
             if cb is not None and not cb.allow():
+                # Prometheus 旁路：记录跳过原因，便于运维定位降级链路。
+                try:
+                    from core.metrics import get_registry
+                    get_registry().observe_provider(
+                        provider=p.name,
+                        capability=capability.value,
+                        status='circuit_open',
+                        latency_ms=0.0,
+                    )
+                except Exception:
+                    pass
                 continue
             score = self._health.score(
                 p.name, capability, priority_hint=decl.priority_hint,
@@ -378,6 +406,44 @@ class DataGateway:
                 cb.on_success()
         return result
 
+    # ── 字段级矛盾检测 ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _divergence_threshold() -> float:
+        """读取 TRADING_DIVERGENCE_THRESHOLD（默认 0.05）。
+
+        非法值（无法 float() 解析）回退到默认，避免环境配置错误把整个数据
+        流污染。每次调用都读环境，便于测试用 monkeypatch 改值。
+        """
+        raw = os.environ.get("TRADING_DIVERGENCE_THRESHOLD", "0.05")
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return 0.05
+
+    def _warn_divergences(
+        self,
+        capability: Capability,
+        fn_name: str,
+        provenance: Dict[str, str],
+        identifier: str,
+    ) -> None:
+        """扫描 provenance 中的 `<field>__divergence` 元数据，超阈值写 WARNING。"""
+        threshold = self._divergence_threshold()
+        for key, val in provenance.items():
+            if not key.endswith(DIVERGENCE_SUFFIX):
+                continue
+            try:
+                pct = float(val)
+            except (TypeError, ValueError):
+                continue
+            if pct > threshold:
+                field = key[: -len(DIVERGENCE_SUFFIX)]
+                logger.warning(
+                    "字段差异超阈值 capability=%s fn=%s id=%s field=%s pct=%.4f threshold=%.4f",
+                    capability.name, fn_name, identifier, field, pct, threshold,
+                )
+
     # ── 并发问多家 + 字段级 merge ──────────────────────────────────────────
 
     def _merged_fetch(
@@ -416,6 +482,10 @@ class DataGateway:
         if not results:
             return None, {}
         merged, prov = merge_field_level(results, skip_fields=skip_fields)
+        # capability + 调用方上下文留在 provenance 之外的层。为日志可读性，
+        # 这里用 `*args` 第一个元素（通常是 symbol / code）做 identifier。
+        ident = str(args[0]) if args else "-"
+        self._warn_divergences(capability, fn_name, prov, ident)
         return merged, prov
 
     # ── 时序数据多源列级合并 (G1) ──────────────────────────────────────────
@@ -496,12 +566,45 @@ class DataGateway:
             if not sources:
                 continue
             provenance[col] = sources[0][0]    # score 最高的贡献源
-            col_series = sources[0][1].reindex(union_idx)
+            top_name, top_series = sources[0]
+            top_aligned = top_series.reindex(union_idx)
+            col_series = top_aligned
             # combine_first：self 非 NaN 留 self，self NaN 用 other —— 正符合
             # 「score 高的胜，低的补缺」语义
             for _name, s in sources[1:]:
                 col_series = col_series.combine_first(s.reindex(union_idx))
             merged[col] = col_series
+
+            # 字段级矛盾检测：同 (row, col) 多源都给值时取 top vs 其他源里
+            # 与 top 最大差异的那个，记为该列的 divergence_pct。
+            # 非数值列降级为"是否相等"的二元判定，避免 .abs() 在 StringDtype 上抛错。
+            if len(sources) >= 2:
+                top_is_numeric = pd.api.types.is_numeric_dtype(top_aligned)
+                max_div = 0.0
+                for _name, other in sources[1:]:
+                    other_aligned = other.reindex(union_idx)
+                    overlap_idx = top_aligned.notna() & other_aligned.notna()
+                    if not overlap_idx.any():
+                        continue
+                    a_vals = top_aligned[overlap_idx]
+                    b_vals = other_aligned[overlap_idx]
+                    if top_is_numeric and pd.api.types.is_numeric_dtype(b_vals):
+                        try:
+                            denom = pd.concat(
+                                [a_vals.abs(), b_vals.abs()], axis=1,
+                            ).max(axis=1)
+                            diff = (a_vals - b_vals).abs() / denom.where(denom > 0)
+                            col_max = float(diff.max(skipna=True))
+                        except (TypeError, ValueError):
+                            continue
+                        if col_max != col_max:  # NaN
+                            continue
+                    else:
+                        col_max = 0.0 if bool((a_vals == b_vals).all()) else 1.0
+                    if col_max > max_div:
+                        max_div = col_max
+                if max_div > 0.0:
+                    provenance[f"{col}{DIVERGENCE_SUFFIX}"] = f"{max_div:.4f}"
 
         if ffill:
             merged = merged.ffill()
@@ -516,6 +619,8 @@ class DataGateway:
                 except (ValueError, TypeError):
                     pass
 
+        ident = str(args[0]) if args else "-"
+        self._warn_divergences(capability, fn_name, provenance, ident)
         return merged, provenance
 
     # ── 多源 list 归一去重 (G5) ─────────────────────────────────────────────
@@ -801,6 +906,7 @@ class DataGateway:
         cache_key = f"fundamentals:{symbol}"
         cached = self._cache.get(cache_key)
         if cached is not None:
+            cached.stale_seconds = _stale_seconds(cached.timestamp)
             return cached
 
         market = Market.GLOBAL  # 基本面数据跨市场统一，用 GLOBAL 查所有 provider
@@ -940,6 +1046,7 @@ class DataGateway:
         # BalanceSheet 是 dataclass 不是 DataFrame，L2 落盘对它无意义，只用 L1
         cached = self._cache.get(cache_key)
         if cached is not None:
+            cached.stale_seconds = _stale_seconds(cached.timestamp)
             return cached
 
         market = detect_market(symbol)

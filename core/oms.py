@@ -15,7 +15,7 @@ import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Literal, Optional, Any, Callable, TYPE_CHECKING
+from typing import Dict, List, Literal, Optional, Any, Callable, Set, Union, TYPE_CHECKING
 import uuid
 import os
 import sys
@@ -26,6 +26,7 @@ logger = logging.getLogger('core.oms')
 
 if TYPE_CHECKING:
     from core.event_bus import EventBus, FillEvent
+    from core.execution.algo_base import AlgoOrderResult, AlgoOrder
 
 # ─── Order / Fill ─────────────────────────────────────────────────────────────
 
@@ -43,7 +44,7 @@ class Order:
     fill_price: float = 0
     fill_time: Optional[datetime] = None
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             'order_id': self.order_id,
             'symbol': self.symbol,
@@ -69,7 +70,7 @@ class Fill:
     slippage_bps: float = 0
     filled_at: datetime = field(default_factory=datetime.now)
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             'order_id': self.order_id,
             'symbol': self.symbol,
@@ -120,15 +121,12 @@ class BrokerAdapter(ABC):
     @abstractmethod
     def quote(self, symbol: str) -> Dict[str, float]:
         """获取当前报价 {bid, ask, last}"""
-        ...
+        ...  # pragma: no cover
 
     @abstractmethod
     def get_positions(self) -> List[Position]:
         """获取当前持仓"""
         ...
-
-    def name(self) -> str:
-        return self.__class__.__name__
 
 
 # ─── EventDrivenPaperBroker ──────────────────────────────────────────────────
@@ -150,7 +148,7 @@ class EventDrivenPaperBroker(BrokerAdapter):
 
     name = 'EventDrivenPaperBroker'
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._orders: Dict[str, Order] = {}
         self._positions: Dict[str, Position] = {}
         # R0-2 残留：多线程下 send/cancel/_update_position/get_positions 并发
@@ -163,7 +161,7 @@ class EventDrivenPaperBroker(BrokerAdapter):
         self._lock = threading.RLock()
         self._load_positions()
 
-    def _load_positions(self):
+    def _load_positions(self) -> None:
         """从 Backend API 加载当前持仓"""
         try:
             import urllib.request, json as jsonlib
@@ -247,7 +245,7 @@ class EventDrivenPaperBroker(BrokerAdapter):
         self._persist_fill(fill)
         return fill
 
-    def _update_position(self, fill: Fill):
+    def _update_position(self, fill: Fill) -> None:
         with self._lock:
             pos = self._positions.get(fill.symbol)
             if pos is None:
@@ -266,7 +264,7 @@ class EventDrivenPaperBroker(BrokerAdapter):
                     pos.avg_price = 0
                     del self._positions[fill.symbol]
 
-    def _persist_fill(self, fill: Fill):
+    def _persist_fill(self, fill: Fill) -> None:
         """持久化成交到 Backend API"""
         try:
             import urllib.request, json as jsonlib
@@ -366,34 +364,35 @@ class OMS:
     """
 
     _instance: Optional['OMS'] = None
+    _initialized: bool
 
-    def __new__(cls, broker: Optional[BrokerAdapter] = None):
+    def __new__(cls, broker: Optional[BrokerAdapter] = None) -> 'OMS':
         if cls._instance is not None:
             return cls._instance
         instance = super().__new__(cls)
         cls._instance = instance
         return instance
 
-    def __init__(self, broker: Optional[BrokerAdapter] = None):
-        if hasattr(self, '_initialized') and self._initialized:
+    def __init__(self, broker: Optional[BrokerAdapter] = None) -> None:
+        if getattr(self, '_initialized', False):
             return
         self._initialized = True
-        self.broker = broker or EventDrivenPaperBroker()
+        self.broker: BrokerAdapter = broker if broker is not None else EventDrivenPaperBroker()
         self.bus: Optional['EventBus'] = None
         self._order_book: Dict[str, Order] = {}
         self._position_book: Dict[str, Position] = {}
-        self._pending_signals: set = set()  # 防止重复下单
+        self._pending_signals: Set[str] = set()  # 防止重复下单
         # Kelly + 回撤折扣（P0-4）：跨调用维护峰值权益
         self._peak_equity: float = 0.0
         self._load_positions_from_backend()
 
-    def set_bus(self, bus: 'EventBus'):
+    def set_bus(self, bus: 'EventBus') -> None:
         self.bus = bus
         # 注册信号监听
         from core.event_bus import SignalEvent
         bus.on('SignalEvent', self._on_signal)
 
-    def _on_signal(self, event):
+    def _on_signal(self, event: Any) -> None:
         """SignalEvent → 尝试下单"""
         signal = event.signal
         signal_key = f"{signal.symbol}:{signal.direction}:{signal.timestamp.isoformat()}"
@@ -404,7 +403,7 @@ class OMS:
         self._pending_signals.add(signal_key)
 
         import threading
-        def clear():
+        def clear() -> None:
             import time
             time.sleep(300)  # 5min
             self._pending_signals.discard(signal_key)
@@ -444,7 +443,7 @@ class OMS:
                     reason=f'OMS submit failed: {e}',
                 ))
 
-    def submit_from_signal(self, signal, shares: Optional[int] = None) -> Optional[Fill]:
+    def submit_from_signal(self, signal: Any, shares: Optional[int] = None) -> Optional[Fill]:
         """
         从 Signal 生成订单并提交。
         shares=None 时使用 signal.metadata 中的 shares 或 Kelly 计算。
@@ -513,7 +512,7 @@ class OMS:
         dd = (self._peak_equity - equity) / self._peak_equity
         return max(0.0, 1.0 - dd / max_dd_limit)
 
-    def _kelly_shares(self, signal) -> int:
+    def _kelly_shares(self, signal: Any) -> int:
         """
         Kelly 公式计算仓位份额（P0-4：含回撤折扣 + 单仓上限保护）。
 
@@ -562,7 +561,7 @@ class OMS:
         shares = (shares // 100) * 100  # 整手
         return max(shares, 0)
 
-    def _update_position_book(self, fill) -> None:
+    def _update_position_book(self, fill: Fill) -> None:
         """成交后更新本地持仓快照，供当次 run_once() 周期内的 PreTrade 检查使用。"""
         sym = fill.symbol
         pos = self._position_book.get(sym)
@@ -654,7 +653,7 @@ class OMS:
         reference_price: float = 0.0,
         slice_interval: int = 5,
         volume_profile: Optional[List[float]] = None,
-    ) -> 'AlgoOrderResult':  # noqa: F821 — lazy import below
+    ) -> 'AlgoOrderResult':
         """
         提交算法订单（VWAP / TWAP），返回模拟执行结果。
 
@@ -689,7 +688,9 @@ class OMS:
         from core.execution.vwap_executor import VWAPExecutor
         from core.execution.twap_executor import TWAPExecutor
         from core.execution.impact_estimator import ImpactEstimator
+        from core.execution.algo_base import AlgoOrder as _AlgoOrder
 
+        executor: _AlgoOrder
         algo_upper = algo.upper()
         if algo_upper == 'VWAP':
             executor = VWAPExecutor(

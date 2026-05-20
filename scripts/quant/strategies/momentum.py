@@ -7,7 +7,7 @@
 import sys
 sys.path.insert(0, __file__.rsplit('/', 2)[0])
 
-from backtest import TechnicalIndicators as TI
+from technical_indicators import TechnicalIndicators as TI
 
 
 def ma_cross_strategy(data, params=None):
