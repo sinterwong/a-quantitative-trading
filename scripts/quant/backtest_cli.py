@@ -58,7 +58,7 @@ def run_single(args) -> dict:
         commission_rate=args.commission,
         strategies=[
             StrategySpec(
-                factor_name='RSIFactor',
+                factor_name='RSI',
                 threshold=0.0,
                 params={
                     'period': args.rsi_period,
