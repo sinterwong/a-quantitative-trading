@@ -113,6 +113,7 @@ Providers
 | DIVIDEND | — | — | — | A | — | — |
 | INDUSTRY_CLASSIFICATION | — | — | — | A | — | — |
 | INDEX_CONSTITUENT | — | — | — | A | — | — |
+| TRADE_CALENDAR | — | — | — | A | — | — |
 | SECTOR_RANKING | — | A(备) | A(主，含资金流) | — | — | — |
 | SECTOR_CONSTITUENTS | — | — | A | — | — | — |
 | NORTH_FLOW | — | — | A | — | GLOBAL | — |

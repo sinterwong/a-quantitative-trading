@@ -33,6 +33,7 @@ class Capability(str, Enum):
     DIVIDEND = "dividend"                       # DividendRecord（分红记录）
     INDUSTRY_CLASSIFICATION = "industry_classification"  # IndustryClassification（行业分类）
     INDEX_CONSTITUENT = "index_constituent"  # IndexConstituent（指数成分股）
+    TRADE_CALENDAR = "trade_calendar"  # 交易日历 DataFrame（calendar_date / is_trading_day）
     MARGIN_FLOW = "margin_flow"               # 融资融券日频时序 DataFrame
     FUND_FLOW = "fund_flow"                       # 个股资金流日频 DataFrame（主力/超大/大单净流入）
     NEWS_HEADLINES = "news_headlines"             # 新闻标题列表 List[str]
@@ -169,6 +170,9 @@ ROUTING_POLICY: Dict[Tuple[Capability, str], CapabilityPolicy] = {
         RoutingStrategy.FAILOVER,
     ),
     (Capability.INDEX_CONSTITUENT, "fetch_index_constituents"): CapabilityPolicy(
+        RoutingStrategy.FAILOVER,
+    ),
+    (Capability.TRADE_CALENDAR, "fetch_trade_calendar"): CapabilityPolicy(
         RoutingStrategy.FAILOVER,
     ),
     (Capability.MARGIN_FLOW, "fetch_margin_flow"): CapabilityPolicy(

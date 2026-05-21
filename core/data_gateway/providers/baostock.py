@@ -147,6 +147,7 @@ class BaostockProvider(Provider):
                 Capability.DIVIDEND,
                 Capability.INDUSTRY_CLASSIFICATION,
                 Capability.INDEX_CONSTITUENT,
+                Capability.TRADE_CALENDAR,
             }),
             markets=frozenset({Market.A}),
             priority_hint=0.75,  # 稳定免费源，冷启动评分较高
@@ -1060,6 +1061,50 @@ class BaostockProvider(Provider):
         except Exception as exc:
             logger.debug("fetch_index_constituents %s failed: %s", index_code, exc)
             return []
+
+    def fetch_trade_calendar(
+        self, start_date: str, end_date: str,
+    ) -> pd.DataFrame:
+        """获取交易日历。
+
+        调用 Baostock query_trade_dates，返回指定日期范围内的交易日信息。
+
+        Args:
+            start_date: 起始日期，格式 'YYYY-MM-DD'
+            end_date: 结束日期，格式 'YYYY-MM-DD'
+
+        Returns
+        -------
+        pd.DataFrame
+            列: calendar_date（日期）, is_trading_day（'1'=交易日 '0'=非交易日）
+            空 DataFrame 表示查询失败。
+        """
+        try:
+            session = _get_session()
+        except Exception as exc:
+            raise ProviderError(f"baostock 会话获取失败: {exc}") from exc
+
+        logger.debug("fetch_trade_calendar %s ~ %s", start_date, end_date)
+
+        try:
+            rs = session._bs.query_trade_dates(
+                start_date=start_date, end_date=end_date,
+            )
+            if rs.error_msg != "success":
+                return pd.DataFrame(columns=["calendar_date", "is_trading_day"])
+
+            df = rs.get_data()
+            if df is None or df.empty:
+                return pd.DataFrame(columns=["calendar_date", "is_trading_day"])
+
+            # 只保留必要列并排序
+            df = df[["calendar_date", "is_trading_day"]].copy()
+            df = df.sort_values("calendar_date").reset_index(drop=True)
+            return df
+
+        except Exception as exc:
+            logger.debug("fetch_trade_calendar %s~%s failed: %s", start_date, end_date, exc)
+            return pd.DataFrame(columns=["calendar_date", "is_trading_day"])
 
 
 def _safe_float(val, default: float = 0.0) -> float:

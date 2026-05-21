@@ -79,6 +79,7 @@ _DEFAULT_TTL = {
     Capability.DIVIDEND: 86400.0,              # 分红记录，季报数据，24h 缓存
     Capability.INDUSTRY_CLASSIFICATION: 86400.0,  # 行业分类，24h 缓存
     Capability.INDEX_CONSTITUENT: 86400.0,   # 指数成分股，24h 缓存
+    Capability.TRADE_CALENDAR: 86400.0,  # 交易日历，24h 缓存
 }
 
 
@@ -1192,6 +1193,40 @@ class DataGateway:
             self._cache.set(cache_key, records, _DEFAULT_TTL[Capability.INDEX_CONSTITUENT])
             self._last_provenance[cache_key] = prov
         return records
+
+    def trade_calendar(
+        self, start_date: str, end_date: str,
+    ) -> pd.DataFrame:
+        """交易日历（判断某日期是否为交易日）。
+
+        通过 DataGateway 统一路由，享受熔断 + 健康度 + 缓存保护。
+        当前实现源:BaostockProvider(A股)。
+
+        Args:
+            start_date: 起始日期，格式 'YYYY-MM-DD'
+            end_date: 结束日期，格式 'YYYY-MM-DD'
+
+        Returns
+        -------
+        pd.DataFrame
+            列: calendar_date / is_trading_day（'1'=交易日 '0'=非交易日）
+            空 DataFrame 表示查询失败。
+        """
+        cache_key = f"trade_calendar:{start_date}:{end_date}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result, prov = self._route(
+            Capability.TRADE_CALENDAR, Market.A,
+            "fetch_trade_calendar", start_date, end_date,
+        )
+        df = result if isinstance(result, pd.DataFrame) else pd.DataFrame(
+            columns=["calendar_date", "is_trading_day"],
+        )
+        if not df.empty:
+            self._cache.set(cache_key, df, _DEFAULT_TTL[Capability.TRADE_CALENDAR])
+            self._last_provenance[cache_key] = prov
+        return df
 
     def margin_flow(
         self, symbol: str, start: str | None = None, end: str | None = None,

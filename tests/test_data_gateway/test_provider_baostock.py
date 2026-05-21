@@ -1484,3 +1484,48 @@ class TestBaostockFundamentalsHistoryExtendedFields:
 
         assert len(records) == 1
         mock_session._bs.query_sz50_stocks.assert_called_once()
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_fetch_trade_calendar_basic(self, mock_get_session):
+        """fetch_trade_calendar 返回正确 DataFrame 列和排序。"""
+        import pandas as pd
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        mock_df = pd.DataFrame([
+            {"calendar_date": "2026-05-07", "is_trading_day": "1"},
+            {"calendar_date": "2026-05-06", "is_trading_day": "1"},
+            {"calendar_date": "2026-05-09", "is_trading_day": "0"},
+        ])
+        mock_rs = MagicMock()
+        mock_rs.error_msg = "success"
+        mock_rs.get_data = MagicMock(return_value=mock_df)
+        mock_session = MagicMock()
+        mock_session._bs.query_trade_dates.return_value = mock_rs
+        mock_get_session.return_value = mock_session
+
+        provider = BaostockProvider()
+        df = provider.fetch_trade_calendar("2026-05-01", "2026-05-31")
+
+        assert list(df.columns) == ["calendar_date", "is_trading_day"]
+        assert len(df) == 3
+        # 按 calendar_date 排序
+        assert df.iloc[0]["calendar_date"] == "2026-05-06"
+        assert df.iloc[1]["calendar_date"] == "2026-05-07"
+        assert df.iloc[2]["calendar_date"] == "2026-05-09"
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_fetch_trade_calendar_empty(self, mock_get_session):
+        """API 返回错误时返回空 DataFrame（带正确列名）。"""
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        mock_rs = MagicMock()
+        mock_rs.error_msg = "fail"
+        mock_session = MagicMock()
+        mock_session._bs.query_trade_dates.return_value = mock_rs
+        mock_get_session.return_value = mock_session
+
+        provider = BaostockProvider()
+        df = provider.fetch_trade_calendar("2026-05-01", "2026-05-31")
+
+        assert df.empty
+        assert list(df.columns) == ["calendar_date", "is_trading_day"]
