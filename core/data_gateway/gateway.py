@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
+
 """
-data_gateway.gateway — 统一数据网关
 
 整个系统对外网数据的唯一出口。所有 provider 平级,通过 capability 矩阵 +
 健康度评分动态路由,可合并数据(Quote/Fundamentals)做字段级互补合并。
@@ -22,8 +23,6 @@ data_gateway.gateway — 统一数据网关
   - 缓存: MemoryCache(Quote 30s, Fundamentals/Sector 60s, MarketIndex 60s)
 """
 
-from __future__ import annotations
-
 import logging
 import os
 import re
@@ -31,9 +30,18 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from time import perf_counter
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+
+if TYPE_CHECKING:
+    from .schemas import (
+        DividendRecord,
+        DupontMetrics,
+        IndustryClassification,
+        IndexConstituent,
+        OperationMetrics,
+    )
 
 from .cache import MemoryCache, ParquetDiskCache, TieredCache
 from .capabilities import (
