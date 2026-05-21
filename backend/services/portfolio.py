@@ -397,7 +397,7 @@ class PortfolioService:
         """Return all current positions with P&L calculated."""
         with get_cursor() as cur:
             cur.execute(
-                '''SELECT symbol, shares, entry_price, latest_price, peak_price, updated_at
+                '''SELECT symbol, shares, entry_price, latest_price, updated_at
                    FROM positions WHERE shares > 0'''
             )
             rows = [dict(row) for row in cur.fetchall()]
@@ -417,7 +417,6 @@ class PortfolioService:
                 'current_value': current_value,
                 'unrealized_pnl': unrealized,
                 'unrealized_pnl_pct': unrealized_pct,
-                'peak_price': p.get('peak_price', 0.0),
             })
         return result
 
