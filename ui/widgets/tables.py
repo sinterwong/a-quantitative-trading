@@ -26,7 +26,7 @@ def positions_table(positions: list) -> None:
         st.caption('当前无持仓')
         return
     df = _to_df(positions, [
-        'symbol', 'name', 'shares', 'entry_price', 'last_price',
+        'symbol', 'name', 'shares', 'entry_price', 'latest_price',
         'market_value', 'unrealized_pnl', 'unrealized_pnl_pct', 'weight',
     ])
     st.dataframe(df, use_container_width=True, hide_index=True)
