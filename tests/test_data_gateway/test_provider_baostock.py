@@ -2,6 +2,7 @@
 """
 baostock Provider 单元测试 — mock 掉 baostock API，只测逻辑。
 """
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 import pytest
 
@@ -1232,9 +1233,9 @@ class TestBaostockFundamentalsHistoryExtendedFields:
 
         assert len(records) == 2
         # 按 operate_date 倒序
-        assert records[0].operate_date == "2024-12-20"
+        assert records[0].operate_date == datetime(2024, 12, 20)
         assert records[0].cash_per_share == 23.882
-        assert records[1].operate_date == "2024-06-19"
+        assert records[1].operate_date == datetime(2024, 6, 19)
         assert records[1].cash_per_share == 30.876
         assert all(r.symbol == "sh600519" for r in records)
 
@@ -1295,7 +1296,7 @@ class TestBaostockFundamentalsHistoryExtendedFields:
         assert r.cash_per_share == 10.0
         assert r.stock_per_share == 0.5
         assert r.reserve_to_stock == 0.3
-        assert r.stock_market_date == "2024-06-20"
+        assert r.stock_market_date == datetime(2024, 6, 20)
         assert r.is_valid
 
     @patch("core.data_gateway.providers.baostock._get_session")

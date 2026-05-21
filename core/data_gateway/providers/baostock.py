@@ -27,7 +27,10 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from datetime import timedelta
 
 import pandas as pd
 
@@ -157,7 +160,7 @@ class BaostockProvider(Provider):
         if not super().supports(capability, market):
             return False
         # baostock 仅支持 A股
-        return market in (Market.A, Market.INDEX) or market == Market.A
+        return market in (Market.A, Market.INDEX)
 
     def field_authority(self) -> Dict[Capability, Dict[str, float]]:
         # Baostock 是 A 股基本面主源(priority_hint=0.75)，权威高于 AkShare(备灾源)。
@@ -942,10 +945,10 @@ class BaostockProvider(Provider):
 
                     record = DividendRecord(
                         symbol=symbol,
-                        plan_announce_date=str(row.get("dividPlanAnnounceDate") or ""),
-                        operate_date=str(row.get("dividOperateDate") or ""),
-                        pay_date=str(row.get("dividPayDate") or ""),
-                        stock_market_date=str(row.get("dividStockMarketDate") or ""),
+                        plan_announce_date=_parse_date(row.get("dividPlanAnnounceDate")),
+                        operate_date=_parse_date(row.get("dividOperateDate")),
+                        pay_date=_parse_date(row.get("dividPayDate")),
+                        stock_market_date=_parse_date(row.get("dividStockMarketDate")),
                         cash_per_share=cash,
                         stock_per_share=stock,
                         reserve_to_stock=reserve,
@@ -956,8 +959,8 @@ class BaostockProvider(Provider):
                 logger.debug("fetch_dividend %s year=%s failed: %s", symbol, y, exc)
                 continue
 
-        # 按除权除息日倒序
-        records.sort(key=lambda r: r.operate_date, reverse=True)
+        # 按除权除息日倒序（datetime 类型可直接比较）
+        records.sort(key=lambda r: r.operate_date or datetime.min, reverse=True)
         return records
 
     def fetch_industry_classification(self, symbol: str) -> Optional[IndustryClassification]:
@@ -1114,6 +1117,21 @@ def _safe_float(val, default: float = 0.0) -> float:
         return default
 
 
+def _parse_date(date_str) -> Optional[datetime]:
+    """将 baostock 返回的日期字符串解析为 datetime（支持多种格式）。"""
+    if not date_str:
+        return None
+    date_str = str(date_str).strip()
+    if not date_str:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y%m%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(date_str, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def _offset_date(end_date: str, offset_days: int) -> str:
     """从 end_date 往前推 offset_days 天，返回 YYYY-MM-DD。"""
     try:
@@ -1121,8 +1139,6 @@ def _offset_date(end_date: str, offset_days: int) -> str:
         start = end - pd.Timedelta(days=offset_days)
         return start.strftime("%Y-%m-%d")
     except Exception:
-        # 回退逻辑
-        from datetime import timedelta
         dt = datetime.strptime(end_date, "%Y-%m-%d")
         dt -= timedelta(days=offset_days)
         return dt.strftime("%Y-%m-%d")

@@ -274,11 +274,11 @@ class DividendRecord:
     """
 
     symbol: str = ""
-    # 公告与执行日期
-    plan_announce_date: str = ""   # 分红预案公告日
-    operate_date: str = ""          # 除权除息日
-    pay_date: str = ""              # 派息日
-    stock_market_date: str = ""     # 红股上市交易日
+    # 公告与执行日期（统一使用 datetime，与其他 schema 保持一致）
+    plan_announce_date: Optional[datetime] = None  # 分红预案公告日
+    operate_date: Optional[datetime] = None        # 除权除息日
+    pay_date: Optional[datetime] = None              # 派息日
+    stock_market_date: Optional[datetime] = None    # 红股上市交易日
     # 分红金额（每股）
     cash_per_share: float = 0.0     # 每股税前现金股利（元）
     stock_per_share: float = 0.0    # 每股送股（股）
