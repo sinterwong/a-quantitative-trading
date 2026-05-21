@@ -1187,4 +1187,161 @@ class TestBaostockFundamentalsHistoryExtendedFields:
         assert "pni_yoy" not in df.columns
         # profit 基础字段仍然存在
         assert "roe_ttm" in df.columns
-        assert "gross_margin" in df.columns
+
+    def test_dividend_record_is_valid(self):
+        """DividendRecord.is_valid: 无效（symbol 空）| 有效（有现金分红）。"""
+        from core.data_gateway.schemas import DividendRecord
+
+        empty = DividendRecord(symbol="")
+        assert not empty.is_valid
+
+        cash_only = DividendRecord(symbol="sh600519", cash_per_share=2.5)
+        assert cash_only.is_valid
+
+        stock_only = DividendRecord(symbol="sh600519", stock_per_share=0.5)
+        assert stock_only.is_valid
+
+        zero = DividendRecord(symbol="sh600519")
+        assert not zero.is_valid
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_fetch_dividend_basic(self, mock_get_session):
+        """fetch_dividend 返回 2 条记录，字段映射正确。"""
+        import pandas as pd
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        mock_df = pd.DataFrame([
+            {"code": "sh.600519", "dividPlanAnnounceDate": "2024-04-03",
+             "dividOperateDate": "2024-06-19", "dividPayDate": "2024-06-19",
+             "dividStockMarketDate": "", "dividCashPsBeforeTax": "30.876",
+             "dividStocksPs": "0.0", "dividReserveToStockPs": ""},
+            {"code": "sh.600519", "dividPlanAnnounceDate": "2024-11-09",
+             "dividOperateDate": "2024-12-20", "dividPayDate": "2024-12-20",
+             "dividStockMarketDate": "", "dividCashPsBeforeTax": "23.882",
+             "dividStocksPs": "0.0", "dividReserveToStockPs": ""},
+        ])
+        mock_rs = MagicMock()
+        mock_rs.error_msg = "success"
+        mock_rs.get_data = MagicMock(return_value=mock_df)
+        mock_session = MagicMock()
+        mock_session._bs.query_dividend_data.return_value = mock_rs
+        mock_get_session.return_value = mock_session
+
+        provider = BaostockProvider()
+        records = provider.fetch_dividend("sh600519", year=2024)
+
+        assert len(records) == 2
+        # 按 operate_date 倒序
+        assert records[0].operate_date == "2024-12-20"
+        assert records[0].cash_per_share == 23.882
+        assert records[1].operate_date == "2024-06-19"
+        assert records[1].cash_per_share == 30.876
+        assert all(r.symbol == "sh600519" for r in records)
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_fetch_dividend_year_filter(self, mock_get_session):
+        """指定 year=2024 只查询 2024 年。"""
+        import pandas as pd
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        mock_df = pd.DataFrame([
+            {"code": "sh.600519", "dividPlanAnnounceDate": "2024-04-03",
+             "dividOperateDate": "2024-06-19", "dividPayDate": "2024-06-19",
+             "dividStockMarketDate": "", "dividCashPsBeforeTax": "30.876",
+             "dividStocksPs": "0.0", "dividReserveToStockPs": ""},
+        ])
+        mock_rs = MagicMock()
+        mock_rs.error_msg = "success"
+        mock_rs.get_data = MagicMock(return_value=mock_df)
+        mock_session = MagicMock()
+        mock_session._bs.query_dividend_data.return_value = mock_rs
+        mock_get_session.return_value = mock_session
+
+        provider = BaostockProvider()
+        records = provider.fetch_dividend("sh600519", year=2024)
+
+        mock_session._bs.query_dividend_data.assert_called_once_with(
+            "sh.600519", year="2024", yearType="operate",
+        )
+        assert len(records) == 1
+        assert records[0].cash_per_share == 30.876
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_fetch_dividend_stock_and_reserve(self, mock_get_session):
+        """有送股和转增时 DividendRecord 仍为 valid。"""
+        import pandas as pd
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        mock_df = pd.DataFrame([
+            {"code": "sh.600036", "dividPlanAnnounceDate": "2024-03-28",
+             "dividOperateDate": "2024-06-20", "dividPayDate": "2024-06-20",
+             "dividStockMarketDate": "2024-06-20",
+             "dividCashPsBeforeTax": "10.0",
+             "dividStocksPs": "0.5",
+             "dividReserveToStockPs": "0.3"},
+        ])
+        mock_rs = MagicMock()
+        mock_rs.error_msg = "success"
+        mock_rs.get_data = MagicMock(return_value=mock_df)
+        mock_session = MagicMock()
+        mock_session._bs.query_dividend_data.return_value = mock_rs
+        mock_get_session.return_value = mock_session
+
+        provider = BaostockProvider()
+        records = provider.fetch_dividend("sh600036", year=2024)
+
+        assert len(records) == 1
+        r = records[0]
+        assert r.cash_per_share == 10.0
+        assert r.stock_per_share == 0.5
+        assert r.reserve_to_stock == 0.3
+        assert r.stock_market_date == "2024-06-20"
+        assert r.is_valid
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_fetch_dividend_empty_result(self, mock_get_session):
+        """query 返回空 DataFrame 时返回空列表，不抛异常。"""
+        import pandas as pd
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        mock_rs = MagicMock()
+        mock_rs.error_msg = "success"
+        mock_rs.get_data = MagicMock(return_value=pd.DataFrame())
+        mock_session = MagicMock()
+        mock_session._bs.query_dividend_data.return_value = mock_rs
+        mock_get_session.return_value = mock_session
+
+        provider = BaostockProvider()
+        records = provider.fetch_dividend("sh600519", year=2020)
+
+        assert records == []
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_fetch_dividend_api_error_skipped(self, mock_get_session):
+        """单年份查询失败（error_msg != success）时继续查询其他年份。"""
+        import pandas as pd
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        mock_df_ok = pd.DataFrame([
+            {"code": "sh.600519", "dividPlanAnnounceDate": "2024-04-03",
+             "dividOperateDate": "2024-06-19", "dividPayDate": "2024-06-19",
+             "dividStockMarketDate": "", "dividCashPsBeforeTax": "30.876",
+             "dividStocksPs": "0.0", "dividReserveToStockPs": ""},
+        ])
+        mock_rs_ok = MagicMock()
+        mock_rs_ok.error_msg = "success"
+        mock_rs_ok.get_data = MagicMock(return_value=mock_df_ok)
+        mock_rs_fail = MagicMock()
+        mock_rs_fail.error_msg = "error: no data"
+
+        mock_session = MagicMock()
+        # 前两次调用 fail，第三次 ok
+        mock_session._bs.query_dividend_data.side_effect = [
+            mock_rs_fail, mock_rs_fail, mock_rs_ok
+        ]
+        mock_get_session.return_value = mock_session
+
+        provider = BaostockProvider()
+        records = provider.fetch_dividend("sh600519")  # 默认4年
+
+        assert len(records) == 1

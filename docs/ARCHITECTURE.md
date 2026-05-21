@@ -108,6 +108,9 @@ Providers
 | FUNDAMENTALS | — | — | — | A | GLOBAL | — |
 | FUNDAMENTALS_HISTORY | — | — | — | A | GLOBAL | — |
 | BALANCE_SHEET | — | — | — | A | — | — |
+| DUPONT | — | — | — | A | — | — |
+| OPERATION | — | — | — | A | — | — |
+| DIVIDEND | — | — | — | A | — | — |
 | SECTOR_RANKING | — | A(备) | A(主，含资金流) | — | — | — |
 | SECTOR_CONSTITUENTS | — | — | A | — | — | — |
 | NORTH_FLOW | — | — | A | — | GLOBAL | — |

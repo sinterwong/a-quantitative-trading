@@ -260,6 +260,39 @@ class OperationMetrics:
 
 
 @dataclass
+class DividendRecord:
+    """单条分红记录 — 来自 Baostock query_dividend_data。
+
+    Baostock query_dividend_data 实际字段映射：
+      dividPlanAnnounceDate  → plan_announce_date（分红预案公告日）
+      dividOperateDate       → operate_date（除权除息日）
+      dividPayDate           → pay_date（派息日）
+      dividStockMarketDate   → stock_market_date（红股上市交易日）
+      dividCashPsBeforeTax   → cash_per_share（每股税前现金股利，元）
+      dividStocksPs          → stock_per_share（每股送股）
+      dividReserveToStockPs  → reserve_to_stock（每股转增）
+    """
+
+    symbol: str = ""
+    # 公告与执行日期
+    plan_announce_date: str = ""   # 分红预案公告日
+    operate_date: str = ""          # 除权除息日
+    pay_date: str = ""              # 派息日
+    stock_market_date: str = ""     # 红股上市交易日
+    # 分红金额（每股）
+    cash_per_share: float = 0.0     # 每股税前现金股利（元）
+    stock_per_share: float = 0.0    # 每股送股（股）
+    reserve_to_stock: float = 0.0  # 每股转增（股）
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.symbol) and (
+            self.cash_per_share > 0 or self.stock_per_share > 0 or self.reserve_to_stock > 0
+        )
+
+
+@dataclass
 class MarketIndexSnapshot:
     """单一外盘/指数快照(取代 SPFutures/VIX/HSI 各自的 dataclass)。"""
 
@@ -392,6 +425,7 @@ __all__ = [
     "BalanceSheet",
     "DupontMetrics",
     "OperationMetrics",
+    "DividendRecord",
     "SectorRanking",
     "SectorConstituent",
     "NorthFlow",

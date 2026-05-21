@@ -27,12 +27,12 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import pandas as pd
 
 from ..capabilities import Capability, Market, ProviderCapability
-from ..schemas import BalanceSheet, DupontMetrics, Fundamentals, OperationMetrics, Quote
+from ..schemas import BalanceSheet, DividendRecord, DupontMetrics, Fundamentals, OperationMetrics, Quote
 from .base import Provider, ProviderError
 
 logger = logging.getLogger("data_gateway.baostock")
@@ -144,6 +144,7 @@ class BaostockProvider(Provider):
                 Capability.BALANCE_SHEET,
                 Capability.DUPONT,
                 Capability.OPERATION,
+                Capability.DIVIDEND,
             }),
             markets=frozenset({Market.A}),
             priority_hint=0.75,  # 稳定免费源，冷启动评分较高
@@ -894,6 +895,67 @@ class BaostockProvider(Provider):
         except Exception:
             pass
         return ""
+
+    def fetch_dividend(self, symbol: str, year: int | None = None) -> List[DividendRecord]:
+        """获取A股股票指定年份的分红记录列表。
+
+        Args:
+            symbol: 标准化代码，如 'sh600519'
+            year: 分红年份，默认为最近4年。None 表示最近4年。
+
+        Returns:
+            List[DividendRecord]，按除权除息日倒序。
+            空列表表示无分红记录或查询失败。
+        """
+        try:
+            session = _get_session()
+        except Exception as exc:
+            raise ProviderError(f"baostock 会话获取失败: {exc}") from exc
+
+        bs_code = _symbol_to_bs(symbol)
+        logger.debug("fetch_dividend %s year=%s", symbol, year)
+
+        records: List[DividendRecord] = []
+        years_to_query = [year] if year else list(range(datetime.now().year, datetime.now().year - 4, -1))
+
+        for y in years_to_query:
+            try:
+                rs = session._bs.query_dividend_data(bs_code, year=str(y), yearType="operate")
+                if rs.error_msg != "success":
+                    continue
+                df = rs.get_data()
+                if df is None or df.empty:
+                    continue
+
+                for _, row in df.iterrows():
+                    # 实际 baostock query_dividend_data 字段（已验证 sh.600519 2023/2024）
+                    cash = _safe_float(row.get("dividCashPsBeforeTax"))
+                    stock = _safe_float(row.get("dividStocksPs"))
+                    reserve = _safe_float(row.get("dividReserveToStockPs"))
+
+                    # 至少有一项分红才算有效记录
+                    if cash <= 0 and stock <= 0 and reserve <= 0:
+                        continue
+
+                    record = DividendRecord(
+                        symbol=symbol,
+                        plan_announce_date=str(row.get("dividPlanAnnounceDate") or ""),
+                        operate_date=str(row.get("dividOperateDate") or ""),
+                        pay_date=str(row.get("dividPayDate") or ""),
+                        stock_market_date=str(row.get("dividStockMarketDate") or ""),
+                        cash_per_share=cash,
+                        stock_per_share=stock,
+                        reserve_to_stock=reserve,
+                    )
+                    records.append(record)
+
+            except Exception as exc:
+                logger.debug("fetch_dividend %s year=%s failed: %s", symbol, y, exc)
+                continue
+
+        # 按除权除息日倒序
+        records.sort(key=lambda r: r.operate_date, reverse=True)
+        return records
 
 
 def _safe_float(val, default: float = 0.0) -> float:

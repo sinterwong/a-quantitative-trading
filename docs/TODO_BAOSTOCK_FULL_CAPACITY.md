@@ -211,15 +211,24 @@ pni_yoy: float = 0.0       # 归属母公司净利润同比 %（YOYPNI）
        plan_announce_date: str = ""   # 分红预案公告日
        operate_date: str = ""         # 除权除息日
        pay_date: str = ""             # 派息日
-       stock_market_date: str = ""    # 红股上市交易日
-       cash_per_share: float = 0.0    # 每股税前股利
+       stock_market_date: str = ""     # 红股上市交易日
+       cash_per_share: float = 0.0    # 每股税前现金股利
        stock_per_share: float = 0.0   # 每股送股
-       reserve_to_stock: float = 0.0  # 每股转增股
+       reserve_to_stock: float = 0.0  # 每股转增
    ```
 3. `baostock.py`：`fetch_dividend(self, symbol, year)` → 调用 `query_dividend_data`
 4. `gateway.py`：新增 `get_dividend(symbol, year)` 路由方法
 
 **用途**：计算历史股息率、复权价格调整、选股因子（高股息策略）。
+
+**baostock query_dividend_data 实际字段**（已验证 sh.600519）：
+  - `dividCashPsBeforeTax` → cash_per_share
+  - `dividStocksPs` → stock_per_share
+  - `dividReserveToStockPs` → reserve_to_stock
+  - `dividPlanAnnounceDate` → plan_announce_date
+  - `dividOperateDate` → operate_date
+  - `dividPayDate` → pay_date
+  - `dividStockMarketDate` → stock_market_date
 
 ---
 
