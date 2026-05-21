@@ -32,7 +32,7 @@ from typing import Dict, Optional
 import pandas as pd
 
 from ..capabilities import Capability, Market, ProviderCapability
-from ..schemas import BalanceSheet, Fundamentals, Quote
+from ..schemas import BalanceSheet, DupontMetrics, Fundamentals, OperationMetrics, Quote
 from .base import Provider, ProviderError
 
 logger = logging.getLogger("data_gateway.baostock")
@@ -142,6 +142,8 @@ class BaostockProvider(Provider):
                 Capability.FUNDAMENTALS,
                 Capability.FUNDAMENTALS_HISTORY,
                 Capability.BALANCE_SHEET,
+                Capability.DUPONT,
+                Capability.OPERATION,
             }),
             markets=frozenset({Market.A}),
             priority_hint=0.75,  # 稳定免费源，冷启动评分较高
@@ -333,6 +335,8 @@ class BaostockProvider(Provider):
             fundamentals.profit_yoy = _safe_float(g_row.get("YOYNI"))
             fundamentals.eps_yoy = _safe_float(g_row.get("YOYEPSBasic"))
             fundamentals.asset_yoy = _safe_float(g_row.get("YOYAsset"))
+            fundamentals.equity_yoy = _safe_float(g_row.get("YOYEquity"))
+            fundamentals.pni_yoy = _safe_float(g_row.get("YOYPNI"))
 
         # 营收 YoY：找最近两个同季度对比（通常用年报 Q4 vs Q4）
         if len(profit_df) >= 2:
@@ -490,6 +494,80 @@ class BaostockProvider(Provider):
             equity=0.0,  # assetToEquity 是杠杆倍数，不是股东权益金额
         )
 
+    def fetch_dupont_metrics(self, symbol: str) -> "DupontMetrics":
+        """获取 A股杜邦分析指标快照（ROE 三拆解）。
+
+        Baostock query_dupont_data 字段：
+          dupontROE(dupontNetMargin × dupontAssetTurn × dupontAssetStoEquity)
+          dupontNetMargin（净利率，%）
+          dupontAssetTurn（总资产周转率，次）
+          dupontAssetStoEquity（权益乘数，倍）
+          dupontTaxBurden（税负，%）
+          dupontIntburden（利息负担，%）
+          dupontEbittogr（EBIT/营收，%）
+        """
+        try:
+            session = _get_session()
+        except Exception as exc:
+            raise ProviderError(f"baostock 会话获取失败: {exc}") from exc
+
+        bs_code = _symbol_to_bs(symbol)
+        logger.debug("fetch_dupont_metrics %s", symbol)
+
+        try:
+            df = self._fetch_dupont(session, bs_code)
+        except Exception as exc:
+            raise ProviderError(f"baostock dupont fetch failed: {exc}") from exc
+
+        if df is None or df.empty:
+            return DupontMetrics(symbol=symbol)
+
+        row = df.iloc[0]
+        return DupontMetrics(
+            symbol=symbol,
+            roe=_safe_float(row.get("dupontROE")),
+            net_margin=_safe_float(row.get("dupontNetMargin")),
+            asset_turn=_safe_float(row.get("dupontAssetTurn")),
+            equity_multiplier=_safe_float(row.get("dupontAssetStoEquity")),
+            tax_burden=_safe_float(row.get("dupontTaxBurden")),
+            int_burden=_safe_float(row.get("dupontIntburden")),
+            ebit_to_revenue=_safe_float(row.get("dupontEbittogr")),
+        )
+
+    def fetch_operation_metrics(self, symbol: str) -> "OperationMetrics":
+        """获取 A股运营能力指标快照。
+
+        Baostock query_operation_data 字段：
+          invTurnDays（存货周转天数）
+          nrTurnDays（应收账款周转天数）
+          assetTurnRatio（总资产周转率，次）
+          caTurnRatio（流动资产周转率，次）
+        """
+        try:
+            session = _get_session()
+        except Exception as exc:
+            raise ProviderError(f"baostock 会话获取失败: {exc}") from exc
+
+        bs_code = _symbol_to_bs(symbol)
+        logger.debug("fetch_operation_metrics %s", symbol)
+
+        try:
+            df = self._fetch_operation(session, bs_code)
+        except Exception as exc:
+            raise ProviderError(f"baostock operation fetch failed: {exc}") from exc
+
+        if df is None or df.empty:
+            return OperationMetrics(symbol=symbol)
+
+        row = df.iloc[0]
+        return OperationMetrics(
+            symbol=symbol,
+            nr_turn_days=_safe_float(row.get("nrTurnDays")),
+            inv_turn_days=_safe_float(row.get("invTurnDays")),
+            asset_turn=_safe_float(row.get("assetTurnRatio")),
+            ca_turn=_safe_float(row.get("caTurnRatio")),
+        )
+
     # ─── FUNDAMENTALS_HISTORY ────────────────────────────────────────────────
 
     def _fetch_all_financials(
@@ -617,6 +695,7 @@ class BaostockProvider(Provider):
             for col, out in [
                 ("YOYEquity", "equity_yoy"),
                 ("YOYNI", "profit_yoy"),
+                ("YOYPNI", "pni_yoy"),
             ]:
                 if col in g.columns:
                     result[out] = pd.to_numeric(g[col], errors="coerce") * 100
@@ -626,10 +705,13 @@ class BaostockProvider(Provider):
             for col, out in [
                 ("dupontROE", "dupont_roe"),
                 ("dupontAssetStoEquity", "equity_multiplier"),
+                ("dupontTaxBurden", "tax_burden"),
+                ("dupontIntburden", "int_burden"),
+                ("dupontEbittogr", "ebit_to_revenue"),
             ]:
                 if col in d.columns:
                     s = pd.to_numeric(d[col], errors="coerce")
-                    if out == "dupont_roe":
+                    if out in ("dupont_roe", "tax_burden", "int_burden", "ebit_to_revenue"):
                         s = s * 100
                     result[out] = s
 

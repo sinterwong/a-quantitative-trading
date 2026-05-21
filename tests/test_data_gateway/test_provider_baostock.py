@@ -880,3 +880,311 @@ class TestBaostockFundamentalsHistorySixTables:
         assert mock_session._bs.query_dupont_data.called
         assert mock_session._bs.query_growth_data.called
         assert mock_session._bs.query_balance_data.called
+
+
+# ─── P1 新功能测试 ────────────────────────────────────────────────────────────
+
+class TestBaostockDupontMetrics:
+    """P1-1: fetch_dupont_metrics — 杜邦分析指标快照。"""
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_dupont_metrics_maps_all_fields(self, mock_get_session):
+        import pandas as pd
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        mock_session = MagicMock()
+        mock_rs = MagicMock()
+        mock_rs.error_msg = "success"
+        mock_df = pd.DataFrame([{
+            "code": "sh.600519",
+            "pubDate": "2026-04-17",
+            "statDate": "2025-12-31",
+            "dupontROE": "0.3012",        # 已 ×100 → 30.12%
+            "dupontNetMargin": "0.2715",  # 27.15%
+            "dupontAssetTurn": "0.85",    # 次
+            "dupontAssetStoEquity": "1.95",  # 倍
+            "dupontTaxBurden": "0.8200",  # 82%
+            "dupontIntburden": "0.9100",   # 91%
+            "dupontEbittogr": "0.3520",   # 35.20%
+        }])
+        mock_rs.get_data = MagicMock(return_value=mock_df)
+        mock_session._bs.query_dupont_data = MagicMock(return_value=mock_rs)
+        mock_get_session.return_value = mock_session
+
+        provider = BaostockProvider()
+        dm = provider.fetch_dupont_metrics("sh600519")
+
+        assert dm.symbol == "sh600519"
+        assert dm.roe == pytest.approx(0.3012)
+        assert dm.net_margin == pytest.approx(0.2715)
+        assert dm.asset_turn == pytest.approx(0.85)
+        assert dm.equity_multiplier == pytest.approx(1.95)
+        assert dm.tax_burden == pytest.approx(0.8200)
+        assert dm.int_burden == pytest.approx(0.9100)
+        assert dm.ebit_to_revenue == pytest.approx(0.3520)
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_dupont_metrics_empty_data_returns_default(self, mock_get_session):
+        import pandas as pd
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        mock_session = MagicMock()
+        mock_rs = MagicMock()
+        mock_rs.error_msg = "success"
+        mock_rs.get_data = MagicMock(return_value=pd.DataFrame())
+        mock_session._bs.query_dupont_data = MagicMock(return_value=mock_rs)
+        mock_get_session.return_value = mock_session
+
+        provider = BaostockProvider()
+        dm = provider.fetch_dupont_metrics("sh600519")
+
+        assert dm.symbol == "sh600519"
+        # symbol 有值 → is_valid 为 True（数据为空但对象本身有效）
+        assert dm.is_valid
+        # 数值字段均为零（API 无数据）
+        assert dm.roe == 0.0
+        assert dm.net_margin == 0.0
+
+
+class TestBaostockOperationMetrics:
+    """P1-2: fetch_operation_metrics — 运营能力指标快照。"""
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_operation_metrics_maps_all_fields(self, mock_get_session):
+        import pandas as pd
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        mock_session = MagicMock()
+        mock_rs = MagicMock()
+        mock_rs.error_msg = "success"
+        mock_df = pd.DataFrame([{
+            "code": "sh.600519",
+            "pubDate": "2026-04-17",
+            "statDate": "2025-12-31",
+            "nrTurnDays": "45.3",        # 天
+            "invTurnDays": "1200.5",     # 天
+            "assetTurnRatio": "0.55",     # 次
+            "caTurnRatio": "0.82",        # 次
+        }])
+        mock_rs.get_data = MagicMock(return_value=mock_df)
+        mock_session._bs.query_operation_data = MagicMock(return_value=mock_rs)
+        mock_get_session.return_value = mock_session
+
+        provider = BaostockProvider()
+        om = provider.fetch_operation_metrics("sh600519")
+
+        assert om.symbol == "sh600519"
+        assert om.nr_turn_days == pytest.approx(45.3)
+        assert om.inv_turn_days == pytest.approx(1200.5)
+        assert om.asset_turn == pytest.approx(0.55)
+        assert om.ca_turn == pytest.approx(0.82)
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_operation_metrics_empty_data_returns_default(self, mock_get_session):
+        import pandas as pd
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        mock_session = MagicMock()
+        mock_rs = MagicMock()
+        mock_rs.error_msg = "success"
+        mock_rs.get_data = MagicMock(return_value=pd.DataFrame())
+        mock_session._bs.query_operation_data = MagicMock(return_value=mock_rs)
+        mock_get_session.return_value = mock_session
+
+        provider = BaostockProvider()
+        om = provider.fetch_operation_metrics("sh600519")
+
+        assert om.symbol == "sh600519"
+        # symbol 有值 → is_valid 为 True
+        assert om.is_valid
+        # 数值字段均为零
+        assert om.nr_turn_days == 0.0
+        assert om.inv_turn_days == 0.0
+
+
+class TestBaostockFundamentalsGrowthFields:
+    """P1-3: fetch_fundamentals 填充 equity_yoy / pni_yoy（来自 growth_data）。"""
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_fetch_fundamentals_fills_equity_yoy_and_pni_yoy(self, mock_get_session):
+        import pandas as pd
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        mock_session = MagicMock()
+
+        # profit_df
+        mock_profit_rs = MagicMock()
+        mock_profit_rs.error_msg = "success"
+        mock_profit_rs.get_data = MagicMock(return_value=pd.DataFrame([{
+            "code": "sh.600519",
+            "pubDate": "2026-04-17",
+            "statDate": "2025-12-31",
+            "roeAvg": "0.30",
+            "epsTTM": "8.50",
+            "MBRevenue": "42000000000",
+            "netProfit": "15000000000",
+            "totalShare": "1200000000",
+            "npMargin": "0.35",
+            "gpMargin": "0.75",
+        }]))
+        mock_session._bs.query_profit_data = MagicMock(return_value=mock_profit_rs)
+
+        # cashflow（空）
+        mock_cf_rs = MagicMock()
+        mock_cf_rs.error_msg = "success"
+        mock_cf_rs.get_data = MagicMock(return_value=pd.DataFrame())
+        mock_session._bs.query_cash_flow_data = MagicMock(return_value=mock_cf_rs)
+
+        # operation（空）
+        mock_op_rs = MagicMock()
+        mock_op_rs.error_msg = "success"
+        mock_op_rs.get_data = MagicMock(return_value=pd.DataFrame())
+        mock_session._bs.query_operation_data = MagicMock(return_value=mock_op_rs)
+
+        # dupont（空）
+        mock_dp_rs = MagicMock()
+        mock_dp_rs.error_msg = "success"
+        mock_dp_rs.get_data = MagicMock(return_value=pd.DataFrame())
+        mock_session._bs.query_dupont_data = MagicMock(return_value=mock_dp_rs)
+
+        # growth（非空，有 equity_yoy 和 pni_yoy）
+        mock_gr_rs = MagicMock()
+        mock_gr_rs.error_msg = "success"
+        mock_gr_rs.get_data = MagicMock(return_value=pd.DataFrame([{
+            "code": "sh.600519",
+            "pubDate": "2026-04-17",
+            "statDate": "2025-12-31",
+            "YOYNI": "0.15",
+            "YOYEPSBasic": "0.12",
+            "YOYAsset": "0.08",
+            "YOYEquity": "0.06",   # 6%
+            "YOYPNI": "0.14",       # 14%
+        }]))
+        mock_session._bs.query_growth_data = MagicMock(return_value=mock_gr_rs)
+
+        # industry
+        mock_ind_rs = MagicMock()
+        mock_ind_rs.error_msg = "success"
+        mock_ind_rs.get_data = MagicMock(return_value=pd.DataFrame([{
+            "code": "sh.600519",
+            "code_name": "贵州茅台",
+            "industry": "白酒",
+        }]))
+        mock_session._bs.query_stock_industry = MagicMock(return_value=mock_ind_rs)
+
+        # name query
+        mock_name_rs = MagicMock()
+        mock_name_rs.error_msg = "success"
+        mock_name_rs.get_data = MagicMock(return_value=pd.DataFrame([{
+            "code": "sh.600519", "code_name": "贵州茅台",
+        }]))
+        mock_session._bs.query_stock_basic = MagicMock(return_value=mock_name_rs)
+
+        mock_get_session.return_value = mock_session
+
+        provider = BaostockProvider()
+        fm = provider.fetch_fundamentals("sh600519")
+
+        assert fm.symbol == "sh600519"
+        assert fm.equity_yoy == pytest.approx(0.06)   # growth YOYEquity 小数 → 直接赋值
+        assert fm.pni_yoy == pytest.approx(0.14)        # growth YOYPNI 小数 → 直接赋值
+        assert fm.industry == "白酒"
+
+
+class TestBaostockFundamentalsHistoryExtendedFields:
+    """P1-4: _normalize_financial_history 新增 pni_yoy / tax_burden / int_burden / ebit_to_revenue。"""
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_normalize_includes_new_dupont_and_growth_fields(self, mock_get_session):
+        import pandas as pd
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        provider = BaostockProvider()
+
+        tables = {
+            "profit": pd.DataFrame({
+                "statDate": ["2025-12-31", "2024-12-31", "2023-12-31"],
+                "roeAvg": ["0.30", "0.28", "0.25"],
+                "gpMargin": ["0.75", "0.73", "0.71"],
+                "npMargin": ["0.35", "0.33", "0.30"],
+                "epsTTM": ["8.5", "7.8", "7.1"],
+                "MBRevenue": [4.2e10, 3.8e10, 3.5e10],
+                "netProfit": [1.5e10, 1.3e10, 1.1e10],
+            }),
+            "balance": pd.DataFrame({
+                "statDate": ["2025-12-31", "2024-12-31"],
+                "liabilityToAsset": ["0.16", "0.18"],
+                "currentRatio": ["5.09", "4.80"],
+                "quickRatio": ["3.85", "3.60"],
+            }),
+            "cashflow": pd.DataFrame({
+                "statDate": ["2025-12-31"],
+                "CFOToNP": ["1.20"],
+                "CFOToOR": ["0.90"],
+            }),
+            "operation": pd.DataFrame({
+                "statDate": ["2025-12-31"],
+                "AssetTurnRatio": ["0.55"],
+                "INVTurnDays": ["1200.5"],
+                "NRTurnDays": ["45.3"],
+            }),
+            "dupont": pd.DataFrame({
+                "statDate": ["2025-12-31", "2024-12-31"],
+                "dupontROE": ["0.3012", "0.2800"],
+                "dupontAssetStoEquity": ["1.95", "1.90"],
+                "dupontTaxBurden": ["0.82", "0.81"],
+                "dupontIntburden": ["0.91", "0.90"],
+                "dupontEbittogr": ["0.352", "0.340"],
+            }),
+            "growth": pd.DataFrame({
+                "statDate": ["2025-12-31"],
+                "YOYEquity": ["0.06"],
+                "YOYNI": ["0.15"],
+                "YOYPNI": ["0.14"],
+            }),
+        }
+
+        df = provider._normalize_financial_history(tables, None, None)
+
+        assert not df.empty
+        # 新增 dupont 字段
+        assert "tax_burden" in df.columns
+        assert "int_burden" in df.columns
+        assert "ebit_to_revenue" in df.columns
+        assert "pni_yoy" in df.columns
+        # 值正确（normalize 中已对小数字段 ×100，所以 0.82 → 82.0）
+        assert df["tax_burden"].dropna().iloc[-1] == pytest.approx(82.0)
+        assert df["int_burden"].dropna().iloc[-1] == pytest.approx(91.0)
+        assert df["ebit_to_revenue"].dropna().iloc[-1] == pytest.approx(35.2)
+        assert df["pni_yoy"].dropna().iloc[-1] == pytest.approx(14.0)
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_normalize_missing_dupont_and_growth_tables(self, mock_get_session):
+        import pandas as pd
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        provider = BaostockProvider()
+
+        # 只有 profit 表
+        tables = {
+            "profit": pd.DataFrame({
+                "statDate": ["2025-12-31"],
+                "roeAvg": ["0.30"],
+                "gpMargin": ["0.75"],
+                "npMargin": ["0.35"],
+                "epsTTM": ["8.5"],
+                "MBRevenue": [4.2e10],
+                "netProfit": [1.5e10],
+            }),
+        }
+
+        df = provider._normalize_financial_history(tables, None, None)
+
+        assert not df.empty
+        # dupont 字段不存在（因为没有 dupont 表）
+        assert "tax_burden" not in df.columns
+        assert "int_burden" not in df.columns
+        assert "pni_yoy" not in df.columns
+        # profit 基础字段仍然存在
+        assert "roe_ttm" in df.columns
+        assert "gross_margin" in df.columns

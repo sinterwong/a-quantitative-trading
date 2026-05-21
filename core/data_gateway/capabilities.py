@@ -28,6 +28,8 @@ class Capability(str, Enum):
     MACRO = "macro"                          # 宏观时序 DataFrame (PMI/M2/社融等)
     FUNDAMENTALS_HISTORY = "fundamentals_history"  # 基本面历史时序 DataFrame（日频，前向填充）
     BALANCE_SHEET = "balance_sheet"               # BalanceSheet（资产负债表）
+    DUPONT = "dupont"                            # DupontMetrics（杜邦分析）
+    OPERATION = "operation"                      # OperationMetrics（运营能力）
     MARGIN_FLOW = "margin_flow"                   # 融资融券日频时序 DataFrame
     FUND_FLOW = "fund_flow"                       # 个股资金流日频 DataFrame（主力/超大/大单净流入）
     NEWS_HEADLINES = "news_headlines"             # 新闻标题列表 List[str]
@@ -150,6 +152,12 @@ ROUTING_POLICY: Dict[Tuple[Capability, str], CapabilityPolicy] = {
     ),
     (Capability.BALANCE_SHEET, "fetch_balance_sheet"): CapabilityPolicy(
         RoutingStrategy.MERGE_FIELDS, skip_fields=("symbol",),
+    ),
+    (Capability.DUPONT, "fetch_dupont_metrics"): CapabilityPolicy(
+        RoutingStrategy.FAILOVER,
+    ),
+    (Capability.OPERATION, "fetch_operation_metrics"): CapabilityPolicy(
+        RoutingStrategy.FAILOVER,
     ),
     (Capability.MARGIN_FLOW, "fetch_margin_flow"): CapabilityPolicy(
         RoutingStrategy.FAILOVER,

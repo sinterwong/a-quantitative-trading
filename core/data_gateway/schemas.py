@@ -114,6 +114,8 @@ class Fundamentals:
     # 增长（来自 query_growth_data）
     eps_yoy: float = 0.0        # EPS YoY %
     asset_yoy: float = 0.0       # 总资产 YoY %
+    equity_yoy: float = 0.0     # 净资产同比 %（YOYEquity）
+    pni_yoy: float = 0.0       # 归属母公司净利润同比 %（YOYPNI）
 
     # 市值
     market_cap: float = 0.0      # 亿
@@ -199,6 +201,58 @@ class BalanceSheet:
     timestamp: datetime = field(default_factory=datetime.now)
     # 同 Fundamentals.stale_seconds，由 gateway 在出口处计算。
     stale_seconds: int = 0
+
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.symbol)
+
+
+@dataclass
+class DupontMetrics:
+    """杜邦分析指标快照 — ROE 拆解为净利率 × 资产周转率 × 权益乘数。
+
+    Baostock query_dupont_data 字段映射：
+      dupontROE         → roe（%，已 ×100）
+      dupontNetMargin   → net_margin（%，已 ×100）
+      dupontAssetTurn   → asset_turn（次）
+      dupontAssetStoEquity → equity_multiplier（倍）
+      dupontTaxBurden   → tax_burden（%，已 ×100）
+      dupontIntburden   → int_burden（%，已 ×100）
+      dupontEbittogr     → ebit_to_revenue（%，已 ×100）
+    """
+
+    symbol: str = ""
+    roe: float = 0.0               # % 杜邦ROE
+    net_margin: float = 0.0         # % 净利率
+    asset_turn: float = 0.0         # 次 总资产周转率
+    equity_multiplier: float = 0.0  # 倍 权益乘数
+    tax_burden: float = 0.0         # % 税负
+    int_burden: float = 0.0         # % 利息负担
+    ebit_to_revenue: float = 0.0    # % EBIT/营收
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.symbol)
+
+
+@dataclass
+class OperationMetrics:
+    """运营能力指标快照 — 存货/应收/流动资产/总资产周转。
+
+    Baostock query_operation_data 字段映射：
+      invTurnDays    → inv_turn_days（天）
+      nrTurnDays     → nr_turn_days（天）
+      assetTurnRatio → asset_turn（次）
+      caTurnRatio    → ca_turn（次）
+    """
+
+    symbol: str = ""
+    nr_turn_days: float = 0.0   # 天 应收账款周转天数
+    inv_turn_days: float = 0.0  # 天 存货周转天数
+    asset_turn: float = 0.0      # 次 总资产周转率
+    ca_turn: float = 0.0          # 次 流动资产周转率
+    timestamp: datetime = field(default_factory=datetime.now)
 
     @property
     def is_valid(self) -> bool:
@@ -336,6 +390,8 @@ __all__ = [
     "Quote",
     "Fundamentals",
     "BalanceSheet",
+    "DupontMetrics",
+    "OperationMetrics",
     "SectorRanking",
     "SectorConstituent",
     "NorthFlow",
