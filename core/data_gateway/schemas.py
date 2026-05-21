@@ -101,6 +101,8 @@ class Fundamentals:
     roe_ttm: float = 0.0         # %
     eps_ttm: float = 0.0
     bps: float = 0.0
+    net_margin: float = 0.0        # % 销售净利率（npMargin）
+    gross_margin: float = 0.0      # % 销售毛利率（gpMargin）
 
     # 财报
     revenue_ttm: float = 0.0     # 元
@@ -112,6 +114,8 @@ class Fundamentals:
     # 增长（来自 query_growth_data）
     eps_yoy: float = 0.0        # EPS YoY %
     asset_yoy: float = 0.0       # 总资产 YoY %
+    equity_yoy: float = 0.0     # 净资产同比 %（YOYEquity）
+    pni_yoy: float = 0.0       # 归属母公司净利润同比 %（YOYPNI）
 
     # 市值
     market_cap: float = 0.0      # 亿
@@ -201,6 +205,136 @@ class BalanceSheet:
     @property
     def is_valid(self) -> bool:
         return bool(self.symbol)
+
+
+@dataclass
+class DupontMetrics:
+    """杜邦分析指标快照 — ROE 拆解为净利率 × 资产周转率 × 权益乘数。
+
+    Baostock query_dupont_data 字段映射：
+      dupontROE         → roe（%，已 ×100）
+      dupontNetMargin   → net_margin（%，已 ×100）
+      dupontAssetTurn   → asset_turn（次）
+      dupontAssetStoEquity → equity_multiplier（倍）
+      dupontTaxBurden   → tax_burden（%，已 ×100）
+      dupontIntburden   → int_burden（%，已 ×100）
+      dupontEbittogr     → ebit_to_revenue（%，已 ×100）
+    """
+
+    symbol: str = ""
+    roe: float = 0.0               # % 杜邦ROE
+    net_margin: float = 0.0         # % 净利率
+    asset_turn: float = 0.0         # 次 总资产周转率
+    equity_multiplier: float = 0.0  # 倍 权益乘数
+    tax_burden: float = 0.0         # % 税负
+    int_burden: float = 0.0         # % 利息负担
+    ebit_to_revenue: float = 0.0    # % EBIT/营收
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.symbol)
+
+
+@dataclass
+class OperationMetrics:
+    """运营能力指标快照 — 存货/应收/流动资产/总资产周转。
+
+    Baostock query_operation_data 字段映射：
+      invTurnDays    → inv_turn_days（天）
+      nrTurnDays     → nr_turn_days（天）
+      assetTurnRatio → asset_turn（次）
+      caTurnRatio    → ca_turn（次）
+    """
+
+    symbol: str = ""
+    nr_turn_days: float = 0.0   # 天 应收账款周转天数
+    inv_turn_days: float = 0.0  # 天 存货周转天数
+    asset_turn: float = 0.0      # 次 总资产周转率
+    ca_turn: float = 0.0          # 次 流动资产周转率
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.symbol)
+
+
+@dataclass
+class DividendRecord:
+    """单条分红记录 — 来自 Baostock query_dividend_data。
+
+    Baostock query_dividend_data 实际字段映射：
+      dividPlanAnnounceDate  → plan_announce_date（分红预案公告日）
+      dividOperateDate       → operate_date（除权除息日）
+      dividPayDate           → pay_date（派息日）
+      dividStockMarketDate   → stock_market_date（红股上市交易日）
+      dividCashPsBeforeTax   → cash_per_share（每股税前现金股利，元）
+      dividStocksPs          → stock_per_share（每股送股）
+      dividReserveToStockPs  → reserve_to_stock（每股转增）
+    """
+
+    symbol: str = ""
+    # 公告与执行日期（统一使用 datetime，与其他 schema 保持一致）
+    plan_announce_date: Optional[datetime] = None  # 分红预案公告日
+    operate_date: Optional[datetime] = None        # 除权除息日
+    pay_date: Optional[datetime] = None              # 派息日
+    stock_market_date: Optional[datetime] = None    # 红股上市交易日
+    # 分红金额（每股）
+    cash_per_share: float = 0.0     # 每股税前现金股利（元）
+    stock_per_share: float = 0.0    # 每股送股（股）
+    reserve_to_stock: float = 0.0  # 每股转增（股）
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.symbol) and (
+            self.cash_per_share > 0 or self.stock_per_share > 0 or self.reserve_to_stock > 0
+        )
+
+
+@dataclass
+class IndustryClassification:
+    """股票行业分类快照 — 来自 Baostock query_stock_industry。
+
+    Baostock query_stock_industry 字段映射：
+      code              → symbol（标准化代码，如 'sh600519'）
+      code_name         → code_name（股票名称）
+      industry          → industry（行业名称，如 'J66货币金融服务'）
+      industryClassification → classification（分类来源，如 '证监会行业分类'）
+      updateDate        → update_date（更新日期）
+    """
+
+    symbol: str = ""
+    code_name: str = ""
+    industry: str = ""            # 行业名称
+    classification: str = ""       # 分类来源（如"证监会行业分类"）
+    update_date: str = ""          # 更新日期
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.symbol)
+
+
+@dataclass
+class IndexConstituent:
+    """单一指数成分股记录 — 来自 Baostock query_hs300_stocks / sz50 / zz500。
+
+    Baostock query_xxx_stocks 字段映射：
+      code           → symbol（标准化代码，如 'sh600519'）
+      code_name      → code_name（成分股名称）
+      updateDate     → update_date（更新日期）
+    """
+
+    index_code: str = ""      # 指数代码（hs300 / sz50 / zz500）
+    symbol: str = ""          # 成分股代码
+    code_name: str = ""       # 成分股名称
+    update_date: str = ""     # 更新日期
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.index_code) and bool(self.symbol)
 
 
 @dataclass
@@ -334,6 +468,11 @@ __all__ = [
     "Quote",
     "Fundamentals",
     "BalanceSheet",
+    "DupontMetrics",
+    "OperationMetrics",
+    "DividendRecord",
+    "IndustryClassification",
+    "IndexConstituent",
     "SectorRanking",
     "SectorConstituent",
     "NorthFlow",

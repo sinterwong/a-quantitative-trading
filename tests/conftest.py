@@ -122,3 +122,17 @@ def _reset_module_caches():
             os.unlink(risk_path)
         except OSError:
             pass
+
+    # Flaky 根因修复：scripts.dynamic_selector 和 dynamic_selector 是同一个 module
+    # 的两个 sys.modules key（morning_runner.py 的 sys.path.insert 副作用）。
+    # patch.dict 只替换 scripts.dynamic_selector，dynamic_selector 仍指向真实 module，
+    # 导致测试随机失败。清理两个 key 强制后续 import 走 patch。
+    try:
+        import sys
+        for key in ["dynamic_selector", "scripts.dynamic_selector"]:
+            if key in sys.modules:
+                del sys.modules[key]
+    except Exception:
+        pass
+
+

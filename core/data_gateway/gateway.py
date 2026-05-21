@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
+
 """
-data_gateway.gateway — 统一数据网关
 
 整个系统对外网数据的唯一出口。所有 provider 平级,通过 capability 矩阵 +
 健康度评分动态路由,可合并数据(Quote/Fundamentals)做字段级互补合并。
@@ -22,8 +23,6 @@ data_gateway.gateway — 统一数据网关
   - 缓存: MemoryCache(Quote 30s, Fundamentals/Sector 60s, MarketIndex 60s)
 """
 
-from __future__ import annotations
-
 import logging
 import os
 import re
@@ -31,9 +30,18 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from time import perf_counter
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+
+if TYPE_CHECKING:
+    from .schemas import (
+        DividendRecord,
+        DupontMetrics,
+        IndustryClassification,
+        IndexConstituent,
+        OperationMetrics,
+    )
 
 from .cache import MemoryCache, ParquetDiskCache, TieredCache
 from .capabilities import (
@@ -74,6 +82,12 @@ _DEFAULT_TTL = {
     Capability.MARGIN_FLOW: 14400.0,           # 融资融券日频，4h 缓存(收盘后更新)
     Capability.FUND_FLOW: 14400.0,              # 资金流日频，4h 缓存(收盘后更新)
     Capability.NEWS_HEADLINES: 1800.0,         # 新闻标题，30min 缓存
+    Capability.DUPONT: 86400.0,                 # 杜邦分析，季报数据，24h 缓存
+    Capability.OPERATION: 86400.0,              # 运营能力，季报数据，24h 缓存
+    Capability.DIVIDEND: 86400.0,              # 分红记录，季报数据，24h 缓存
+    Capability.INDUSTRY_CLASSIFICATION: 86400.0,  # 行业分类，24h 缓存
+    Capability.INDEX_CONSTITUENT: 86400.0,   # 指数成分股，24h 缓存
+    Capability.TRADE_CALENDAR: 86400.0,  # 交易日历，24h 缓存
 }
 
 
@@ -1057,6 +1071,170 @@ class DataGateway:
             self._cache.set(cache_key, merged, _DEFAULT_TTL[Capability.BALANCE_SHEET])
             self._last_provenance[cache_key] = prov
         return merged
+
+    def dupont_metrics(self, symbol: str) -> Optional["DupontMetrics"]:
+        """杜邦分析指标快照（ROE 拆解：净利率 × 资产周转率 × 权益乘数）。
+
+        通过 DataGateway 统一路由，享受熔断 + 健康度 + 缓存保护。
+        当前实现源:BaostockProvider(A股)。
+
+        Returns
+        -------
+        DupontMetrics | None
+        """
+        from .schemas import DupontMetrics
+        cache_key = f"dupont_metrics:{symbol}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        market = detect_market(symbol)
+        result, prov = self._route(
+            Capability.DUPONT, market, "fetch_dupont_metrics", symbol,
+        )
+        if result is not None:
+            self._cache.set(cache_key, result, _DEFAULT_TTL[Capability.DUPONT])
+            self._last_provenance[cache_key] = prov
+        return result
+
+    def operation_metrics(self, symbol: str) -> Optional["OperationMetrics"]:
+        """运营能力指标快照（存货周转天数 / 应收账款周转天数等）。
+
+        通过 DataGateway 统一路由，享受熔断 + 健康度 + 缓存保护。
+        当前实现源:BaostockProvider(A股)。
+
+        Returns
+        -------
+        OperationMetrics | None
+        """
+        from .schemas import OperationMetrics
+        cache_key = f"operation_metrics:{symbol}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        market = detect_market(symbol)
+        result, prov = self._route(
+            Capability.OPERATION, market, "fetch_operation_metrics", symbol,
+        )
+        if result is not None:
+            self._cache.set(cache_key, result, _DEFAULT_TTL[Capability.OPERATION])
+            self._last_provenance[cache_key] = prov
+        return result
+
+    def dividend(self, symbol: str, year: int | None = None) -> List["DividendRecord"]:
+        """股票分红记录列表（按除权除息日倒序）。
+
+        通过 DataGateway 统一路由，享受熔断 + 健康度 + 缓存保护。
+        当前实现源:BaostockProvider(A股)。
+
+        Args:
+            symbol: 标准化代码，如 'sh600519'
+            year: 指定年份，None 表示最近4年。
+
+        Returns
+        -------
+        List[DividendRecord]，空列表表示无分红记录或查询失败。
+        """
+        from .schemas import DividendRecord
+        cache_key = f"dividend:{symbol}:{year}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        market = detect_market(symbol)
+        result, prov = self._route(
+            Capability.DIVIDEND, market, "fetch_dividend", symbol, year,
+        )
+        records = result if isinstance(result, list) else []
+        if records:
+            self._cache.set(cache_key, records, _DEFAULT_TTL[Capability.DIVIDEND])
+            self._last_provenance[cache_key] = prov
+        return records
+
+    def industry_classification(self, symbol: str) -> Optional["IndustryClassification"]:
+        """股票行业分类快照（证监会行业分类 / 申万行业分类等）。
+
+        通过 DataGateway 统一路由，享受熔断 + 健康度 + 缓存保护。
+        当前实现源:BaostockProvider(A股)。
+
+        Returns
+        -------
+        IndustryClassification | None
+        """
+        from .schemas import IndustryClassification
+        cache_key = f"industry_classification:{symbol}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        market = detect_market(symbol)
+        result, prov = self._route(
+            Capability.INDUSTRY_CLASSIFICATION, market,
+            "fetch_industry_classification", symbol,
+        )
+        if result is not None:
+            self._cache.set(cache_key, result, _DEFAULT_TTL[Capability.INDUSTRY_CLASSIFICATION])
+            self._last_provenance[cache_key] = prov
+        return result
+
+    def index_constituents(self, index_code: str) -> List["IndexConstituent"]:
+        """获取指数成分股列表（沪深300 / 上证50 / 中证500）。
+
+        通过 DataGateway 统一路由，享受熔断 + 健康度 + 缓存保护。
+        当前实现源:BaostockProvider(A股)。
+
+        Args:
+            index_code: 'hs300' | 'sz50' | 'zz500'
+
+        Returns
+        -------
+        List[IndexConstituent]
+        """
+        from .schemas import IndexConstituent
+        cache_key = f"index_constituents:{index_code}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result, prov = self._route(
+            Capability.INDEX_CONSTITUENT, Market.A,
+            "fetch_index_constituents", index_code,
+        )
+        records = result if isinstance(result, list) else []
+        if records:
+            self._cache.set(cache_key, records, _DEFAULT_TTL[Capability.INDEX_CONSTITUENT])
+            self._last_provenance[cache_key] = prov
+        return records
+
+    def trade_calendar(
+        self, start_date: str, end_date: str,
+    ) -> pd.DataFrame:
+        """交易日历（判断某日期是否为交易日）。
+
+        通过 DataGateway 统一路由，享受熔断 + 健康度 + 缓存保护。
+        当前实现源:BaostockProvider(A股)。
+
+        Args:
+            start_date: 起始日期，格式 'YYYY-MM-DD'
+            end_date: 结束日期，格式 'YYYY-MM-DD'
+
+        Returns
+        -------
+        pd.DataFrame
+            列: calendar_date / is_trading_day（'1'=交易日 '0'=非交易日）
+            空 DataFrame 表示查询失败。
+        """
+        cache_key = f"trade_calendar:{start_date}:{end_date}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result, prov = self._route(
+            Capability.TRADE_CALENDAR, Market.A,
+            "fetch_trade_calendar", start_date, end_date,
+        )
+        df = result if isinstance(result, pd.DataFrame) else pd.DataFrame(
+            columns=["calendar_date", "is_trading_day"],
+        )
+        if not df.empty:
+            self._cache.set(cache_key, df, _DEFAULT_TTL[Capability.TRADE_CALENDAR])
+            self._last_provenance[cache_key] = prov
+        return df
 
     def margin_flow(
         self, symbol: str, start: str | None = None, end: str | None = None,

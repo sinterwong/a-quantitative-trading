@@ -96,8 +96,7 @@ def fetch_selected_stocks(n: int = 5) -> list:
     Returns: [{symbol, name, reason, score}, ...]
     """
     try:
-        import dynamic_selector
-        DynamicStockSelector = dynamic_selector.DynamicStockSelector
+        from scripts.dynamic_selector import DynamicStockSelector
         sel = DynamicStockSelector()
 
         _log.info('Fetching market news...')
