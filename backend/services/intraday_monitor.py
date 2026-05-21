@@ -182,7 +182,15 @@ class IntradayMonitor(DataMixin, SignalingMixin, RiskMixin, ExecutionMixin, Aler
                         return
                 continue
 
-            # 交易时段:检查信号
+            # 交易时段:刷新持仓价格（腾讯接口，自动保护 DB 无效数据）
+            try:
+                refreshed = self._svc.refresh_prices()
+                if refreshed:
+                    logger.info('Prices refreshed: %d symbols updated', len(refreshed))
+            except Exception as e:
+                logger.warning('Price refresh failed: %s', e)
+
+            # 检查信号
             try:
                 self._check_and_push(now)
             except Exception as e:
