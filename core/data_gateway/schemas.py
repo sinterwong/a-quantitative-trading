@@ -293,6 +293,30 @@ class DividendRecord:
 
 
 @dataclass
+class IndustryClassification:
+    """股票行业分类快照 — 来自 Baostock query_stock_industry。
+
+    Baostock query_stock_industry 字段映射：
+      code              → symbol（标准化代码，如 'sh600519'）
+      code_name         → code_name（股票名称）
+      industry          → industry（行业名称，如 'J66货币金融服务'）
+      industryClassification → classification（分类来源，如 '证监会行业分类'）
+      updateDate        → update_date（更新日期）
+    """
+
+    symbol: str = ""
+    code_name: str = ""
+    industry: str = ""            # 行业名称
+    classification: str = ""       # 分类来源（如"证监会行业分类"）
+    update_date: str = ""          # 更新日期
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.symbol)
+
+
+@dataclass
 class MarketIndexSnapshot:
     """单一外盘/指数快照(取代 SPFutures/VIX/HSI 各自的 dataclass)。"""
 
@@ -426,6 +450,7 @@ __all__ = [
     "DupontMetrics",
     "OperationMetrics",
     "DividendRecord",
+    "IndustryClassification",
     "SectorRanking",
     "SectorConstituent",
     "NorthFlow",

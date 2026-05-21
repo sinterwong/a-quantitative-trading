@@ -111,6 +111,7 @@ Providers
 | DUPONT | — | — | — | A | — | — |
 | OPERATION | — | — | — | A | — | — |
 | DIVIDEND | — | — | — | A | — | — |
+| INDUSTRY_CLASSIFICATION | — | — | — | A | — | — |
 | SECTOR_RANKING | — | A(备) | A(主，含资金流) | — | — | — |
 | SECTOR_CONSTITUENTS | — | — | A | — | — | — |
 | NORTH_FLOW | — | — | A | — | GLOBAL | — |

@@ -1345,3 +1345,67 @@ class TestBaostockFundamentalsHistoryExtendedFields:
         records = provider.fetch_dividend("sh600519")  # 默认4年
 
         assert len(records) == 1
+
+    def test_industry_classification_is_valid(self):
+        """IndustryClassification.is_valid: 有 symbol 即为有效。"""
+        from core.data_gateway.schemas import IndustryClassification
+
+        empty = IndustryClassification(symbol="")
+        assert not empty.is_valid
+
+        valid = IndustryClassification(symbol="sh600519", industry="制造业")
+        assert valid.is_valid
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_fetch_industry_classification_basic(self, mock_get_session):
+        """fetch_industry_classification 返回正确字段映射。"""
+        import pandas as pd
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        mock_df = pd.DataFrame([
+            {"code": "sh.600519", "code_name": "贵州茅台",
+             "industry": "C15酒、饮料和精制茶制造业",
+             "industryClassification": "证监会行业分类",
+             "updateDate": "2026-05-18"},
+        ])
+        mock_rs = MagicMock()
+        mock_rs.error_msg = "success"
+        mock_rs.get_data = MagicMock(return_value=mock_df)
+        mock_session = MagicMock()
+        mock_session._bs.query_stock_industry.return_value = mock_rs
+        mock_get_session.return_value = mock_session
+
+        provider = BaostockProvider()
+        ic = provider.fetch_industry_classification("sh600519")
+
+        assert ic is not None
+        assert ic.symbol == "sh600519"
+        assert ic.code_name == "贵州茅台"
+        assert ic.industry == "C15酒、饮料和精制茶制造业"
+        assert ic.classification == "证监会行业分类"
+        assert ic.update_date == "2026-05-18"
+        assert ic.is_valid
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_fetch_industry_classification_not_found(self, mock_get_session):
+        """目标股票不在全市场数据中时返回 None。"""
+        import pandas as pd
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        mock_df = pd.DataFrame([
+            {"code": "sh.600000", "code_name": "浦发银行",
+             "industry": "J66货币金融服务",
+             "industryClassification": "证监会行业分类",
+             "updateDate": "2026-05-18"},
+        ])
+        mock_rs = MagicMock()
+        mock_rs.error_msg = "success"
+        mock_rs.get_data = MagicMock(return_value=mock_df)
+        mock_session = MagicMock()
+        mock_session._bs.query_stock_industry.return_value = mock_rs
+        mock_get_session.return_value = mock_session
+
+        provider = BaostockProvider()
+        ic = provider.fetch_industry_classification("sh600519")
+
+        assert ic is None

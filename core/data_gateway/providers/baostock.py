@@ -32,7 +32,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from ..capabilities import Capability, Market, ProviderCapability
-from ..schemas import BalanceSheet, DividendRecord, DupontMetrics, Fundamentals, OperationMetrics, Quote
+from ..schemas import BalanceSheet, DividendRecord, DupontMetrics, Fundamentals, IndustryClassification, OperationMetrics, Quote
 from .base import Provider, ProviderError
 
 logger = logging.getLogger("data_gateway.baostock")
@@ -145,6 +145,7 @@ class BaostockProvider(Provider):
                 Capability.DUPONT,
                 Capability.OPERATION,
                 Capability.DIVIDEND,
+                Capability.INDUSTRY_CLASSIFICATION,
             }),
             markets=frozenset({Market.A}),
             priority_hint=0.75,  # 稳定免费源，冷启动评分较高
@@ -956,6 +957,52 @@ class BaostockProvider(Provider):
         # 按除权除息日倒序
         records.sort(key=lambda r: r.operate_date, reverse=True)
         return records
+
+    def fetch_industry_classification(self, symbol: str) -> Optional[IndustryClassification]:
+        """获取A股股票的行业分类信息。
+
+        调用 Baostock query_stock_industry（全市场接口，一次返回所有股票，
+        内部按 code 过滤目标股票）。
+
+        Returns
+        -------
+        IndustryClassification | None
+            无行业数据时返回 None（如股票代码不在 baostock 数据库中）。
+        """
+        try:
+            session = _get_session()
+        except Exception as exc:
+            raise ProviderError(f"baostock 会话获取失败: {exc}") from exc
+
+        bs_code = _symbol_to_bs(symbol)
+        logger.debug("fetch_industry_classification %s", symbol)
+
+        try:
+            rs = session._bs.query_stock_industry()
+            if rs.error_msg != "success":
+                return None
+
+            df = rs.get_data()
+            if df is None or df.empty:
+                return None
+
+            # 按 code 过滤目标股票
+            matched = df[df["code"] == bs_code]
+            if matched.empty:
+                return None
+
+            row = matched.iloc[0]
+            return IndustryClassification(
+                symbol=symbol,
+                code_name=str(row.get("code_name") or ""),
+                industry=str(row.get("industry") or ""),
+                classification=str(row.get("industryClassification") or ""),
+                update_date=str(row.get("updateDate") or ""),
+            )
+
+        except Exception as exc:
+            logger.debug("fetch_industry_classification %s failed: %s", symbol, exc)
+            return None
 
 
 def _safe_float(val, default: float = 0.0) -> float:

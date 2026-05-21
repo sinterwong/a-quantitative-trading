@@ -77,6 +77,7 @@ _DEFAULT_TTL = {
     Capability.DUPONT: 86400.0,                 # 杜邦分析，季报数据，24h 缓存
     Capability.OPERATION: 86400.0,              # 运营能力，季报数据，24h 缓存
     Capability.DIVIDEND: 86400.0,              # 分红记录，季报数据，24h 缓存
+    Capability.INDUSTRY_CLASSIFICATION: 86400.0,  # 行业分类，24h 缓存
 }
 
 
@@ -1137,6 +1138,31 @@ class DataGateway:
             self._cache.set(cache_key, records, _DEFAULT_TTL[Capability.DIVIDEND])
             self._last_provenance[cache_key] = prov
         return records
+
+    def industry_classification(self, symbol: str) -> Optional["IndustryClassification"]:
+        """股票行业分类快照（证监会行业分类 / 申万行业分类等）。
+
+        通过 DataGateway 统一路由，享受熔断 + 健康度 + 缓存保护。
+        当前实现源:BaostockProvider(A股)。
+
+        Returns
+        -------
+        IndustryClassification | None
+        """
+        from .schemas import IndustryClassification
+        cache_key = f"industry_classification:{symbol}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        market = detect_market(symbol)
+        result, prov = self._route(
+            Capability.INDUSTRY_CLASSIFICATION, market,
+            "fetch_industry_classification", symbol,
+        )
+        if result is not None:
+            self._cache.set(cache_key, result, _DEFAULT_TTL[Capability.INDUSTRY_CLASSIFICATION])
+            self._last_provenance[cache_key] = prov
+        return result
 
     def margin_flow(
         self, symbol: str, start: str | None = None, end: str | None = None,

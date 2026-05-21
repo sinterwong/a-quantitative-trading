@@ -31,7 +31,8 @@ class Capability(str, Enum):
     DUPONT = "dupont"                            # DupontMetrics（杜邦分析）
     OPERATION = "operation"                      # OperationMetrics（运营能力）
     DIVIDEND = "dividend"                       # DividendRecord（分红记录）
-    MARGIN_FLOW = "margin_flow"                 # 融资融券日频时序 DataFrame
+    INDUSTRY_CLASSIFICATION = "industry_classification"  # IndustryClassification（行业分类）
+    MARGIN_FLOW = "margin_flow"               # 融资融券日频时序 DataFrame
     FUND_FLOW = "fund_flow"                       # 个股资金流日频 DataFrame（主力/超大/大单净流入）
     NEWS_HEADLINES = "news_headlines"             # 新闻标题列表 List[str]
 
@@ -161,6 +162,9 @@ ROUTING_POLICY: Dict[Tuple[Capability, str], CapabilityPolicy] = {
         RoutingStrategy.FAILOVER,
     ),
     (Capability.DIVIDEND, "fetch_dividend"): CapabilityPolicy(
+        RoutingStrategy.FAILOVER,
+    ),
+    (Capability.INDUSTRY_CLASSIFICATION, "fetch_industry_classification"): CapabilityPolicy(
         RoutingStrategy.FAILOVER,
     ),
     (Capability.MARGIN_FLOW, "fetch_margin_flow"): CapabilityPolicy(
