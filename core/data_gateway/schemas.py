@@ -317,6 +317,27 @@ class IndustryClassification:
 
 
 @dataclass
+class IndexConstituent:
+    """单一指数成分股记录 — 来自 Baostock query_hs300_stocks / sz50 / zz500。
+
+    Baostock query_xxx_stocks 字段映射：
+      code           → symbol（标准化代码，如 'sh600519'）
+      code_name      → code_name（成分股名称）
+      updateDate     → update_date（更新日期）
+    """
+
+    index_code: str = ""      # 指数代码（hs300 / sz50 / zz500）
+    symbol: str = ""          # 成分股代码
+    code_name: str = ""       # 成分股名称
+    update_date: str = ""     # 更新日期
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.index_code) and bool(self.symbol)
+
+
+@dataclass
 class MarketIndexSnapshot:
     """单一外盘/指数快照(取代 SPFutures/VIX/HSI 各自的 dataclass)。"""
 
@@ -451,6 +472,7 @@ __all__ = [
     "OperationMetrics",
     "DividendRecord",
     "IndustryClassification",
+    "IndexConstituent",
     "SectorRanking",
     "SectorConstituent",
     "NorthFlow",

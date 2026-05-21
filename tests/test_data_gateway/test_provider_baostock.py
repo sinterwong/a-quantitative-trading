@@ -1409,3 +1409,78 @@ class TestBaostockFundamentalsHistoryExtendedFields:
         ic = provider.fetch_industry_classification("sh600519")
 
         assert ic is None
+
+    def test_index_constituent_is_valid(self):
+        """IndexConstituent.is_valid: 有 index_code 和 symbol 即为有效。"""
+        from core.data_gateway.schemas import IndexConstituent
+
+        empty = IndexConstituent(index_code="hs300", symbol="")
+        assert not empty.is_valid
+
+        empty2 = IndexConstituent(index_code="", symbol="sh600519")
+        assert not empty2.is_valid
+
+        valid = IndexConstituent(index_code="hs300", symbol="sh600519", code_name="贵州茅台")
+        assert valid.is_valid
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_fetch_index_constituents_basic(self, mock_get_session):
+        """fetch_index_constituents('hs300') 返回 2 条记录，字段映射正确。"""
+        import pandas as pd
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        mock_df = pd.DataFrame([
+            {"code": "sh.600519", "code_name": "贵州茅台", "updateDate": "2026-05-18"},
+            {"code": "sh.600036", "code_name": "招商银行", "updateDate": "2026-05-18"},
+        ])
+        mock_rs = MagicMock()
+        mock_rs.error_msg = "success"
+        mock_rs.get_data = MagicMock(return_value=mock_df)
+        mock_session = MagicMock()
+        mock_session._bs.query_hs300_stocks.return_value = mock_rs
+        mock_get_session.return_value = mock_session
+
+        provider = BaostockProvider()
+        records = provider.fetch_index_constituents("hs300")
+
+        assert len(records) == 2
+        assert records[0].index_code == "hs300"
+        # 按 symbol 排序：sh600036 < sh600519
+        assert records[0].symbol == "sh600036"
+        assert records[0].code_name == "招商银行"
+        assert records[1].symbol == "sh600519"
+        assert records[1].code_name == "贵州茅台"
+        assert all(r.update_date == "2026-05-18" for r in records)
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_fetch_index_constituents_invalid_code(self, mock_get_session):
+        """无效 index_code 直接返回空列表，不调 API。"""
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        provider = BaostockProvider()
+        records = provider.fetch_index_constituents("invalid")
+
+        assert records == []
+        mock_get_session.return_value._bs.query_hs300_stocks.assert_not_called()
+
+    @patch("core.data_gateway.providers.baostock._get_session")
+    def test_fetch_index_constituents_sz50(self, mock_get_session):
+        """sz50 调用 query_sz50_stocks 方法。"""
+        import pandas as pd
+        from core.data_gateway.providers.baostock import BaostockProvider
+
+        mock_df = pd.DataFrame([
+            {"code": "sh.600519", "code_name": "贵州茅台", "updateDate": "2026-05-18"},
+        ])
+        mock_rs = MagicMock()
+        mock_rs.error_msg = "success"
+        mock_rs.get_data = MagicMock(return_value=mock_df)
+        mock_session = MagicMock()
+        mock_session._bs.query_sz50_stocks.return_value = mock_rs
+        mock_get_session.return_value = mock_session
+
+        provider = BaostockProvider()
+        records = provider.fetch_index_constituents("sz50")
+
+        assert len(records) == 1
+        mock_session._bs.query_sz50_stocks.assert_called_once()

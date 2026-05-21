@@ -32,7 +32,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from ..capabilities import Capability, Market, ProviderCapability
-from ..schemas import BalanceSheet, DividendRecord, DupontMetrics, Fundamentals, IndustryClassification, OperationMetrics, Quote
+from ..schemas import BalanceSheet, DividendRecord, DupontMetrics, Fundamentals, IndustryClassification, IndexConstituent, OperationMetrics, Quote
 from .base import Provider, ProviderError
 
 logger = logging.getLogger("data_gateway.baostock")
@@ -146,6 +146,7 @@ class BaostockProvider(Provider):
                 Capability.OPERATION,
                 Capability.DIVIDEND,
                 Capability.INDUSTRY_CLASSIFICATION,
+                Capability.INDEX_CONSTITUENT,
             }),
             markets=frozenset({Market.A}),
             priority_hint=0.75,  # 稳定免费源，冷启动评分较高
@@ -1003,6 +1004,62 @@ class BaostockProvider(Provider):
         except Exception as exc:
             logger.debug("fetch_industry_classification %s failed: %s", symbol, exc)
             return None
+
+    def fetch_index_constituents(self, index_code: str) -> List[IndexConstituent]:
+        """获取指数成分股列表。
+
+        Args:
+            index_code: 指数代码，选项: 'hs300' / 'sz50' / 'zz500'
+
+        Returns
+        -------
+        List[IndexConstituent]，按 code 排序。
+        空列表表示无数据或查询失败。
+        """
+        _VALID_INDEX_CODES = ("hs300", "sz50", "zz500")
+        if index_code not in _VALID_INDEX_CODES:
+            logger.debug("fetch_index_constituents: invalid index_code=%s", index_code)
+            return []
+
+        try:
+            session = _get_session()
+        except Exception as exc:
+            raise ProviderError(f"baostock 会话获取失败: {exc}") from exc
+
+        logger.debug("fetch_index_constituents %s", index_code)
+
+        query_method = {
+            "hs300": session._bs.query_hs300_stocks,
+            "sz50": session._bs.query_sz50_stocks,
+            "zz500": session._bs.query_zz500_stocks,
+        }[index_code]
+
+        try:
+            rs = query_method()
+            if rs.error_msg != "success":
+                return []
+            df = rs.get_data()
+            if df is None or df.empty:
+                return []
+
+            records: List[IndexConstituent] = []
+            for _, row in df.iterrows():
+                code = str(row.get("code") or "")
+                if not code:
+                    continue
+                # baostock code 格式: 'sh.600519' → 标准化为 'sh600519'
+                symbol = code.replace(".", "")
+                records.append(IndexConstituent(
+                    index_code=index_code,
+                    symbol=symbol,
+                    code_name=str(row.get("code_name") or ""),
+                    update_date=str(row.get("updateDate") or ""),
+                ))
+            return sorted(records, key=lambda r: r.symbol)
+
+        except Exception as exc:
+            logger.debug("fetch_index_constituents %s failed: %s", index_code, exc)
+            return []
 
 
 def _safe_float(val, default: float = 0.0) -> float:

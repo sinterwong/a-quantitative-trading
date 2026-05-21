@@ -78,6 +78,7 @@ _DEFAULT_TTL = {
     Capability.OPERATION: 86400.0,              # 运营能力，季报数据，24h 缓存
     Capability.DIVIDEND: 86400.0,              # 分红记录，季报数据，24h 缓存
     Capability.INDUSTRY_CLASSIFICATION: 86400.0,  # 行业分类，24h 缓存
+    Capability.INDEX_CONSTITUENT: 86400.0,   # 指数成分股，24h 缓存
 }
 
 
@@ -1163,6 +1164,34 @@ class DataGateway:
             self._cache.set(cache_key, result, _DEFAULT_TTL[Capability.INDUSTRY_CLASSIFICATION])
             self._last_provenance[cache_key] = prov
         return result
+
+    def index_constituents(self, index_code: str) -> List["IndexConstituent"]:
+        """获取指数成分股列表（沪深300 / 上证50 / 中证500）。
+
+        通过 DataGateway 统一路由，享受熔断 + 健康度 + 缓存保护。
+        当前实现源:BaostockProvider(A股)。
+
+        Args:
+            index_code: 'hs300' | 'sz50' | 'zz500'
+
+        Returns
+        -------
+        List[IndexConstituent]
+        """
+        from .schemas import IndexConstituent
+        cache_key = f"index_constituents:{index_code}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result, prov = self._route(
+            Capability.INDEX_CONSTITUENT, Market.A,
+            "fetch_index_constituents", index_code,
+        )
+        records = result if isinstance(result, list) else []
+        if records:
+            self._cache.set(cache_key, records, _DEFAULT_TTL[Capability.INDEX_CONSTITUENT])
+            self._last_provenance[cache_key] = prov
+        return records
 
     def margin_flow(
         self, symbol: str, start: str | None = None, end: str | None = None,
