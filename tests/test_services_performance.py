@@ -157,8 +157,7 @@ def test_compute_returns_negative():
 
 
 def test_compute_returns_default_initial():
-    """默认 initial=INITIAL_CAPITAL (services.performance.INITIAL_CAPITAL = 20000)。"""
-    from services.performance import INITIAL_CAPITAL
-    out = compute_returns(INITIAL_CAPITAL)
+    """默认 initial=100000.0（真实初始本金）。"""
+    out = compute_returns(100_000.0)
     assert out['total_return_pct'] == 0.0
-    assert out['initial_capital'] == INITIAL_CAPITAL
+    assert out['initial_capital'] == 100_000.0

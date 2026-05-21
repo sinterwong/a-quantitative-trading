@@ -47,7 +47,6 @@ sys.path.insert(0, BACKEND_DIR)
 
 from .portfolio import PortfolioService, get_cursor
 
-INITIAL_CAPITAL = 20000.0  # 初始资金
 BENCHMARK_CODE = 'sh000300'  # 沪深300 作为基准
 
 # ─── 沪深300 历史数据 ─────────────────────────────────────────────
@@ -189,7 +188,7 @@ def compute_trade_stats(trades: List[Dict]) -> Dict:
     }
 
 
-def compute_returns(total_equity: float, initial: float = INITIAL_CAPITAL) -> Dict:
+def compute_returns(total_equity: float, initial: float = 100000.0) -> Dict:
     """计算累计收益率和年化收益率"""
     total_return_pct = (total_equity - initial) / initial * 100
 
@@ -208,6 +207,7 @@ def generate_performance_chart(
     equity_series: List[Tuple[str, float]],
     benchmark_series: Optional[List[Tuple[str, float]]] = None,
     trades: Optional[List[Dict]] = None,
+    initial_capital: float = 100000.0,
 ) -> Optional[str]:
     """
     生成绩效图表（equity curve vs benchmark）。
@@ -237,7 +237,7 @@ def generate_performance_chart(
                 ax.plot(bm_dates, norm_bm, label='沪深300(归一化)', color='#FF5722',
                        linewidth=1.2, linestyle='--', alpha=0.8)
 
-        ax.axhline(y=INITIAL_CAPITAL, color='gray', linestyle=':', alpha=0.6, label='本金')
+        ax.axhline(y=initial_capital, color='gray', linestyle=':', alpha=0.6, label='本金')
         ax.set_xlabel('日期')
         ax.set_ylabel('权益（元）')
         ax.set_title('Equity Curve vs 沪深300 Benchmark')
@@ -308,14 +308,20 @@ def generate_monthly_report(
 
     # ── 当前组合总权益 ──
     summary = svc.get_portfolio_summary()
-    total_equity = summary.get('total_equity', INITIAL_CAPITAL)
+    total_equity = summary.get('total_equity', 0)
+
+    # ── 初始本金：从 daily_meta 第一天的 equity（系统真正的起始资金）──
+    initial_capital = 100000.0  # 默认值
+    if metas:
+        first = sorted(metas, key=lambda m: m.get('trade_date', ''))
+        if first:
+            initial_capital = float(first[0].get('equity') or first[0].get('cash') or 100000.0)
+
     unrealized_pnl = summary.get('unrealized_pnl', 0)
     realized_pnl = summary.get('realized_pnl', 0)
 
-    # ── 收益率 ──
-    # 用实际初始资金（来自 cash 表）而非硬编码 INITIAL_CAPITAL
-    initial_cash = summary.get('cash', INITIAL_CAPITAL)  # cash 表的 initial_cash
-    returns = compute_returns(total_equity, initial=initial_cash)
+    # ── 收益率：用真实初始本金计算，不是当前 cash ──
+    returns = compute_returns(total_equity, initial=initial_capital)
 
     # ── 交易统计 ──
     trades = svc.get_orders(status='filled', limit=500)
@@ -328,7 +334,8 @@ def generate_monthly_report(
     # ── 图表 ──
     chart_base64 = None
     if include_chart and equity_series:
-        chart_base64 = generate_performance_chart(equity_series, benchmark_series, trades)
+        chart_base64 = generate_performance_chart(equity_series, benchmark_series, trades,
+                                                  initial_capital=initial_capital)
 
     # ── 当月交易次数（估算）──
     month_str = f"{year}-{month:02d}"
