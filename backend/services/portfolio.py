@@ -246,6 +246,66 @@ def init_db():
 # Portfolio Service
 # ============================================================
 
+# ─── 腾讯符号转换 ───────────────────────────────────────────────
+
+def _to_tencent_symbol(sym: str) -> str | None:
+    """
+    Convert a position symbol to Tencent Finance qt.gtimg.cn format.
+
+    A股规则（按代码号段判断真实市场，不依赖 DB 存储前缀）:
+      60xxxx → sh (上证)
+      688xxx → sh (科创板)
+      000xxx / 001xxx / 002xxx / 003xxx → sz (深证)
+      300xxx → sz (创业板)
+      4xxxxx / 8xxxxx → bj (北交所)
+      ETF（如 159xxx / 510xxx）→ 腾讯统一 sz 前缀
+
+    港股规则:
+      HK 代码 → hk00xxx（如 0700 → hk00700）
+
+    输入格式: 支持 SH600900 / 600900.SH / 600900 等多种写法。
+    Returns None if the symbol type is not supported.
+    """
+    sym = sym.strip().upper()
+
+    # 去掉前缀 SH/SZ/BJ/HK（无点号的大写格式）
+    # 例: SH600900 → 600900, SZ159992 → 159992, HK00700 → 00700
+    for prefix in ('SH', 'SZ', 'BJ', 'HK'):
+        if sym.startswith(prefix) and len(sym) > len(prefix) and sym[len(prefix)].isdigit():
+            sym = sym[len(prefix):]
+            break
+
+    # 去掉 .SH / .SZ / .BJ / .HK 后缀
+    if '.' in sym:
+        sym = sym.split('.')[0]
+
+    if not sym:
+        return None
+
+    # 港股: 00700 → hk00700
+    if sym.isdigit() and len(sym) <= 5:
+        # 判断是港股（5位以内数字，无 A股号段特征）
+        # 规则: 5位以内且首位>0，可能是港股；首位=0 补足5位
+        return f'hk{sym.zfill(5)}'
+
+    # A股按号段判断市场
+    n = len(sym)
+    if n != 6 or not sym.isdigit():
+        return None
+    if sym.startswith('60') or sym.startswith('688'):
+        return f'sh{sym}'
+    if (sym.startswith('000') or sym.startswith('001') or
+            sym.startswith('002') or sym.startswith('003') or
+            sym.startswith('300')):
+        return f'sz{sym}'
+    if sym.startswith('4') or sym.startswith('8'):
+        return f'bj{sym}'
+    # 其它6位ETF（159xxx / 510xxx / 512xxx 等）→ 腾讯统一 sz
+    return f'sz{sym}'
+
+
+# ─── PortfolioService ────────────────────────────────────────────
+
 class PortfolioService:
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
@@ -411,19 +471,19 @@ class PortfolioService:
         """
         Fetch latest prices for all open positions from Tencent Finance.
         Returns {symbol: latest_price} for positions that were updated.
+        Only writes to DB when Tencent returns a valid price (> 0),
+        preserving existing DB values when the source is unavailable.
         """
         positions = self.get_positions()
         if not positions:
             return {}
 
-        # Build batch request: sh600900 → qt.gtimg.cn format
         symbols = []
         qt_symbols = []
         for p in positions:
             sym = p['symbol']
-            if '.' in sym:
-                num, market = sym.split('.', 1)
-                qt = ('sh' if market == 'SH' else 'sz') + num
+            qt = _to_tencent_symbol(sym)
+            if qt:
                 qt_symbols.append(qt)
                 symbols.append(sym)
 
@@ -444,20 +504,38 @@ class PortfolioService:
             with urllib.request.urlopen(req, context=ctx, timeout=8) as r:
                 raw = r.read().decode('gbk', errors='replace')
 
-            for i, line in enumerate(raw.strip().split(';')):
+            # Build a lookup: qt_symbol → original symbol
+            qt_to_sym = dict(zip(qt_symbols, symbols))
+            failed_qt = set(qt_symbols)
+
+            for line in raw.strip().split(';'):
                 if '=' not in line:
                     continue
-                fields = line.split('=')[1].strip().strip('"').split('~')
+                fields = line.split('=', 1)[1].strip().strip('"').split('~')
                 if len(fields) < 32:
                     continue
                 try:
-                    price = float(fields[3]) if fields[3] not in ('', '-') else 0.0
-                    sym = symbols[i]
-                    if price > 0:
-                        self.update_position_price(sym, price)
-                        updated[sym] = price
+                    price_str = fields[3]
+                    if price_str in ('', '-'):
+                        continue
+                    price = float(price_str)
+                    if price <= 0:
+                        continue
+                    # Extract qt prefix from the raw line for reliable mapping
+                    qt_prefix = line.split('=')[0].strip()
+                    sym = qt_to_sym.get(qt_prefix)
+                    if sym is None:
+                        continue
+                    failed_qt.discard(qt_prefix)
+                    self.update_position_price(sym, price)
+                    updated[sym] = price
                 except (ValueError, IndexError):
                     continue
+
+            # Log symbols that Tencent had no data for
+            for qt in failed_qt:
+                sym = qt_to_sym[qt]
+                logger.warning('refresh_prices: no data from Tencent for %s (%s)', sym, qt)
 
         except Exception as e:
             logger.warning('refresh_prices failed: %s', e)
