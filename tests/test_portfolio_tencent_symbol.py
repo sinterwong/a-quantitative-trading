@@ -121,22 +121,5 @@ class TestToTencentSymbol(unittest.TestCase):
         self.assertEqual(_to_tencent_symbol('\t0700.HK\n'), 'hk00700')
 
 
-class TestRefreshPricesProtectsDB(unittest.TestCase):
-    """
-    验证 refresh_prices 在数据源失效时保护 DB 现有值：
-    - 腾讯返回 price=0 / 空字段时，不调用 update_position_price
-    - 只在有有效价格时才写 DB
-    """
-
-    def test_zero_price_not_written(self):
-        """
-        模拟腾讯返回 price_str='' 或 '-' 时，逻辑正确跳过。
-        通过检查 update_position_price 调用次数来验证。
-        """
-        # 本测试依赖对 update_position_price 的 mock，在集成测试层面验证
-        # 单元测试无法覆盖（需要网络调用），此处仅作文档说明
-        pass
-
-
 if __name__ == '__main__':
     unittest.main()

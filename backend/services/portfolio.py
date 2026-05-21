@@ -304,11 +304,6 @@ def _to_tencent_symbol(sym: str) -> str | None:
     return f'sz{sym}'
 
 
-def _is_valid_tencent_price(price_str: str) -> bool:
-    """检查腾讯行情字段是否代表有效价格。"""
-    return price_str not in ('', '-') and price_str.replace('.', '', 1).isdigit()
-
-
 # ─── PortfolioService ────────────────────────────────────────────
 
 class PortfolioService:

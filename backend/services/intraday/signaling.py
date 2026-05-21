@@ -229,11 +229,8 @@ class SignalingMixin:
         except Exception as e:
             logger.warning('Sector flow check error: %s', e)
 
-        # 刷新持仓价格并获取持仓
-        try:
-            self._svc.refresh_prices()
-        except Exception as e:
-            logger.warning('refresh_prices failed: %s', e)
+        # 价格已在 _run() 中由 IntradayMonitor 主循环刷新
+        # 获取持仓
         try:
             positions = self._svc.get_positions()
         except Exception as e:
