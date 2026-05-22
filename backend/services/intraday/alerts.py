@@ -122,37 +122,46 @@ class AlertsMixin:
 
     # ── LLM 终极审核 ───────────────────────────────────────
 
-    def _llm_review_signal(self, alert: SignalAlert, direction: str):
+    def _llm_review_signal(self, ctx: dict, direction: str):
         """
-        LLM 终极审核:收集全部上下文,让大模型决定是否执行交易。
+        LLM 终极审核：收集全部上下文，让大模型对买入/卖出做综合评级。
+
+        ctx 包含信号链上所有可用数据（部分字段可能缺失，用默认值兜底）：
+          symbol, price, signal, reason, pipeline_score,
+          minute_rsi, day_pct, vol_ratio,
+          market_regime, market_brief,
+          cash, total_equity,
+          pos, positions, recent_trades,
+          sentiment_info, params
+
         返回 (approved: bool, reason: str, confidence: float, size_rec: str)
         """
         if self._llm is None:
             return True, 'LLM unavailable, auto-approve', 0.5, 'full'
 
         try:
-            sym = alert.symbol
-            params = self._get_params(sym)
-            cash = self._svc.get_cash()
-            positions = self._svc.get_positions()
-            pos = self._svc.get_position(sym)
-            recent_trades = self._svc.get_recent_trades(sym, limit=5) if hasattr(self._svc, 'get_recent_trades') else []
-
-            try:
-                from services.signals import get_market_brief
-                mb = get_market_brief()
-            except Exception:
-                mb = {}
-
-            sent_key = sym
-            sentiment_info = ''
-            if sent_key in self._sentiment_cache:
-                sent, conf_s, summ = self._sentiment_cache[sent_key]
-                sentiment_info = f'情绪={sent}(置信度{conf_s:.0%}),摘要:{summ[:60]}'
+            sym          = ctx['symbol']
+            price        = ctx['price']
+            signal       = ctx.get('signal', direction)
+            reason       = ctx.get('reason', '')
+            score        = ctx.get('pipeline_score', 0.0)
+            m_rsi        = ctx.get('minute_rsi', None)
+            day_pct      = ctx.get('day_pct', 0)
+            vol_ratio    = ctx.get('vol_ratio', None)
+            regime       = self._market_regime.get('regime', 'UNKNOWN')
+            atr_regime   = self._market_regime.get('atr_ratio', 0.0)
+            mb           = ctx.get('market_brief', {})
+            cash         = ctx.get('cash', 0)
+            total_eq     = ctx.get('total_equity', 0)
+            pos          = ctx.get('pos', {})
+            positions    = ctx.get('positions', [])
+            recent_trades = ctx.get('recent_trades', [])
+            sentiment    = ctx.get('sentiment_info', '')
+            params       = ctx.get('params', {})
 
             # 持仓摘要
             if pos:
-                _pos_label = f"是({pos.get('shares', 0)}股,成本{'{:.2f}'.format(pos.get('entry_price', 0))})"
+                _pos_label = f"是({pos.get('shares', 0)}股,成本{pos.get('entry_price', 0):.2f})"
             else:
                 _pos_label = "否(可建仓)"
 
@@ -160,83 +169,100 @@ class AlertsMixin:
             for p in (positions or []):
                 if p.get('shares', 0) > 0:
                     pos_summary.append(
-                        f"{p['symbol']}: {p['shares']}股,成本{p.get('entry_price', 0):.2f}"
+                        f"{p['symbol']}:{p['shares']}股,成本{p.get('entry_price', 0):.2f}"
                     )
 
             trade_summary = []
             for t in (recent_trades or []):
                 trade_summary.append(
                     f"{t.get('direction','')} {t.get('symbol','')} "
-                    f"{t.get('shares',0)}@{t.get('price',0):.2f} "
+                    f"{t.get('shares',0)}@{t.get('price', 0):.2f} "
                     f"pnl={t.get('pnl', 0):+.0f}"
                 )
+
+            # 计算仓位占比
+            pos_value  = pos.get('shares', 0) * price if pos else 0
+            pos_pct    = pos_value / total_eq if total_eq else 0
+
+            rsi_thr    = params.get('rsi_buy', 25) if direction == 'BUY' else params.get('rsi_sell', 65)
+            tp         = params.get('take_profit', 0.20)
+            sl         = params.get('stop_loss', 0.05)
+            atr_thr    = params.get('atr_threshold', 0.85)
+
+            # RSI / vol_ratio 格式化（避免 f-string :format 和条件表达式优先级冲突）
+            rsi_str = f'{m_rsi:.0f}' if m_rsi is not None else 'N/A'
+            vol_str = f'放量{vol_ratio:.1f}倍(vs 5日均量)' if vol_ratio else 'N/A'
 
             if direction == 'BUY':
                 system_prompt = (
                     "你是一个严格的A股量化交易员。每笔买入都需要通过你的最终审核。\n"
-                    "你极其重视:\n"
-                    "1. 当前市场环境是否适合建仓(不要在熊市/高波动环境重仓)\n"
-                    "2. RSI 是否真的处于低位(是否有足够的安全边际)\n"
-                    "3. ATR 波动率是否在合理范围(排除极度高波动标的)\n"
-                    "4. 板块是否处于强势(避免逆势买入)\n"
-                    "5. 资金管理是否合理(单只仓位不超过25%,Kelly半仓原则)\n\n"
-                    "输出严格JSON格式:\n"
-                    "{\"decision\": \"approve\"或\"reject\"或\"delay\"(仅当充分理由时delay,否则reject), "
-                    "\"confidence\": 0.0~1.0, "
-                    "\"reason\": \"简短理由(20字内)\", "
-                    "\"risk_note\": \"风险提示(如有)\", "
-                    "\"size_rec\": \"full\"(按Kelly满仓)或\"half\"(半仓)或\"skip\"(跳过)\"\n"
-                    "}"
+                    "你需要综合以下所有信息给出评级：\n"
+                    "1. 市场环境（大盘趋势、情绪、波动率）\n"
+                    "2. 个股技术面（RSI、成交量、涨跌）\n"
+                    "3. 板块联动强弱\n"
+                    "4. 资金管理（仓位占比、现金充裕度）\n"
+                    "5. 持仓状况和近期交易记录\n"
+                    "6. 新闻情绪\n"
+                    "7. Pipeline 量化评分（0~1，越高代表因子看多越强）\n\n"
+                    "输出严格JSON格式：\n"
+                    "{\"decision\":\"approve\"或\"reject\"或\"delay\", "
+                    "\"confidence\":0.0~1.0, "
+                    "\"reason\":\"简短理由(20字内)\", "
+                    "\"risk_note\":\"风险提示(如有)\", "
+                    "\"size_rec\":\"full\"或\"half\"或\"skip\", "
+                    "\"rating\":\"A/B/C/D（综合评级）\"}\n"
                 )
                 user_prompt = (
                     f"【买入信号审核】\n"
                     f"标的:{sym}(名称:{params.get('name', sym)})\n"
-                    f"信号类型:{alert.signal}\n"
-                    f"当前价:{alert.price:.2f}(今日涨幅:{getattr(alert, 'pct', 0):+.2f}%)\n"
-                    f"触发原因:{alert.reason}\n"
-                    f"RSI 参数:买入阈值={params.get('rsi_buy', 25)},当前RSI≈{alert.prev_rsi:.0f if alert.prev_rsi is not None else 'N/A'}\n"
-                    f"ATR 阈值:{params.get('atr_threshold', 0.85)}(当前ATR ratio={getattr(alert, 'atr_ratio', 'N/A')})\n"
-                    f"市场环境:{self._market_regime.get('regime', 'UNKNOWN')}(ATR ratio={self._market_regime.get('atr_ratio', 0):.3f})\n"
-                    f"大盘状态:{mb.get('趋势', '未知')} | 情绪:{mb.get('情绪', '未知')}\n"
-                    f"可用现金:¥{cash:,.0f}(总权益:¥{self._svc.get_total_equity():,.0f})\n"
-                    f"该股已有持仓:{_pos_label}\n"
+                    f"信号类型:{signal}\n"
+                    f"Pipeline量化评分:{score:.3f}\n"
+                    f"当前价:{price:.2f}(今日涨幅:{day_pct:+.2f}%)\n"
+                    f"触发原因:{reason}\n"
+                    f"RSI: 当前={rsi_str} | 阈值={rsi_thr}\n"
+                    f"成交量: {vol_str}\n"
+                    f"ATR阈值:{atr_thr}(市场ATR ratio={atr_regime:.3f})\n"
+                    f"市场环境:{regime} | 大盘:{mb.get('趋势','未知')} | 情绪:{mb.get('情绪','未知')}\n"
+                    f"可用现金:¥{cash:,.0f}(总权益:¥{total_eq:,.0f})\n"
+                    f"该股已有持仓:{_pos_label}(占组合{pos_pct:.1%})\n"
                     f"当前持仓:{' | '.join(pos_summary) if pos_summary else '空仓'}\n"
                     f"近期交易:{' | '.join(trade_summary) if trade_summary else '无'}\n"
-                    f"新闻情绪:{sentiment_info if sentiment_info else '无情绪数据(自动放行)'}"
+                    f"新闻情绪:{sentiment}\n"
                 )
-            else:
+            else:  # SELL
+                unreal_pct = ((price - pos.get('entry_price', price)) / pos.get('entry_price', 1) * 100) if pos and pos.get('entry_price') else 0
                 system_prompt = (
                     "你是一个纪律严明的A股交易员,专注于精准止盈止损。\n"
-                    "卖出决策依据:\n"
+                    "卖出决策依据：\n"
                     "1. 止盈:是否达到预设目标(TakeProfit),趋势是否已衰竭\n"
                     "2. 止损:是否触发 ATR 止损线(Chandelier Exit),还是假突破\n"
                     "3. 仓位管理:是否需要减仓还是清仓\n"
                     "4. 相对大盘:标的是否跑输大盘(弱势股优先清仓)\n\n"
-                    "输出严格JSON格式:\n"
-                    "{\"decision\": \"approve\"或\"reject\"或\"hold\"(持有不卖), "
-                    "\"confidence\": 0.0~1.0, "
-                    "\"reason\": \"简短理由(20字内)\", "
-                    "\"risk_note\": \"风险提示(如有)\", "
-                    "\"size_rec\": \"full\"(清仓)或\"half\"(半仓)或\"hold\"(持有)\"\n"
-                    "}"
+                    "输出严格JSON格式：\n"
+                    "{\"decision\":\"approve\"或\"reject\"或\"hold\", "
+                    "\"confidence\":0.0~1.0, "
+                    "\"reason\":\"简短理由(20字内)\", "
+                    "\"risk_note\":\"风险提示(如有)\", "
+                    "\"size_rec\":\"full\"(清仓)或\"half\"(半仓)或\"hold\"(持有), "
+                    "\"rating\":\"A/B/C/D（综合评级）\"}\n"
                 )
                 user_prompt = (
                     f"【卖出信号审核】\n"
                     f"标的:{sym}(名称:{params.get('name', sym)})\n"
-                    f"信号类型:{alert.signal}\n"
-                    f"当前价:{alert.price:.2f}(持仓成本:{pos.get('entry_price', 0):.2f},浮动盈亏:{((alert.price - pos.get('entry_price', 0)) / pos.get('entry_price', 1) * 100):+.1f}%)\n"
-                    f"触发原因:{alert.reason}\n"
-                    f"RSI 参数:卖出阈值={params.get('rsi_sell', 65)}\n"
-                    f"止盈目标:{params.get('take_profit', 0.20):.0%},止损线:{params.get('stop_loss', 0.05):.0%}\n"
-                    f"市场环境:{self._market_regime.get('regime', 'UNKNOWN')}(ATR ratio={self._market_regime.get('atr_ratio', 0):.3f})\n"
-                    f"持仓数量:{pos.get('shares', 0)}股(整手:{(pos.get('shares', 0) // 100) * 100}股)\n"
+                    f"信号类型:{signal}\n"
+                    f"当前价:{price:.2f}(持仓成本:{pos.get('entry_price', 0):.2f},浮动盈亏:{unreal_pct:+.1f}%)\n"
+                    f"触发原因:{reason}\n"
+                    f"RSI: 当前={rsi_str} | 阈值={rsi_thr}\n"
+                    f"止盈目标:{tp:.0%},止损线:{sl:.0%}\n"
+                    f"市场环境:{regime}(ATR ratio={atr_regime:.3f})\n"
+                    f"持仓数量:{pos.get('shares', 0)}股(整手:{(pos.get('shares', 0) // 100) * 100}股)(占组合{pos_pct:.1%})\n"
                     f"当前持仓:{' | '.join(pos_summary) if pos_summary else '空仓'}\n"
                     f"近期交易:{' | '.join(trade_summary) if trade_summary else '无'}\n"
                 )
 
             messages = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user",    "content": user_prompt},
             ]
 
             resp = self._llm.provider.chat(messages, max_tokens=4096, temperature=0.3)
@@ -246,22 +272,21 @@ class AlertsMixin:
             json_match = _re.search(r'\{[^{}]*\}', content, _re.DOTALL)
             if json_match:
                 parsed = json.loads(json_match.group())
-                decision = parsed.get('decision', 'reject').lower()
+                decision  = parsed.get('decision', 'reject').lower()
                 confidence = float(parsed.get('confidence', 0.5))
-                reason = parsed.get('reason', 'LLM review')
-                size_rec = parsed.get('size_rec', 'full' if decision == 'approve' else 'skip')
-                approved = decision in ('approve', 'yes')
-                logger.info('LLM review %s %s: decision=%s conf=%.0f reason=%s',
-                           direction, sym, decision, confidence, reason)
-                return approved, reason, confidence, size_rec
+                reason_out = parsed.get('reason', 'LLM review')
+                size_rec  = parsed.get('size_rec', 'full' if decision == 'approve' else 'skip')
+                rating    = parsed.get('rating', 'C')
+                approved  = decision in ('approve', 'yes')
+                logger.info('LLM review %s %s: decision=%s conf=%.0f rating=%s reason=%s',
+                           direction, sym, decision, confidence * 100, rating, reason_out)
+                return approved, reason_out, confidence, size_rec
             else:
                 logger.warning('LLM response parse failed: %s', content[:200])
-                return _llm_review_failure_outcome(
-                    f'LLM parse failed({content[:50]})'
-                )
+                return _llm_review_failure_outcome(f'LLM parse failed({content[:50]})')
 
         except Exception as e:
-            logger.error('LLM review error for %s: %s', alert.symbol, e)
+            logger.error('LLM review error for %s: %s', ctx.get('symbol', '?'), e)
             return _llm_review_failure_outcome(f'LLM异常({str(e)[:30]})')
 
     # ── 飞书 IM 推送 ───────────────────────────────────────
