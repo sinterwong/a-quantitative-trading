@@ -1,252 +1,227 @@
-# Skills 盘点 — 量化交易系统可构建能力
+# Skills 盘点：工具化 · 可组合
 
-## 一、API 全景（51 个端点）
-
-### 1. 持仓与组合（6）
-| 端点 | 方法 | 用途 |
-|------|------|------|
-| `/positions` | GET | 当前全部持仓 |
-| `/portfolio/summary` | GET | 完整组合快照（浮盈浮亏/现金/总权益） |
-| `/portfolio/daily` | GET/POST | 日终总结（历史净值） |
-| `/portfolio/cash` | POST | 设置现金余额 |
-| `/portfolio/positions` | POST | 录入/更新持仓 |
-| `/portfolio/compose` | POST | 组合构建（批量录入） |
-
-### 2. 交易记录（2）
-| 端点 | 方法 | 用途 |
-|------|------|------|
-| `/trades` | GET/POST | 成交历史（支持 symbol/limit 过滤） |
-| `/signals` | GET/POST | 信号历史 |
-
-### 3. 订单（4）
-| 端点 | 方法 | 用途 |
-|------|------|------|
-| `/orders/submit` | POST | 提交订单（触发 broker 撮合） |
-| `/orders/recent` | GET | 最近订单状态 |
-| `/orders/pending` | GET | 待成交订单 |
-| `/orders/{order_id}/cancel` | POST | 取消订单 |
-
-### 4. 分析引擎（11）
-| 端点 | 方法 | 用途 |
-|------|------|------|
-| `/analysis/run` | POST | 触发每日市场分析 |
-| `/analysis/status` | GET | 分析状态/最后结果 |
-| `/analysis/health` | GET | 策略健康度 |
-| `/analysis/stock/a` | POST | A股个股分析 |
-| `/analysis/stock/hk` | POST | 港股分析 |
-| `/analysis/pairs_trading` | POST | 配对交易分析 |
-| `/analysis/sector/compare` | POST | 板块对比 |
-| `/analysis/sector_rotation` | POST | 板块轮动分析 |
-| `/analysis/monthly` | GET | 月度总结 |
-| `/analysis/monthly/snapshot` | POST | 月度快照 |
-| `/analysis/monthly/history` | GET | 月度历史 |
-
-### 5. 市场数据（6）
-| 端点 | 方法 | 用途 |
-|------|------|------|
-| `/data/realtime/{symbol}` | GET | 实时行情 |
-| `/data/daily/{code}` | GET | 日线历史 |
-| `/data/news/{symbol}` | GET | 个股新闻 |
-| `/data/macro/{indicator}` | GET | 宏观指标 |
-| `/data/fund_flow` | GET | 资金流向 |
-| `/data/status` | GET | 数据源状态 |
-
-### 6. 基本面（1）
-| 端点 | 方法 | 用途 |
-|------|------|------|
-| `/fundamentals/{symbol}` | GET | 个股基本面数据 |
-
-### 7. 交易运行模式（5）
-| 端点 | 方法 | 用途 |
-|------|------|------|
-| `/trading/mode` | GET/PUT | 查询/切换 simulation/live |
-| `/monitor/status` | GET | IntradayMonitor 状态 |
-| `/risk/status` | GET | 风控状态 |
-| `/metrics` | GET | 系统指标 |
-| `/llm/analyze` | POST | LLM 独立分析 |
-
-### 8. 监控与预警（5）
-| 端点 | 方法 | 用途 |
-|------|------|------|
-| `/watchlist` | GET | 监控标的列表 |
-| `/watchlist/add` | POST | 添加监控标的 |
-| `/watchlist/{symbol}` | DELETE/PATCH | 删除/更新标的 |
-| `/alerts/history` | GET | 预警历史 |
-| `/alerts/clear` | POST | 清除预警 |
-
-### 9. 回测与研究（4）
-| 端点 | 方法 | 用途 |
-|------|------|------|
-| `/backtest/run` | POST | 因子/策略回测 |
-| `/wfa/summary` | GET | Walk-Forward 分析摘要 |
-| `/wfa/history` | GET | WFA 历史 |
-| `/northbound/flow` | GET | 北向资金流 |
-
-### 10. 参数与配置（3）
-| 端点 | 方法 | 用途 |
-|------|------|------|
-| `/params` | GET | 全局参数 |
-| `/params/{symbol}` | GET/PATCH | 单标的参数（RSI阈值/止盈止损等） |
-
-### 11. 绩效（1）
-| 端点 | 方法 | 用途 |
-|------|------|------|
-| `/performance/summary` | GET | 组合绩效指标 |
+**定位**: 原子化工具 + 飞书推送 + 可串成闭环
+**分支**: `docs/skills-inventory`
 
 ---
 
-## 二、可构建 Skills 候选
+## 核心理念
 
-### 高优先级
-
-#### 1. `monthly-performance-report`
-**触发**：每月最后交易日（或定时 28 日）
-**能力**：
-- GET `/performance/summary` — 总收益率、夏普比、最大回撤
-- GET `/portfolio/daily` — 月度收益曲线
-- GET `/trades?limit=100` — 本月全部成交
-- GET `/analysis/monthly` — 月度市场分析
-- 汇总输出：收益归因、持仓变化、胜率统计、因子表现
-- 推送飞书
-
-**价值**：每月定期回顾，不用手动查数据
+- **分**: 独立工具，拿起来就用（一个 Skill 做一件事）
+- **合**: 工具之间可组合 + 飞书推送 = 完整业务闭环
+- **推送**: 所有 Skills 输出优先推送到飞书（second-bot, chat_id: oc_8d67f97916478affc49b578c028152c2）
 
 ---
 
-#### 2. `trade-signal-monitor`
-**触发**：cronjob，每 5 分钟（或依赖 IntradayMonitor 事件推送）
-**能力**：
-- GET `/signals?since=...` — 轮询新信号
-- GET `/orders/recent` — 最新成交状态
-- GET `/positions` — 当前持仓快照
-- 新仓信号 → 输出标的/价格/原因/置信度
-- 成交确认 → 输出执行结果
-- 异常（拒单/超时/风控拦截）→ 立即告警飞书
+## 原子化 Tools（独立 Skills）
 
-**价值**：实时跟踪系统决策，不需要盯着日志
+每个 Skill 输入输出清晰，可独立调用，也可串成工作流。
 
 ---
 
-#### 3. `factor-health-monitor`
-**触发**：每日开盘后 + 因子衰减告警时
-**能力**：
-- GET `/analysis/health` — 因子 IC/IR 状态
-- GET `/risk/status` — 风控引擎状态
-- 识别：连续 IC<0 的因子 → 触发衰减保护
-- 对比：当前因子权重 vs 上次历史
-- 推送：因子健康仪表盘（哪些因子在看多/看空/失效）
-- 建议：哪些因子可以手动恢复权重
+### 1. 个股分析 `stock-analyst`
 
-**价值**：因子失效早发现，避免在错误因子主导下做决策
+**输入**: 股票代码（如 `600900.SH`）
+**输出**: 技术面摘要 + 基本面指标 + LLM 综合评级（A/B/C/D）
 
----
+**API**:
+```
+GET  /data/daily?symbol=600900.SH&days=60
+GET  /data/real_time?symbol=600900.SH
+GET  /fundamentals/basic?symbol=600900.SH
+POST /analysis/stock_research
+```
 
-#### 4. `backtest-runner`
-**触发**：手动触发（或者每周末）
-**能力**：
-- POST `/backtest/run` — 用当前持仓/参数跑回测
-- GET `/wfa/summary` — Walk-Forward 结果
-- 对比：实盘收益 vs 回测收益
-- 输出：Alpha/Beta/夏普比/最大回撤 vs 基准对比
-- 判断：实盘是否跑赢回测期望
-
-**价值**：定期验证策略是否还在线，避免在策略失效后继续运行
+**飞书输出格式**: 股票名称 + 当前价 + 涨跌 + 关键指标（PE/PB/ROE/营收增速）+ 综合评级卡片
 
 ---
 
-#### 5. `position-diary`
-**触发**：每日收盘后（或定时）
-**能力**：
-- GET `/portfolio/summary` — 所有持仓浮盈浮亏
-- GET `/positions` — 各标的 entry_price vs latest_price
-- 计算：持仓时长（自然天/交易日）
-- 标记：哪些持仓超过 max_hold_days 但未触发退出
-- 标记：哪些持仓接近止损线但未触发
-- 输出：持仓日记 — 每只标的的状态摘要
-- 推送飞书
+### 2. 个股回测 `stock-backtest`
 
-**价值**：解决 entry_date 缺失导致的 exit_engine 误触发问题，也有持仓全局视角
+**输入**: 股票代码 + 参数组合（RSI 阈值/止损/持仓周期）
+**输出**: 回测曲线 + 夏普比率 + 最大回撤 + 胜率
 
----
+**API**:
+```
+POST /backtest/run
+GET  /research/factor_ic?factor=RSI
+```
 
-#### 6. `live-mode-watcher`
-**触发**：实时监控（或者 cron 每 10 分钟）
-**能力**：
-- GET `/trading/mode` — 查询当前模式
-- 监控：从 simulation → live 或 live → simulation 的切换
-- 切换时告警飞书："交易模式已切换为 LIVE，请确认是否在预期内"
-- 记录切换原因（人工操作还是系统自动）
-
-**价值**：防止误操作切换到 live 模式导致意外成交
+**飞书输出格式**: 回测收益曲线（ASCII 图）+ 关键指标摘要
 
 ---
 
-### 中优先级
+### 3. 动态选股 `dynamic-stock-screener`
 
-#### 7. `market-bias-dashboard`
-**触发**：每日开盘 09:35 / 14:55
-**能力**：
-- POST `/analysis/run` — 触发市场分析
-- GET `/data/status` — 各数据源可用性
-- GET `/monitor/status` — 今日市场情绪（趋势/情绪/波动率）
-- 输出：大盘开盘状态 + 板块强弱 + 资金流向
-- 判断：今天是适合建仓/持有/减仓
+**输入**: 筛选条件组（技术面/基本面/资金面）
+**输出**: 符合条件的股票列表 + 评分排名
 
-**价值**：每天开盘/尾盘给一个市场环境速览，辅助当天决策
+**API**:
+```
+GET  /data/market_flow?direction=stock  # 资金流向筛选
+GET  /analysis/sector_rotation           # 板块轮动选强
+POST /watchlist                           # 录入自选股
+```
 
----
-
-#### 8. `sector-rotation-viewer`
-**触发**：每周一（或 cronjob 每周一 09:30）
-**能力**：
-- POST `/analysis/sector/rotation` — 板块轮动分析
-- GET `/northbound/flow` — 北向资金
-- 输出：本周强势板块 / 弱势板块 / 轮动信号
-- 对比：当前持仓板块是否在强势区
-
-**价值**：辅助调仓参考
+**组合链**: `dynamic-stock-screener` → `stock-analyst` → `stock-backtest` → 决定发信号
 
 ---
 
-#### 9. `earnings-season-alert`
-**触发**：财报季前（每年 4/7/10 月初）或监控 `/data/news/{symbol}` 时
-**能力**：
-- 监控 watchlist 标的的财报发布日程
-- GET `/fundamentals/{symbol}` — 最新财报关键指标
-- 对比：分析师预期 vs 实际 EPS/营收
-- 重大miss/surprise → 立即告警
+### 4. 板块轮动 `sector-rotation`
 
-**价值**：基本面风险预警
+**输入**:（空，或指定时间范围）
+**输出**: 当日强势板块排名 + 资金流入流出
 
----
+**API**:
+```
+GET /analysis/sector_rotation
+GET /data/market_flow?direction=sector
+```
 
-#### 10. `wfa-walkforward`
-**触发**：每月（或手动）
-**能力**：
-- GET `/wfa/summary` — Walk-Forward 分析结果
-- 分析：每个窗口的 IC/IR 稳定性
-- 判断：策略是否在衰退
-- 输出：WFA 可视化数据（供后续出图）
-
-**价值**：比简单回测更真实的策略有效性评估
+**用途**: 辅助行业配置决策，识别动量切换
 
 ---
 
-## 三、Skill 实现注意事项
+### 5. 因子 IC 监控 `factor-ic-monitor`
 
-### 共用工具
-- Backend 基础 URL：`http://localhost:5555`
-- 认证：`X-API-Key` header（生产环境配置 TRADING_API_KEY）
-- 当前 user_open_id：飞书推送使用 second-bot (app_id: cli_a97b6f7b40f9dcd1)
+**输入**:（空，实时查）
+**输出**: 各因子 IC 值序列 + 趋势（趋势向上/向下/衰减告警）
 
-### 飞书推送目标
-- 早报/日终报告 → `oc_8d67f97916478affc49b578c028152c2`（second-bot）
-- 紧急告警（live模式切换/风控拦截）→ 同 chat_id
+**API**:
+```
+GET /research/factor_ic
+GET /research/factor_effectiveness
+```
 
-### 时区注意
-- 所有时间戳 UTC，盘中cron用 Asia/Shanghai
-- `/portfolio/daily` 日期用 `YYYY-MM-DD`
+**告警**: IC 衰减超过阈值时推送飞书告警
 
-### 数据层已知缺口
-- AkShare 港股基本面数据零覆盖，港股分析结果仅供参考
-- 因子IC数据依赖日线收盘，日间实时性有限
+---
+
+### 6. 持仓健康检查 `position-health-check`
+
+**输入**:（空，查当前持仓）
+**输出**: 各持仓浮亏/浮盈状态 + RSI 超买超卖 + 预警信号
+
+**API**:
+```
+GET /portfolio/summary
+GET /data/real_time?symbol=600900.SH,...
+```
+
+**告警条件**: 单只浮亏超 X%、RSI 超过阈值、持仓太久未动
+
+---
+
+### 7. 宏观北向资金 `macro-north-capital`
+
+**输入**:（空）
+**输出**: 当日北向资金净流入/流出 + 沪深港通持股变化
+
+**API**:
+```
+GET /market/north_capital
+GET /data/market_flow?direction=north
+```
+
+---
+
+### 8. 交易信号复盘 `trade-review`
+
+**输入**: 时间范围（默认当日）
+**输出**: 今日信号列表 + 成交记录 + LLM 复盘建议
+
+**API**:
+```
+GET /signals?date=today
+GET /trades?date=today
+GET /orders?date=today
+```
+
+**用途**: 每日收盘后复盘，发现信号漂移或执行问题
+
+---
+
+### 9. 参数优化 `wfa-walkforward`
+
+**输入**: 股票代码 + 因子参数范围
+**输出**: WFA 最优参数组合 + 预测期表现
+
+**API**:
+```
+POST /research/wfa
+GET  /research/param_optimize
+PATCH /params/{symbol}
+```
+
+---
+
+### 10. 新闻舆情 `news-sentiment`
+
+**输入**: 股票代码（可选）
+**输出**: 最新财经新闻 + LLM 情感评分
+
+**API**:
+```
+GET /data/news
+GET /data/news?symbol=600900.SH
+```
+
+---
+
+## 组合闭环示例
+
+### 闭环 A：每日收盘分析 → 推送 → 信号录入
+```
+dynamic-stock-screener     # 筛出强势股
+  → stock-analyst          # 分析候选股
+    → stock-backtest       # 验证参数
+      → 发送信号 (POST /signals)
+        → 订单执行 (POST /orders)
+          → trade-review  # 复盘
+            → 飞书推送摘要
+```
+
+### 闭环 B：持仓管理
+```
+position-health-check      # 检查所有持仓
+  → 若预警 → 飞书告警
+  → 若 RSI 超买 → 触发 exit 逻辑
+  → 每日生成持仓报告 → 飞书推送
+```
+
+---
+
+## 优先级排序（建议开发顺序）
+
+| 优先级 | Skill | 理由 |
+|--------|-------|------|
+| 🔴 高 | `stock-analyst` | 最常用，API 最成熟，直接产出价值 |
+| 🔴 高 | `position-health-check` | 解决持仓跟踪痛点 |
+| 🔴 高 | `trade-review` | 每日复盘刚需 |
+| 🟡 中 | `dynamic-stock-screener` | 需要 `sector_rotation` 配合 |
+| 🟡 中 | `factor-ic-monitor` | 量化系统核心，但当前 IC 数据不稳定 |
+| 🟡 中 | `sector-rotation` | 辅助配置决策 |
+| 🟢 低 | `stock-backtest` | 回测框架已有，API 需确认 |
+| 🟢 低 | `wfa-walkforward` | 依赖参数系统成熟度 |
+| 🟢 低 | `news-sentiment` | 数据源质量待确认 |
+| 🟢 低 | `macro-north-capital` | 已有 `north_capital` 接口 |
+
+---
+
+## 待确认问题
+
+1. `stock-backtest` 的 `/backtest/run` 接口是否完整可用？需实际调用验证
+2. `factor-ic-monitor` 的 IC 数据当前质量如何？是否有断点？
+3. `dynamic-stock-screener` 的筛选条件组——技术面/基本面/资金面各支持哪些具体指标？
+4. `news-sentiment` 数据源是哪家？质量是否可用？
+
+---
+
+## 飞书推送格式
+
+统一使用飞书卡片消息，推送至 `second-bot`（chat_id: oc_8d67f97916478affc49b578c028152c2）
+
+卡片结构：
+- 标题：`[Skill名] 推送时间`
+- 内容：数据摘要（表格或列表）
+- 操作按钮：查看详情 → 跳转后端 Dashboard 链接
