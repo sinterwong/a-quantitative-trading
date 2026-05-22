@@ -41,7 +41,8 @@ scripts/quant/__pycache__/
 scripts/quant/cache/
 scripts/quant/journal/
 scripts/quant/regime_today.json
-skills/
+
 trading_mode.json
 
 scripts/quant/regime_today.json
+.hermes/
