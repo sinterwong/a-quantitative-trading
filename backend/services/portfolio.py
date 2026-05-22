@@ -109,6 +109,13 @@ def init_db():
             )
         ''')
 
+        # Migrate: add entry_date column if missing (supports back-fill of historical positions)
+        try:
+            cur.execute('ALTER TABLE positions ADD COLUMN entry_date TEXT')
+        except Exception as exc:
+            if 'duplicate column' not in str(exc).lower():
+                raise
+
         # cash balance
         cur.execute('''
             CREATE TABLE IF NOT EXISTS cash (
@@ -397,7 +404,7 @@ class PortfolioService:
         """Return all current positions with P&L calculated."""
         with get_cursor() as cur:
             cur.execute(
-                '''SELECT symbol, shares, entry_price, latest_price, updated_at
+                '''SELECT symbol, shares, entry_price, latest_price, entry_date, updated_at
                    FROM positions WHERE shares > 0'''
             )
             rows = [dict(row) for row in cur.fetchall()]

@@ -117,28 +117,46 @@ class SignalingMixin:
                     )
                     continue
 
-                # 新闻情绪检查
-                if self._llm is not None:
-                    blocked, sent, conf, summ = self._check_news_sentiment(sym)
-                    if blocked:
-                        self._deliver_alert(
-                            f'⛔[{sym}] 新闻情绪利空，拒绝建仓\n'
-                            f'   情绪：{sent}（置信度 {conf:.0%}）\n'
-                            f'   摘要：{summ[:80] if summ else "无"}'
-                        )
-                        continue
+                # 收集 LLM 审核所需的全部上下文数据
+                params      = self._get_params(sym)
+                cash        = self._svc.get_cash()
+                pos         = self._svc.get_position(sym)
+                positions   = self._svc.get_positions()
+                recent_trades = self._svc.get_recent_trades(sym, limit=5) if hasattr(self._svc, 'get_recent_trades') else []
+                blocked, sent, sent_conf, summ = self._check_news_sentiment(sym) if self._llm else (False, None, None, None)
+                sentiment_info = f'情绪={sent}(置信度{sent_conf:.0%}),摘要:{summ[:60] if summ else "无"}' if sent else '无情绪数据'
+
+                # 新闻情绪检查（独立于 LLM 审核）
+                if blocked:
+                    self._deliver_alert(
+                        f'⛔[{sym}] 新闻情绪利空，拒绝建仓\n'
+                        f'   情绪：{sent}（置信度 {sent_conf:.0%}）\n'
+                        f'   摘要：{summ[:80] if summ else "无"}'
+                    )
+                    continue
 
                 shares = self._calc_shares(sym, price)
 
-                # LLM 终极审核（构造兼容 alert-like 对象）
-                class _PipelineAlert:
-                    pass
-                _pa = _PipelineAlert()
-                _pa.symbol = sym
-                _pa.price = price
-                _pa.reason = signal_reason
-                _pa.signal = 'BUY'
-                llm_approved, llm_reason, llm_conf, size_rec = self._llm_review_signal(_pa, 'BUY')
+                # LLM 终极审核 — 构造完整上下文
+                ctx = {
+                    'symbol':         sym,
+                    'price':          price,
+                    'signal':         'BUY',
+                    'reason':         signal_reason,
+                    'pipeline_score': score,
+                    'minute_rsi':     m_rsi,
+                    'day_pct':        rt.get('pct', 0) if rt else 0,
+                    'vol_ratio':      rt.get('vol_ratio', None) if rt else None,
+                    'market_regime':  self._market_regime,
+                    'cash':           cash,
+                    'total_equity':   self._svc.get_total_equity(),
+                    'pos':            pos,
+                    'positions':      positions,
+                    'recent_trades':  recent_trades,
+                    'sentiment_info': sentiment_info,
+                    'params':         params,
+                }
+                llm_approved, llm_reason, llm_conf, size_rec = self._llm_review_signal(ctx, 'BUY')
                 if not llm_approved:
                     self._deliver_alert(
                         f'❌ [{sym}] LLM 审核否决新仓买入\n'

@@ -1,66 +1,47 @@
-# OpenClaw workspace (private — do NOT commit)
-AGENTS.md
-HEARTBEAT.md
-MEMORY.md
-IDENTITY.md
-USER.md
-TOOLS.md
-SOUL.md
-heartbeat-state.json
 !params.json
-memory
-
-# Personal data
-investments.json
-
-backend.log
-backend/*.log*
-backend/__pycache__/
-scripts/__pycache__/
-scripts/quant/__pycache__/
-backend/services/__pycache__/
+*.bak
+*.db
+*.db-journal
+*.ipynb
+*.log
+*.parquet
 *.pid
 *.pyc
 *.pyo
-
-# OS
+*.tmp
 .DS_Store
-Thumbs.db
-
-# Logs
-*.log
-
-# Jupyter
-*.ipynb
-.ipynb_checkpoints/
-
-# Quant data cache (too large for repo)
-*.db
-*.db-journal
-scripts/cache/
-scripts/quant/cache/
-scripts/quant/journal/
-
-data/
-
-# Skills (OpenClaw-specific)
-skills/
-
-# Environment variables (API keys)
+.coverage
 .env
 .env.local
-
-# LLM response cache
+.ipynb_checkpoints/
 .llm_cache/
-
 .vscode/
-outputs/
-
-# Temporary
-*.tmp
-*.bak
-*.parquet
-live_params.json
-trading_mode.json
-.coverage
+AGENTS.md
+HEARTBEAT.md
+IDENTITY.md
+MEMORY.md
+SOUL.md
+TOOLS.md
+Thumbs.db
+USER.md
+backend.log
+backend/*.log*
+backend/__pycache__/
+backend/services/__pycache__/
+data/
+heartbeat-state.json
 htmlcov/
+investments.json
+live_params.json
+memory
+outputs/
+scripts/__pycache__/
+scripts/cache/
+scripts/quant/__pycache__/
+scripts/quant/cache/
+scripts/quant/journal/
+scripts/quant/regime_today.json
+skills/
+trading_mode.json
+
+scripts/quant/regime_today.json
