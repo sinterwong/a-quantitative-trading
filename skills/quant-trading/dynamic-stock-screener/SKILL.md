@@ -57,47 +57,83 @@ metadata:
 ## API 调用链
 
 ```
-1. POST /analysis/sector_rotation              → 板块轮动强弱
-2. GET  /data/market_flow?direction=stock      → 个股资金流向
-3. GET  /data/market_flow?direction=sector     → 板块资金流向
-4. GET  /market/north_capital                  → 北向资金
-5. GET  /watchlist                             → 用户自选股（已知候选池）
+1. POST /analysis/sector_rotation         → 板块轮动强弱（ETF动量排名）
+   - 请求: POST /analysis/sector_rotation  {"date": "2026-05-22"}
+   - 返回: {scores: {ETF代码: 动量分数}, buy/hold/sell: [ETF列表], top_n: 3}
+   - scores 值越大越强势（正值=动量向上）
+2. GET  /analysis/sector/compare         → 行业板块横向对比（POST，需 body）
+3. GET  /northbound/flow                 → 北向资金（注意是 northbound 不是 north_capital）
+   - 返回: {net_north_yi, direction, trend_yi, summary}
+4. GET  /positions                       → 现有持仓（对比是否在强势板块内）
 ```
 
 **Base URL**: `http://localhost:5555`
 **认证**: `X-API-Key` header（本地开发可省略）
+
+### 实测返回格式
+
+**POST /analysis/sector_rotation**
+```json
+{
+  "scores": {
+    "515000.SH": 0.279,
+    "159915.SZ": 0.198,
+    "515030.SH": 0.085
+  },
+  "buy": ["515000.SH", "159915.SZ", "515030.SH"],
+  "hold": [],
+  "sell": [],
+  "top_n": 3,
+  "universe_size": 14
+}
+```
+
+**GET /northbound/flow**
+```json
+{
+  "net_north_yi": 0.0,
+  "direction": "neutral",
+  "trend_yi": 0.0,
+  "summary": "北向资金配额使用: 沪股通 100% / 南向 100%",
+  "status": "ok"
+}
+```
+
+⚠️ `/data/market_flow` 和 `/market/north_capital` 均为 error，使用前请先确认接口可用性。
 
 ---
 
 ## 快速调用示例
 
 ```bash
-# 板块轮动（强势板块）
+# 板块轮动（ETF动量）
 curl -s -X POST "http://localhost:5555/analysis/sector_rotation" \
   -H "Content-Type: application/json" \
   -d '{"date": "2026-05-22"}'
 
-# 资金流向（个股）
-curl -s "http://localhost:5555/data/market_flow?direction=stock&date=2026-05-22"
+# 北向资金（注意路径是 northbound/flow，不是 north_capital）
+curl -s "http://localhost:5555/northbound/flow"
 
-# 北向资金
-curl -s "http://localhost:5555/market/north_capital"
+# 持仓列表（筛选前对比持仓是否已在强势板块）
+curl -s "http://localhost:5555/positions"
 ```
 
 ```python
 import requests
+from datetime import date
 
 BASE = "http://localhost:5555"
 
-def get_sector_rotation(date: str = None) -> dict:
-    payload = {"date": date} if date else {}
-    return requests.post(f"{BASE}/analysis/sector_rotation", json=payload).json()
+def get_sector_rotation(trade_date: str = None) -> dict:
+    payload = {"date": trade_date} if trade_date else {}
+    return requests.post(f"{BASE}/analysis/sector_rotation", json=payload, timeout=10).json()
 
-def get_market_flow(direction: str = "stock", date: str = None) -> dict:
-    params = {"direction": direction}
-    if date:
-        params["date"] = date
-    return requests.get(f"{BASE}/data/market_flow", params=params).json()
+def get_north_flow() -> dict:
+    # 注意路径是 northbound/flow
+    return requests.get(f"{BASE}/northbound/flow", timeout=10).json()
+
+def get_positions() -> dict:
+    return requests.get(f"{BASE}/positions", timeout=10).json()
 ```
 
 ---

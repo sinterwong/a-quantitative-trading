@@ -25,15 +25,46 @@ metadata:
 ## API 调用链
 
 ```
-1. GET /signals?date={today}             → 当日产生的信号
-2. GET /orders/recent?limit=20            → 最近N笔订单（含状态）
-3. GET /trades?date={today}               → 当日成交记录
-4. GET /positions                         → 收盘持仓快照
-5. GET /portfolio/summary                 → 收盘组合净值
+1. GET /signals?date={YYYY-MM-DD}       → 当日产生的信号
+2. GET /orders/recent?limit=20          → 最近N笔订单（含状态）
+3. GET /trades?date={YYYY-MM-DD}        → 当日成交记录
+4. GET /positions                        → 收盘持仓快照
+5. GET /portfolio/summary               → 收盘组合净值
 ```
 
 **Base URL**: `http://localhost:5555`
 **认证**: `X-API-Key` header（本地开发可省略）
+
+### 实测返回格式
+
+**GET /signals?date=YYYY-MM-DD**
+```json
+{
+  "signals": [
+    {
+      "id": 96,
+      "symbol": "515030.SH",
+      "signal": "BUY",
+      "strength": 0.085005,
+      "reason": "行业轮动买入: 动量分 0.0850",
+      "timestamp": "2026-05-22T15:50:32.884137"
+    }
+  ],
+  "status": "ok"
+}
+```
+
+**GET /orders/recent?limit=20**
+```json
+{"orders": [], "realized_pnl": 0, "status": "ok"}
+```
+⚠️ orders 为空数组是正常现象（PaperBroker 伪成交模式下无实时成交记录时返回空）
+
+**GET /trades?date=YYYY-MM-DD**
+```json
+{"trades": [], "status": "ok"}
+```
+⚠️ trades 为空不代表无交易，可能是 PaperBroker 成交记录延迟或该日确实无成交
 
 ---
 

@@ -25,29 +25,44 @@ metadata:
 ## API 调用
 
 ```
-1. POST /analysis/sector_rotation              → 板块轮动分析（强弱排名）
-2. GET  /data/market_flow?direction=sector     → 行业板块资金流向
-3. GET  /market/north_capital                  → 北向资金（行业偏好）
+1. POST /analysis/sector_rotation      → 板块轮动分析（ETF动量排名）
+2. GET  /northbound/flow              → 北向资金（注意是 northbound 不是 north_capital）
 ```
 
 **Base URL**: `http://localhost:5555`
 **认证**: `X-API-Key` header（本地开发可省略）
+
+### 实测返回格式
+
+**POST /analysis/sector_rotation**
+```json
+{
+  "scores": {"515000.SH": 0.279, "159915.SZ": 0.198, "515030.SH": 0.085},
+  "buy": ["515000.SH", "159915.SZ", "515030.SH"],
+  "hold": [], "sell": [],
+  "top_n": 3, "universe_size": 14
+}
+```
+
+**GET /northbound/flow**
+```json
+{"net_north_yi": 0.0, "direction": "neutral", "trend_yi": 0.0, "status": "ok"}
+```
+
+⚠️ `/data/market_flow` 和 `/market/north_capital` 均为 error。
 
 ---
 
 ## 快速调用示例
 
 ```bash
-# 板块轮动分析
+# 板块轮动（POST 需要 body）
 curl -s -X POST "http://localhost:5555/analysis/sector_rotation" \
   -H "Content-Type: application/json" \
   -d '{"date": "2026-05-22"}'
 
-# 板块资金流向
-curl -s "http://localhost:5555/data/market_flow?direction=sector&date=2026-05-22"
-
 # 北向资金
-curl -s "http://localhost:5555/market/north_capital"
+curl -s "http://localhost:5555/northbound/flow"
 ```
 
 ```python
@@ -58,13 +73,10 @@ BASE = "http://localhost:5555"
 
 def get_sector_rotation(trade_date: str = None) -> dict:
     payload = {"date": trade_date} if trade_date else {}
-    return requests.post(f"{BASE}/analysis/sector_rotation", json=payload).json()
+    return requests.post(f"{BASE}/analysis/sector_rotation", json=payload, timeout=10).json()
 
-def get_sector_flow(trade_date: str = None) -> dict:
-    params = {"direction": "sector"}
-    if trade_date:
-        params["date"] = trade_date
-    return requests.get(f"{BASE}/data/market_flow", params=params).json()
+def get_north_flow() -> dict:
+    return requests.get(f"{BASE}/northbound/flow", timeout=10).json()
 ```
 
 ---

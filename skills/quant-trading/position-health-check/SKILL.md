@@ -25,13 +25,39 @@ metadata:
 ## API 调用链
 
 ```
-1. GET  /positions                         → 当前持仓列表（代码/数量/成本）
-2. GET  /portfolio/summary                 → 浮盈浮亏/现金/总权益
-3. GET  /data/realtime/{symbol}             → 各持仓最新价 + RSI
+1. GET  /positions                         → 当前持仓列表（代码/数量/成本/entry_date）
+2. GET  /portfolio/summary                 → 浮盈浮亏/现金/总权益（持仓数据嵌在此）
+3. GET  /data/realtime/{symbol}            → 各持仓最新价（支持多标的逗号分隔）
 ```
 
 **Base URL**: `http://localhost:5555`
 **认证**: `X-API-Key` header（本地开发可省略）
+
+### 实测返回格式
+
+**GET /positions** 和 **GET /portfolio/summary**
+```json
+{
+  "positions": [
+    {
+      "symbol": "600900.SH",
+      "shares": 3700,
+      "entry_price": 26.702,
+      "latest_price": 26.58,
+      "cost_value": 98797.4,
+      "current_value": 98346.0,
+      "unrealized_pnl": -451.4,
+      "unrealized_pnl_pct": -0.46,
+      "entry_date": "2025-02-28"
+    }
+  ],
+  "cash": 151062.6,
+  "position_value": 329596.0,
+  "position_cost": 348937.4
+}
+```
+
+⚠️ `/data/realtime/{symbol}` 路径实测正常，但 `/data/realtime/{symbol1},{symbol2}` 多标的逗号分隔方式未验证，建议循环调用。
 
 ---
 
@@ -44,9 +70,8 @@ curl -s "http://localhost:5555/positions"
 # 组合摘要
 curl -s "http://localhost:5555/portfolio/summary"
 
-# 持仓实时行情（支持多标的，逗号分隔）
+# 持仓实时行情（单标的）
 curl -s "http://localhost:5555/data/realtime/600900.SH"
-curl -s "http://localhost:5555/data/realtime/600900.SH,600809.SH"
 ```
 
 ```python
@@ -56,14 +81,18 @@ from datetime import date, datetime
 BASE = "http://localhost:5555"
 
 def get_positions() -> dict:
-    return requests.get(f"{BASE}/positions").json()
+    return requests.get(f"{BASE}/positions", timeout=10).json()
 
 def get_portfolio_summary() -> dict:
-    return requests.get(f"{BASE}/portfolio/summary").json()
+    return requests.get(f"{BASE}/portfolio/summary", timeout=10).json()
 
 def get_realtime(symbols: list[str]) -> dict:
-    sym_str = ",".join(symbols)
-    return requests.get(f"{BASE}/data/realtime/{sym_str}").json()
+    # 建议逐个标的调用，避免多标的解析问题
+    results = {}
+    for sym in symbols:
+        r = requests.get(f"{BASE}/data/realtime/{sym}", timeout=10).json()
+        results[sym] = r
+    return results
 ```
 
 ---
