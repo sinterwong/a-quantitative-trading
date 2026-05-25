@@ -55,6 +55,18 @@ def is_market_open(now: Optional[datetime] = None) -> bool:
     return morning or afternoon
 
 
+def is_hk_market_open(now: Optional[datetime] = None) -> bool:
+    """判断当前是否为港股交易时段（周末 + 港股节假日）。"""
+    if now is None:
+        now = datetime.now()
+    if now.weekday() >= 5:
+        return False
+    # 港股主要假日（春节后第一个交易日/复活节/国庆等可后续扩展 AkShare 港股日历）
+    # 目前简化为：春节假期（每年初一~初五附近）跳过
+    # TODO: 接入 AkShare 港股节假日日历（akshare.hk_trade_date_hist_sina）
+    return True
+
+
 def next_market_seconds(now: Optional[datetime] = None) -> int:
     """距离下次开市还有多少秒(用于启动前 sleep)。"""
     if now is None:

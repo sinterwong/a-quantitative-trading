@@ -49,6 +49,7 @@ sys.path.insert(0, PROJ_DIR)
 
 sys.path.insert(0, os.path.join(PROJ_DIR, 'scripts'))
 from .portfolio import PortfolioService
+from .intraday import is_hk_market_open
 
 logger = logging.getLogger('broker')
 
@@ -262,14 +263,20 @@ class PaperBroker(BrokerBase):
         return order
 
     def _fetch_market_price(self, symbol: str) -> float:
-        """Fetch latest price from Tencent Finance API."""
+        """Fetch latest price from Tencent Finance API (hk/sh/sz 支持)."""
         try:
             import ssl, urllib.request
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
-            num, market = symbol.split('.', 1)
-            qt = ('sh' if market == 'SH' else 'sz') + num
+            # 港股: hk00700 → 直接用 hk 前缀
+            if symbol.lower().startswith('hk'):
+                qt = symbol.lower()
+            elif '.' in symbol:
+                num, market = symbol.split('.', 1)
+                qt = ('sh' if market == 'SH' else 'sz') + num
+            else:
+                return 0.0
             url = f'https://qt.gtimg.cn/q={qt}'
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req, context=ctx, timeout=5) as resp:
@@ -323,16 +330,34 @@ class PaperBroker(BrokerBase):
                 submitted_shares=0, filled_shares=0,
                 reason=f'invalid direction: {direction}',
             )
+        # 港股闭市拦截：周末/节假日不允许港股交易
+        if symbol.lower().startswith('hk') and not is_hk_market_open():
+            logger.warning('[PaperBroker] submit_from_signal rejected: HK market closed for %s', symbol)
+            return OrderResult(
+                order_id=self._next_order_id(),
+                status='rejected', symbol=symbol, direction=direction,
+                submitted_shares=0, filled_shares=0,
+                reason='HK market closed (weekend/holiday)',
+            )
         # shares 优先用传入值，其次从 signal.metadata 提取，否则用 Kelly 计算
         if shares is None:
             shares = signal.metadata.get('shares') if hasattr(signal, 'metadata') else None
         if shares is None or shares <= 0:
-            # 简化份额计算：取现金的 10%，按 100 股取整
-            price = signal.price if hasattr(signal, 'price') and signal.price > 0 else 0
-            if price <= 0:
-                price = self._fetch_market_price(symbol) if self._connected else 0
-            shares = max(100, int(self.get_cash() * 0.1 / (price or 1)) // 100 * 100)
-        return self.submit_order(symbol, direction, shares, price=signal.price if hasattr(signal, 'price') else 0,
+            # 信号有价格则用信号价；否则从市场行情取（_fetch_market_price 已支持港股）
+            ref_price = signal.price if hasattr(signal, 'price') and signal.price > 0 else 0
+            if ref_price <= 0:
+                ref_price = self._fetch_market_price(symbol) if self._connected else 0
+            if ref_price <= 0:
+                logger.warning('[PaperBroker] submit_from_signal rejected: no valid price for %s', symbol)
+                return OrderResult(
+                    order_id=self._next_order_id(),
+                    status='rejected', symbol=symbol, direction=direction,
+                    submitted_shares=0, filled_shares=0,
+                    reason=f'no valid price for {symbol}',
+                )
+            shares = max(100, int(self.get_cash() * 0.1 / ref_price) // 100 * 100)
+        return self.submit_order(symbol, direction, shares,
+                                price=signal.price if hasattr(signal, 'price') and signal.price > 0 else 0,
                                 price_type='market')
 
     def _submit_order_locked(self, symbol: str, direction: str, shares: int,
