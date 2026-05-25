@@ -296,9 +296,9 @@ def build_and_push_morning_report(candidates: list,
         with urllib.request.urlopen(tok_req, context=ctx, timeout=10) as r:
             token_result = json.loads(r.read())
         token = token_result.get('tenant_access_token', '')
-        msg_url = 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id'
+        msg_url = 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id'
         msg_body = {
-            'receive_id': os.environ.get('FEISHU_CHAT_ID', ''),
+            'receive_id': os.environ.get('FEISHU_USER_OPEN_ID', ''),
             'msg_type': 'text',
             'content': json.dumps({'text': report})
         }
