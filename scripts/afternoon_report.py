@@ -294,9 +294,9 @@ def feishu_push(text: str):
         if not token:
             return
 
-        msg_url = 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id'
+        msg_url = 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id'
         msg_body = {
-            'receive_id': os.environ.get('FEISHU_CHAT_ID', ''),
+            'receive_id': os.environ.get('FEISHU_USER_OPEN_ID', ''),
             'msg_type': 'text',
             'content': json.dumps({'text': text})
         }
