@@ -6,6 +6,9 @@ requests
 pyyaml
 akshare
 
+# Market calendars (A/H share trading day / HK exchange calendar)
+exchange_calendars
+
 # ML
 lightgbm
 scikit-learn

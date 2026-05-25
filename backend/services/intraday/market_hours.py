@@ -55,16 +55,33 @@ def is_market_open(now: Optional[datetime] = None) -> bool:
     return morning or afternoon
 
 
+def _get_hk_calendar():
+    """获取港交所 calendar（lazy init，缓存全局单例）。"""
+    import exchange_calendars as ec
+    return ec.get_calendar('XHKG')
+
+
 def is_hk_market_open(now: Optional[datetime] = None) -> bool:
-    """判断当前是否为港股交易时段（周末 + 港股节假日）。"""
+    """判断当前是否为港股交易时段（交易日历 + 交易时间双重判断）。"""
     if now is None:
         now = datetime.now()
     if now.weekday() >= 5:
         return False
-    # 港股主要假日（春节后第一个交易日/复活节/国庆等可后续扩展 AkShare 港股日历）
-    # 目前简化为：春节假期（每年初一~初五附近）跳过
-    # TODO: 接入 AkShare 港股节假日日历（akshare.hk_trade_date_hist_sina）
-    return True
+    try:
+        cal = _get_hk_calendar()
+        import pandas as pd
+        ts = pd.Timestamp(now.date())
+        if not cal.is_session(ts):
+            return False
+    except Exception:
+        # 日历查询失败时保守：不拦截（让交易进行）
+        return True
+    # 港股交易时段：09:30-11:59 / 13:00-16:00（HKT），午休 12:00-13:00 闭市
+    h, m = now.hour, now.minute
+    cur = h * 60 + m
+    morning = 9 * 60 + 30 <= cur <= 11 * 60 + 59
+    afternoon = 13 * 60 <= cur <= 16 * 60 - 1
+    return morning or afternoon
 
 
 def next_market_seconds(now: Optional[datetime] = None) -> int:
