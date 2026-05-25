@@ -600,8 +600,8 @@ def build_intraday_monitor(api_port: int, logger):
     return monitor, broker
 
 
-def start_strategy_runner_thread(api_port: int, monitor, logger) -> Optional[threading.Thread]:
-    """启动 StrategyRunner 后台线程,并注入 monitor。返回线程对象;失败返回 None。"""
+def start_strategy_runner_thread(api_port: int, monitor, broker, logger) -> Optional[threading.Thread]:
+    """启动 StrategyRunner 后台线程,并注入 monitor + broker(OMS)。返回线程对象;失败返回 None。"""
     try:
         from core.pipeline_factory import build_runner
 
@@ -630,9 +630,10 @@ def start_strategy_runner_thread(api_port: int, monitor, logger) -> Optional[thr
 
         runner = build_runner(
             symbols=_runner_symbols,
-            dry_run=True,
+            dry_run=False,
             interval=300,
             signal_threshold=0.5,
+            oms=broker,
         )
         if monitor is not None:
             monitor.set_strategy_runner(runner)
@@ -641,7 +642,7 @@ def start_strategy_runner_thread(api_port: int, monitor, logger) -> Optional[thr
         runner_t = threading.Thread(
             target=target_fn, daemon=True, name='StrategyRunner')
         runner_t.start()
-        logger.info('StrategyRunner started (%s, DynamicWeightPipeline, dry_run=True)',
+        logger.info('StrategyRunner started (%s, DynamicWeightPipeline, dry_run=False — LIVE)',
                     type(runner).__name__)
         return runner_t
     except Exception as exc:

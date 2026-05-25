@@ -188,7 +188,7 @@ def main():
 
     # ── StrategyRunner(Worker 模式才启动)─────────────────
     if mode in ('all', 'worker'):
-        start_strategy_runner_thread(args.port, monitor, logger)
+        start_strategy_runner_thread(args.port, monitor, broker, logger)
 
     # ── 启动 IntradayMonitor(StrategyRunner 注入后才安全)──
     if monitor is not None:

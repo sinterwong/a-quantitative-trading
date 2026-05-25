@@ -258,6 +258,7 @@ def build_runner(
     interval: int = 300,
     signal_threshold: float = 0.5,
     runtime: str = 'sync',
+    oms=None,                 # Optional[OMS] — 传入 PaperBroker 等实现以实盘下单
 ):
     """
     快速创建生产用 Runner。
@@ -276,6 +277,8 @@ def build_runner(
         'sync'（默认） → StrategyRunner（线程 + time.sleep 轮询，回测/单测兼容）
         'async'        → AsyncStrategyRunner（asyncio.gather 并发取数，生产推荐）
         env `RUNNER_RUNTIME` 可覆盖默认值。
+    oms : Optional[OMS]
+        订单管理系统，传入 PaperBroker 等实现。None 时信号仅记录不成交。
 
     Returns
     -------
@@ -304,5 +307,5 @@ def build_runner(
     if rt == 'async':
         from core.async_runner import AsyncStrategyRunner
         return AsyncStrategyRunner(cfg, data_layer=get_data_layer(),
-                                   risk_engine=risk_engine)
-    return StrategyRunner(cfg, data_layer=get_data_layer(), risk_engine=risk_engine)
+                                  risk_engine=risk_engine, oms=oms)
+    return StrategyRunner(cfg, data_layer=get_data_layer(), risk_engine=risk_engine, oms=oms)
