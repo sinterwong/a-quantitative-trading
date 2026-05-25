@@ -480,7 +480,12 @@ class StrategyRunner:
         if not candidates:
             return
         top_signal = max(candidates, key=lambda s: s.strength)
-
+        # 空 symbol 信号防御：追溯源头
+        if not top_signal.symbol:
+            logger.warning(
+                "[_emit_signal] EMPTY symbol signal from factor=%s direction=%s",
+                top_signal.factor_name, direction,
+            )
         if self.event_bus is not None:
             try:
                 from core.event_bus import SignalEvent

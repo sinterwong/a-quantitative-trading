@@ -85,10 +85,12 @@ class Factor(ABC):
         threshold: float = 1.0,
     ) -> List[Signal]:
         """
-        从因子值生成信号。
-        默认逻辑：z > threshold → SELL，z < -threshold → BUY
+        从因子值生成信号。默认逻辑：z > threshold → SELL，z < -threshold → BUY
         子类可覆盖。
         """
+        # 防御：宏观因子没有专属标的，signals() 可能拿到空 symbol → 过滤
+        if not getattr(self, 'symbol', None):
+            return []
         signals: List[Signal] = []
         latest = factor_values.iloc[-1]
         direction: Literal['BUY', 'SELL']

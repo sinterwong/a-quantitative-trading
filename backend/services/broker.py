@@ -306,6 +306,23 @@ class PaperBroker(BrokerBase):
         """
         symbol = signal.symbol
         direction = signal.direction
+        # 防御性校验：拒绝空 symbol 或无效 direction
+        if not symbol or symbol.strip() == '':
+            logger.warning('[PaperBroker] submit_from_signal rejected: empty symbol')
+            return OrderResult(
+                order_id=self._next_order_id(),
+                status='rejected', symbol='', direction=direction or '',
+                submitted_shares=0, filled_shares=0,
+                reason='empty symbol',
+            )
+        if direction not in ('BUY', 'SELL'):
+            logger.warning('[PaperBroker] submit_from_signal rejected: invalid direction=%s', direction)
+            return OrderResult(
+                order_id=self._next_order_id(),
+                status='rejected', symbol=symbol, direction=direction or '',
+                submitted_shares=0, filled_shares=0,
+                reason=f'invalid direction: {direction}',
+            )
         # shares 优先用传入值，其次从 signal.metadata 提取，否则用 Kelly 计算
         if shares is None:
             shares = signal.metadata.get('shares') if hasattr(signal, 'metadata') else None
