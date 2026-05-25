@@ -62,11 +62,14 @@ def _get_hk_calendar():
 
 
 def is_hk_market_open(now: Optional[datetime] = None) -> bool:
-    """判断当前是否为港股交易时段（交易日历 + 交易时间双重判断）。"""
+    """判断当前是否为港股交易时段（exchange_calendars XHKG 日历 + 港股交易时间双重判断）。
+
+    - 节假日（端午/清明/国庆等）：is_session 返回 False
+    - 午休 12:00-13:00：不在交易时段内
+    - 09:29 集合竞价：尚未开市
+    """
     if now is None:
         now = datetime.now()
-    if now.weekday() >= 5:
-        return False
     try:
         cal = _get_hk_calendar()
         import pandas as pd
@@ -74,9 +77,9 @@ def is_hk_market_open(now: Optional[datetime] = None) -> bool:
         if not cal.is_session(ts):
             return False
     except Exception:
-        # 日历查询失败时保守：不拦截（让交易进行）
-        return True
-    # 港股交易时段：09:30-11:59 / 13:00-16:00（HKT），午休 12:00-13:00 闭市
+        # 日历查询失败时保守：港股休市（比假信号安全）
+        return False
+    # 港股交易时段：09:30-11:59 / 13:00-15:59（HKT），午休 12:00-13:00 闭市
     h, m = now.hour, now.minute
     cur = h * 60 + m
     morning = 9 * 60 + 30 <= cur <= 11 * 60 + 59
