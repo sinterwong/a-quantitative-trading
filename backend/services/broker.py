@@ -299,6 +299,25 @@ class PaperBroker(BrokerBase):
                 symbol, direction, shares, price, price_type,
             )
 
+    def submit_from_signal(self, signal, shares: int = None) -> OrderResult:
+        """
+        实现 OMS 接口：从 Signal 对象生成订单并提交。
+        StrategyRunner 通过此接口与 PaperBroker 对接。
+        """
+        symbol = signal.symbol
+        direction = signal.direction
+        # shares 优先用传入值，其次从 signal.metadata 提取，否则用 Kelly 计算
+        if shares is None:
+            shares = signal.metadata.get('shares') if hasattr(signal, 'metadata') else None
+        if shares is None or shares <= 0:
+            # 简化份额计算：取现金的 10%，按 100 股取整
+            price = signal.price if hasattr(signal, 'price') and signal.price > 0 else 0
+            if price <= 0:
+                price = self._fetch_market_price(symbol) if self._connected else 0
+            shares = max(100, int(self.get_cash() * 0.1 / (price or 1)) // 100 * 100)
+        return self.submit_order(symbol, direction, shares, price=signal.price if hasattr(signal, 'price') else 0,
+                                price_type='market')
+
     def _submit_order_locked(self, symbol: str, direction: str, shares: int,
                              price: float, price_type: str) -> OrderResult:
         if not self._connected:
