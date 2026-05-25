@@ -55,6 +55,38 @@ def is_market_open(now: Optional[datetime] = None) -> bool:
     return morning or afternoon
 
 
+def _get_hk_calendar():
+    """获取港交所 calendar（lazy init，缓存全局单例）。"""
+    import exchange_calendars as ec
+    return ec.get_calendar('XHKG')
+
+
+def is_hk_market_open(now: Optional[datetime] = None) -> bool:
+    """判断当前是否为港股交易时段（exchange_calendars XHKG 日历 + 港股交易时间双重判断）。
+
+    - 节假日（端午/清明/国庆等）：is_session 返回 False
+    - 午休 12:00-13:00：不在交易时段内
+    - 09:29 集合竞价：尚未开市
+    """
+    if now is None:
+        now = datetime.now()
+    try:
+        cal = _get_hk_calendar()
+        import pandas as pd
+        ts = pd.Timestamp(now.date())
+        if not cal.is_session(ts):
+            return False
+    except Exception:
+        # 日历查询失败时保守：港股休市（比假信号安全）
+        return False
+    # 港股交易时段：09:30-11:59 / 13:00-15:59（HKT），午休 12:00-13:00 闭市
+    h, m = now.hour, now.minute
+    cur = h * 60 + m
+    morning = 9 * 60 + 30 <= cur <= 11 * 60 + 59
+    afternoon = 13 * 60 <= cur <= 16 * 60 - 1
+    return morning or afternoon
+
+
 def next_market_seconds(now: Optional[datetime] = None) -> int:
     """距离下次开市还有多少秒(用于启动前 sleep)。"""
     if now is None:
