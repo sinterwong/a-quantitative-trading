@@ -61,6 +61,13 @@ class TencentHKFetcher(BaseFetcher):
         'HSI' → 'hkHSI'
         """
         code = stock_code.strip()
+        # xxx.HK 格式（如 9992.HK, 00700.HK）
+        if '.' in code:
+            parts = code.split('.', 1)
+            num_part = parts[0].strip()
+            if num_part.isdigit():
+                return f"hk{num_part.zfill(5)}"
+            return f"hk{num_part}"
 
         # HK:xxx 格式
         if code.upper().startswith("HK:"):
@@ -68,15 +75,18 @@ class TencentHKFetcher(BaseFetcher):
             if inner.isdigit():
                 return f"hk{inner.zfill(5)}"
             return f"hk{inner}"
-
         # hkxxx 格式
         if code.lower().startswith("hk"):
-            return code.lower()
+            inner = code[2:].strip()
+            if inner.isdigit():
+                # 腾讯港股代码固定5位：hk00700, hk09992
+                return f"hk{inner.zfill(5)}"
+            # 纯字母指数：hkHSI, hkHSTECH
+            return f"hk{inner.upper()}"
 
         # 纯数字
         if code.isdigit():
             return f"hk{code.zfill(5)}"
-
         # 纯字母（如 HSI, HSTECH）
         if code.isalpha():
             return f"hk{code.upper()}"

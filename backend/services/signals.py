@@ -118,7 +118,11 @@ def fetch_realtime(symbol: str) -> Optional[dict]:
     """
     # 腾讯格式：sh600519 / sz000001
     upper_sym = symbol.upper()
-    if upper_sym.endswith('.SH'):
+    # 港股格式：9992.HK → hk09992
+    if upper_sym.endswith('.HK'):
+        num = upper_sym[:-3]
+        sym = f'hk{num.zfill(5)}'
+    elif upper_sym.endswith('.SH'):
         sym = 'sh' + upper_sym[:-3]
     elif upper_sym.endswith('.SZ'):
         sym = 'sz' + upper_sym[:-3]
