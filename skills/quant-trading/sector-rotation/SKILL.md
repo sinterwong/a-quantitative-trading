@@ -1,7 +1,7 @@
 ---
 name: sector-rotation
 description: Use when checking sector strength, momentum shifts, or industry allocation — returns ranked sector performance and capital flow. Inputs: date (optional, defaults to today). Triggers: "板块轮动", "行业配置", "哪个板块强", or any sector/macro allocation inquiry.
-version: 1.0.0
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -19,6 +19,15 @@ metadata:
 **输入**: 日期（可选，默认当天）
 **输出**: 强势板块排名 + 资金净流入/流出 + 轮动信号
 **推送**: 可生成飞书板块轮动卡片
+
+---
+
+## API 超时配置
+
+| 接口 | 建议超时 | 说明 |
+|------|----------|------|
+| `/analysis/sector_rotation` | **60s** | 板块轮动分析，耗时较长 |
+| `/northbound/flow` | 10s | 北向资金 |
 
 ---
 
@@ -73,7 +82,7 @@ BASE = "http://localhost:5555"
 
 def get_sector_rotation(trade_date: str = None) -> dict:
     payload = {"date": trade_date} if trade_date else {}
-    return requests.post(f"{BASE}/analysis/sector_rotation", json=payload, timeout=10).json()
+    return requests.post(f"{BASE}/analysis/sector_rotation", json=payload, timeout=60).json()
 
 def get_north_flow() -> dict:
     return requests.get(f"{BASE}/northbound/flow", timeout=10).json()
@@ -147,6 +156,7 @@ stock-backtest           # 验证入场时机
 1. **日内数据滞后**: 盘中资金流向数据 T+1 更新，建议在 16:00 后使用
 2. **板块分类标准**: 不同数据源板块分类可能不同（申万/中信/主题），混用会导致数据打架
 3. **轮动信号误读**: 单日资金流入不构成趋势，需连续 3-5 日观察
+4. **API 超时设置**: `/analysis/sector_rotation` 需要 60s 超时，否则可能返回空响应
 
 ---
 
@@ -157,3 +167,4 @@ stock-backtest           # 验证入场时机
 - [ ] 资金流向与涨跌幅方向一致（异常情况需注明）
 - [ ] 北向资金数据时间戳正确
 - [ ] 飞书输出包含轮动信号描述
+- [ ] API 超时设置正确（/analysis/sector_rotation 使用 60s）

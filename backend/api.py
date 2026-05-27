@@ -371,6 +371,7 @@ from backend.api_routes.portfolio import portfolio_bp  # noqa: E402
 from backend.api_routes.research import research_bp  # noqa: E402
 from backend.api_routes.trades_signals_params import trades_signals_params_bp  # noqa: E402
 from backend.api_routes.watchlist_alerts import watchlist_alerts_bp  # noqa: E402
+from backend.api_routes.test import test_bp  # noqa: E402
 app.register_blueprint(analysis_bp)
 app.register_blueprint(data_bp)
 app.register_blueprint(market_bp)
@@ -380,6 +381,7 @@ app.register_blueprint(portfolio_bp)
 app.register_blueprint(research_bp)
 app.register_blueprint(trades_signals_params_bp)
 app.register_blueprint(watchlist_alerts_bp)
+app.register_blueprint(test_bp)
 
 
 if __name__ == '__main__':
