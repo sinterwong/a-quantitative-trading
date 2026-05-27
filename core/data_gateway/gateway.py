@@ -936,9 +936,60 @@ class DataGateway:
                         merged.pe_ttm = quote.pe_ttm
                     if merged.pb <= 0 and quote.pb > 0:
                         merged.pb = quote.pb
+            # 股息率补充：当合并结果为 0 时，从分红记录计算 TTM 股息率
+            if merged.dividend_yield <= 0:
+                try:
+                    price = self._resolve_price(symbol, merged)
+                    if price > 0:
+                        ttm_div = self._calc_ttm_dividend_yield(symbol, price)
+                        if ttm_div > 0:
+                            merged.dividend_yield = ttm_div
+                            prov["dividend_yield"] = "dividend_records"
+                except Exception:
+                    pass  # 计算失败不影响主流程
             self._cache.set(cache_key, merged, _DEFAULT_TTL[Capability.FUNDAMENTALS])
             self._last_provenance[cache_key] = prov
         return merged
+
+    # ── 股息率计算辅助 ─────────────────────────────────────────────────────
+
+    def _resolve_price(self, symbol: str, fundamentals: Fundamentals) -> float:
+        """获取当前价格：优先用行情，其次用 PE×EPS 反推。"""
+        quote = self.quote(symbol)
+        if quote is not None and quote.price > 0:
+            return quote.price
+        # PE × EPS 反推
+        if fundamentals.pe_ttm > 0 and fundamentals.eps_ttm > 0:
+            return fundamentals.pe_ttm * fundamentals.eps_ttm
+        return 0.0
+
+    def _calc_ttm_dividend_yield(self, symbol: str, price: float) -> float:
+        """从分红记录计算 TTM 股息率（%）。
+
+        股息率 = 最近 12~18 个月窗口内每股税前股利之和 / 当前股价 × 100
+
+        用 18 个月窗口而非严格 12 个月，原因：
+        - 季度分红可能在 12 个月边界附近（如 1 月分红 + 5 月查询 ≈ 16 个月前）
+        - 过窄窗口会导致 TTM 股息率严重低估
+        """
+        if price <= 0:
+            return 0.0
+        from datetime import datetime, timedelta
+        try:
+            records = self.dividend(symbol)
+            if not records:
+                return 0.0
+            cutoff = datetime.now() - timedelta(days=540)  # ~18 个月
+            total_cash = 0.0
+            for rec in records:
+                ref_date = rec.pay_date or rec.operate_date
+                if ref_date is not None and ref_date >= cutoff:
+                    total_cash += rec.cash_per_share
+            if total_cash > 0:
+                return total_cash / price * 100
+        except Exception:
+            pass
+        return 0.0
 
     def sectors(self, limit: int = 100) -> List[SectorRanking]:
         cache_key = f"sectors:{limit}"
