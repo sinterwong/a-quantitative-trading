@@ -17,6 +17,11 @@ dynamic_selector.py - 多维度动态选股模块
 - 降级机制：所有API失败时自动切换宽基ETF
 """
 
+import sys
+import os
+# 确保能导入项目根目录的 core 模块
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import urllib.request
 import ssl
 import os
