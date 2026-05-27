@@ -1,7 +1,7 @@
 ---
 name: position-health-check
 description: Use when checking current holdings for risk — returns unrealized P&L, RSI overbought/oversold, and overdue positions. Inputs: none (reads all current positions). Triggers: "检查持仓", "持仓健康", "持仓预警", or any portfolio risk inquiry.
-version: 1.0.0
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -22,12 +22,24 @@ metadata:
 
 ---
 
+## API 超时配置
+
+| 接口 | 建议超时 | 说明 |
+|------|----------|------|
+| `/positions` | 10s | 持仓列表 |
+| `/portfolio/summary` | 10s | 组合摘要 |
+| `/data/realtime/{symbol}` | 10s | 实时行情 |
+| `/data/daily/{symbol}` | 15s | 日线数据（计算RSI） |
+
+---
+
 ## API 调用链
 
 ```
 1. GET  /positions                         → 当前持仓列表（代码/数量/成本/entry_date）
 2. GET  /portfolio/summary                 → 浮盈浮亏/现金/总权益（持仓数据嵌在此）
 3. GET  /data/realtime/{symbol}            → 各持仓最新价（支持多标的逗号分隔）
+4. GET  /data/daily/{symbol}?days=20      → 近20日K线（计算RSI）
 ```
 
 **Base URL**: `http://localhost:5555`
@@ -72,6 +84,9 @@ curl -s "http://localhost:5555/portfolio/summary"
 
 # 持仓实时行情（单标的）
 curl -s "http://localhost:5555/data/realtime/600900.SH"
+
+# 持仓日线（计算RSI）
+curl -s "http://localhost:5555/data/daily/600900.SH?days=20"
 ```
 
 ```python
@@ -93,6 +108,25 @@ def get_realtime(symbols: list[str]) -> dict:
         r = requests.get(f"{BASE}/data/realtime/{sym}", timeout=10).json()
         results[sym] = r
     return results
+
+def get_daily(symbol: str, days: int = 20) -> dict:
+    return requests.get(f"{BASE}/data/daily/{symbol}", params={"days": days}, timeout=15).json()
+
+def calc_rsi(closes: list, period: int = 14) -> float | None:
+    """计算RSI指标"""
+    if len(closes) < period + 1:
+        return None
+    gains, losses = [], []
+    for i in range(-period, 0):
+        diff = closes[i+1] - closes[i]
+        gains.append(max(diff, 0))
+        losses.append(max(-diff, 0))
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return round(100 - 100 / (1 + rs), 2)
 ```
 
 ---
@@ -142,6 +176,38 @@ def get_realtime(symbols: list[str]) -> dict:
 
 ---
 
+## 测试指南
+
+### 使用测试端点创建持仓
+
+```bash
+# 创建测试持仓
+curl -X POST "http://localhost:5555/test/positions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbol": "600900.SH",
+    "shares": 1000,
+    "entry_price": 26.50,
+    "entry_date": "2026-01-15"
+  }'
+
+# 创建多个测试持仓
+curl -X POST "http://localhost:5555/test/positions" \
+  -H "Content-Type: application/json" \
+  -d '{"symbol": "000001.SZ", "shares": 500, "entry_price": 15.20}'
+
+# 验证持仓
+curl -s "http://localhost:5555/positions"
+
+# 执行持仓健康检查
+curl -s "http://localhost:5555/portfolio/summary"
+
+# 重置测试数据
+curl -X POST "http://localhost:5555/test/reset"
+```
+
+---
+
 ## 已知数据缺口
 
 1. **持仓 entry_date**: 若系统中未录入入场日期，持仓天数计算不准确（历史数据迁移已完成，需确认所有持仓均有 entry_date）
@@ -178,6 +244,7 @@ def get_realtime(symbols: list[str]) -> dict:
 2. **涨跌停无法成交**: 预警触发后若标的涨停/跌停，实际无法执行止损/止盈，需在建议中注明"涨停/跌停中，无法操作"
 3. **多账号持仓**: 当前 API 只能获取主账号持仓，子账号需单独查询
 4. **港股持仓 RSI**: 港股日线数据质量可能不稳定，RSI 结果仅供参考
+5. **RSI 数据不足**: 需要至少 15 天日线数据计算 RSI(14)，数据不足时标注"数据不足"
 
 ---
 
@@ -189,3 +256,4 @@ def get_realtime(symbols: list[str]) -> dict:
 - [ ] 持仓天数计算正确（需 entry_date）
 - [ ] 预警规则全部应用（浮亏%/RSI/持仓天数）
 - [ ] 飞书推送触发条件正确（仅在有预警时推送，或每日定时推送）
+- [ ] 测试端点可用（/test/positions, /test/reset）

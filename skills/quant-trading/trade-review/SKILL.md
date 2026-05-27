@@ -1,7 +1,7 @@
 ---
 name: trade-review
 description: Use when reviewing daily/weekly trading activity — returns signal list, trade execution, and LLM recap. Inputs: date range (defaults to today). Triggers: "交易复盘", "今日成交", "复盘", "trade review", or any execution recap request.
-version: 1.0.0
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -19,6 +19,18 @@ metadata:
 **输入**: 日期范围（默认当天）
 **输出**: 信号列表 + 成交记录 + LLM 复盘建议
 **推送**: 每日收盘后推送复盘报告到飞书
+
+---
+
+## API 超时配置
+
+| 接口 | 建议超时 | 说明 |
+|------|----------|------|
+| `/signals` | 10s | 信号列表 |
+| `/orders/recent` | 10s | 最近订单 |
+| `/trades` | 10s | 成交记录 |
+| `/positions` | 10s | 持仓快照 |
+| `/portfolio/summary` | 10s | 组合摘要 |
 
 ---
 
@@ -95,19 +107,19 @@ BASE = "http://localhost:5555"
 TODAY = date.today().isoformat()
 
 def get_signals(trade_date: str = TODAY) -> dict:
-    return requests.get(f"{BASE}/signals", params={"date": trade_date}).json()
+    return requests.get(f"{BASE}/signals", params={"date": trade_date}, timeout=10).json()
 
 def get_recent_orders(limit: int = 20) -> dict:
-    return requests.get(f"{BASE}/orders/recent", params={"limit": limit}).json()
+    return requests.get(f"{BASE}/orders/recent", params={"limit": limit}, timeout=10).json()
 
 def get_trades(trade_date: str = TODAY) -> dict:
-    return requests.get(f"{BASE}/trades", params={"date": trade_date}).json()
+    return requests.get(f"{BASE}/trades", params={"date": trade_date}, timeout=10).json()
 
 def get_positions() -> dict:
-    return requests.get(f"{BASE}/positions").json()
+    return requests.get(f"{BASE}/positions", timeout=10).json()
 
 def get_portfolio_summary() -> dict:
-    return requests.get(f"{BASE}/portfolio/summary").json()
+    return requests.get(f"{BASE}/portfolio/summary", timeout=10).json()
 ```
 
 ---
@@ -149,6 +161,46 @@ def get_portfolio_summary() -> dict:
 - LLM 审核拒绝率异常高 → 检查信号质量或审核参数
 - 滑点过大 → 检查流动性或调整下单方式
 - 持仓未按信号退出 → 检查 exit_engine 触发条件
+
+---
+
+## 测试指南
+
+### 使用测试端点创建交易数据
+
+```bash
+# 创建测试信号
+curl -X POST "http://localhost:5555/test/signals" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbol": "600900.SH",
+    "signal": "BUY",
+    "strength": 0.8,
+    "reason": "RSI超卖反弹"
+  }'
+
+# 创建测试成交
+curl -X POST "http://localhost:5555/test/trades" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbol": "600900.SH",
+    "side": "BUY",
+    "shares": 1000,
+    "price": 27.25
+  }'
+
+# 验证信号
+curl -s "http://localhost:5555/signals?date=$(date +%Y-%m-%d)"
+
+# 验证成交
+curl -s "http://localhost:5555/trades?date=$(date +%Y-%m-%d)"
+
+# 执行复盘
+curl -s "http://localhost:5555/portfolio/summary"
+
+# 重置测试数据
+curl -X POST "http://localhost:5555/test/reset"
+```
 
 ---
 
@@ -216,3 +268,4 @@ def get_portfolio_summary() -> dict:
 - [ ] LLM 审核拒绝原因已记录
 - [ ] 飞书推送包含当日核心指标（信号数/成交率/盈亏）
 - [ ] 复盘建议有具体操作性（不是空话）
+- [ ] 测试端点可用（/test/signals, /test/trades, /test/reset）

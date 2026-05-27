@@ -1,7 +1,7 @@
 ---
 name: dynamic-stock-screener
 description: Use when screening stocks by technical/fundamental/money-flow conditions — returns ranked list of candidates. Inputs: filter criteria (RSI threshold, sector, market cap, fund flow direction). Triggers: "选股", "帮我筛选", "screen stocks", or any stock discovery request.
-version: 1.0.0
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -22,6 +22,18 @@ metadata:
 
 ---
 
+## API 超时配置
+
+| 接口 | 建议超时 | 说明 |
+|------|----------|------|
+| `/analysis/sector_rotation` | **60s** | 板块轮动分析 |
+| `/northbound/flow` | 10s | 北向资金 |
+| `/positions` | 10s | 现有持仓 |
+| `/fundamentals/{symbol}` | 10s | 基本面数据 |
+| `/data/daily/{symbol}` | 15s | 日线数据 |
+
+---
+
 ## 筛选维度
 
 ### 技术面条件
@@ -38,19 +50,19 @@ metadata:
 
 | 条件 | 说明 | API 来源 |
 |------|------|----------|
-| PE < 15 | 低估值 | `/fundamentals/basic` |
-| ROE > 10% | 优质盈利 | `/fundamentals/basic` |
-| 营收YoY > 0 | 营收正增长 | `/fundamentals/basic` |
-| 净利YoY > 0 | 净利润正增长 | `/fundamentals/basic` |
-| 股息率 > 2% | 高股息 | `/fundamentals/basic` |
+| PE < 15 | 低估值 | `/fundamentals/{symbol}` |
+| ROE > 10% | 优质盈利 | `/fundamentals/{symbol}` |
+| 营收YoY > 0 | 营收正增长 | `/fundamentals/{symbol}` |
+| 净利YoY > 0 | 净利润正增长 | `/fundamentals/{symbol}` |
+| 股息率 > 2% | 高股息 | `/fundamentals/{symbol}` |
 
 ### 资金面条件
 
 | 条件 | 说明 | API 来源 |
 |------|------|----------|
-| 北向净流入 | 当日沪股通+深股通净买入 | `/market/north_capital` |
-| 主力净流入 | 大单资金净流入 | `/data/market_flow?direction=stock` |
-| 板块净流入 | 行业资金净流入前三 | `/data/market_flow?direction=sector` |
+| 北向净流入 | 当日沪股通+深股通净买入 | `/northbound/flow` |
+| 主力净流入 | 大单资金净流入 | 需要额外数据源 |
+| 板块净流入 | 行业资金净流入前三 | `/analysis/sector_rotation` |
 
 ---
 
@@ -61,10 +73,10 @@ metadata:
    - 请求: POST /analysis/sector_rotation  {"date": "2026-05-22"}
    - 返回: {scores: {ETF代码: 动量分数}, buy/hold/sell: [ETF列表], top_n: 3}
    - scores 值越大越强势（正值=动量向上）
-2. GET  /analysis/sector/compare         → 行业板块横向对比（POST，需 body）
-3. GET  /northbound/flow                 → 北向资金（注意是 northbound 不是 north_capital）
+2. GET  /northbound/flow                 → 北向资金（注意是 northbound 不是 north_capital）
    - 返回: {net_north_yi, direction, trend_yi, summary}
-4. GET  /positions                       → 现有持仓（对比是否在强势板块内）
+3. GET  /positions                       → 现有持仓（对比是否在强势板块内）
+4. GET  /fundamentals/{symbol}           → 基本面数据（PE/PB/ROE/营收YoY/净利YoY）
 ```
 
 **Base URL**: `http://localhost:5555`
@@ -99,6 +111,16 @@ metadata:
 }
 ```
 
+**GET /fundamentals/{symbol}**
+```json
+{
+  "pe": 18.47, "pb": 2.92, "dividend_yield": 0.15,
+  "market_cap": 6665.14, "name": "长江电力", "price": 27.24,
+  "symbol": "600900.SH", "status": "ok",
+  "revenue_yoy": 6.44, "profit_yoy": 30.50, "roe_ttm": 3.01
+}
+```
+
 ⚠️ `/data/market_flow` 和 `/market/north_capital` 均为 error，使用前请先确认接口可用性。
 
 ---
@@ -116,6 +138,9 @@ curl -s "http://localhost:5555/northbound/flow"
 
 # 持仓列表（筛选前对比持仓是否已在强势板块）
 curl -s "http://localhost:5555/positions"
+
+# 基本面数据
+curl -s "http://localhost:5555/fundamentals/600900.SH"
 ```
 
 ```python
@@ -126,7 +151,7 @@ BASE = "http://localhost:5555"
 
 def get_sector_rotation(trade_date: str = None) -> dict:
     payload = {"date": trade_date} if trade_date else {}
-    return requests.post(f"{BASE}/analysis/sector_rotation", json=payload, timeout=10).json()
+    return requests.post(f"{BASE}/analysis/sector_rotation", json=payload, timeout=60).json()
 
 def get_north_flow() -> dict:
     # 注意路径是 northbound/flow
@@ -134,6 +159,9 @@ def get_north_flow() -> dict:
 
 def get_positions() -> dict:
     return requests.get(f"{BASE}/positions", timeout=10).json()
+
+def get_fundamentals(symbol: str) -> dict:
+    return requests.get(f"{BASE}/fundamentals/{symbol}", timeout=10).json()
 ```
 
 ---
@@ -187,6 +215,7 @@ trade-review              # 复盘
 1. **板块轮动 API**: `/analysis/sector_rotation` 需传入日期参数，无参数时需补充
 2. **个股资金流向**: 数据来源稳定性需验证，部分小市值股票可能无数据
 3. **北向资金**: 收盘后更新，日内数据可能滞后
+4. **主力净流入**: 需要额外数据源，当前 API 可能不支持
 
 ---
 
@@ -212,6 +241,7 @@ trade-review              # 复盘
 2. **板块轮动日期**: `/analysis/sector_rotation` 传空 date 时行为不确定，建议显式传入交易日
 3. **资金流向延迟**: 北向资金 T+1 更新，盘中用前日数据需注明
 4. **评分权重**: 多条件筛选时需预设权重逻辑，避免随机排序
+5. **API 超时设置**: `/analysis/sector_rotation` 需要 60s 超时，否则可能返回空响应
 
 ---
 
@@ -223,3 +253,5 @@ trade-review              # 复盘
 - [ ] 输出包含各条件命中文情（哪只股票命中了哪些条件）
 - [ ] 结果数量合理（过多=条件太宽，过少=条件太严）
 - [ ] 北向/主力资金数据注明时间戳（是否为当日数据）
+- [ ] API 超时设置正确（/analysis/sector_rotation 使用 60s）
+- [ ] 基本面字段完整（PE/PB/ROE/营收YoY/净利YoY）
