@@ -263,18 +263,24 @@ class PaperBroker(BrokerBase):
         return order
 
     def _fetch_market_price(self, symbol: str) -> float:
-        """Fetch latest price from Tencent Finance API (hk/sh/sz 支持)."""
+        """Fetch latest price from Tencent Finance API (hk/sh/sz 支持)。"""
         try:
             import ssl, urllib.request
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
-            # 港股: hk00700 → 直接用 hk 前缀
-            if symbol.lower().startswith('hk'):
-                qt = symbol.lower()
-            elif '.' in symbol:
-                num, market = symbol.split('.', 1)
-                qt = ('sh' if market == 'SH' else 'sz') + num
+            # 转换 symbol → 腾讯格式 qt
+            # 港股: 0700.HK / hk00700 → hk00700
+            sym = symbol.strip()
+            if sym.lower().startswith('hk'):
+                qt = sym.lower()
+            elif '.' in sym:
+                num, market = sym.split('.', 1)
+                market = market.upper()
+                if market == 'HK':
+                    qt = f'hk{int(num):05d}'
+                else:
+                    qt = ('sh' if market == 'SH' else 'sz') + num
             else:
                 return 0.0
             url = f'https://qt.gtimg.cn/q={qt}'
