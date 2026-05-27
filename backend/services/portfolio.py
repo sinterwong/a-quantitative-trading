@@ -511,7 +511,11 @@ class PortfolioService:
                 raw = r.read().decode('gbk', errors='replace')
 
             # Build a lookup: qt_symbol → original symbol
-            qt_to_sym = dict(zip(qt_symbols, symbols))
+            # Strip optional 'v_' prefix from qt_symbols for consistent matching
+            qt_to_sym = {}
+            for qt, sym in zip(qt_symbols, symbols):
+                qt_to_sym[qt] = sym
+                qt_to_sym[qt.lstrip('v_')] = sym
             failed_qt = set(qt_symbols)
 
             for line in raw.strip().split(';'):
@@ -527,8 +531,8 @@ class PortfolioService:
                     price = float(price_str)
                     if price <= 0:
                         continue
-                    # Extract qt prefix from the raw line for reliable mapping
-                    qt_prefix = line.split('=')[0].strip()
+                    # Extract qt prefix from the raw line; strip 'v_' if present
+                    qt_prefix = line.split('=')[0].strip().lstrip('v_')
                     sym = qt_to_sym.get(qt_prefix)
                     if sym is None:
                         continue
