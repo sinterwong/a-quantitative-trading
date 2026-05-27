@@ -405,7 +405,7 @@ class PortfolioService:
         with get_cursor() as cur:
             cur.execute(
                 '''SELECT symbol, shares, entry_price, latest_price, entry_date, updated_at
-                   FROM positions WHERE shares > 0'''
+                   FROM positions WHERE shares > 0 AND entry_price > 0'''
             )
             rows = [dict(row) for row in cur.fetchall()]
 
