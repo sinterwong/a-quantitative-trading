@@ -628,9 +628,22 @@ def start_strategy_runner_thread(api_port: int, monitor, broker, logger) -> Opti
                 pass
             return sorted(symbols) if symbols else ['510300.SH', '159915.SZ', '512690.SH']
 
+        # dry_run 联动 trading_mode.json:
+        # simulation 模式下 Entry 信号不应进 PaperBroker 撮合,
+        # 否则每 5 分钟的 StrategyRunner 扫描会产生虚假成交写入 state.db。
+        import json as _json_mode
+        _mode_file = os.path.join(BACKEND_DIR, 'trading_mode.json')
+        _is_live = False
+        try:
+            with open(_mode_file, 'r', encoding='utf-8') as _mf:
+                _is_live = _json_mode.load(_mf).get('mode', 'simulation') == 'live'
+        except Exception:
+            pass
+        _dry_run = not _is_live
+
         runner = build_runner(
             symbols=_runner_symbols,
-            dry_run=False,
+            dry_run=_dry_run,
             interval=300,
             signal_threshold=0.5,
             oms=broker,
@@ -642,8 +655,9 @@ def start_strategy_runner_thread(api_port: int, monitor, broker, logger) -> Opti
         runner_t = threading.Thread(
             target=target_fn, daemon=True, name='StrategyRunner')
         runner_t.start()
-        logger.info('StrategyRunner started (%s, DynamicWeightPipeline, dry_run=False — LIVE)',
-                    type(runner).__name__)
+        logger.info('StrategyRunner started (%s, DynamicWeightPipeline, dry_run=%s — %s)',
+                    type(runner).__name__, _dry_run,
+                    'LIVE' if _is_live else 'SIMULATION')
         return runner_t
     except Exception as exc:
         logger.warning('StrategyRunner start failed (non-fatal): %s', exc)
