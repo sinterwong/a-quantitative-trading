@@ -48,6 +48,13 @@ def fetch_fundamentals(symbol: str) -> Optional[dict]:
         # 获取详细基本面数据
         f = gw.fundamentals(symbol)
         
+        # 股息率：优先 Fundamentals（含 TTM 兜底计算），回退 Quote（腾讯实时）
+        f_dy = 0.0
+        if f is not None:
+            _raw = getattr(f, 'dividend_yield', 0.0)
+            if isinstance(_raw, (int, float)):
+                f_dy = float(_raw)
+        
         # 构建返回数据
         result = {
             # 基础字段
@@ -55,7 +62,7 @@ def fetch_fundamentals(symbol: str) -> Optional[dict]:
             'name': q.name,
             'pe': q.pe_ttm,
             'pb': q.pb,
-            'dividend_yield': q.dividend_yield,
+            'dividend_yield': f_dy if f_dy else q.dividend_yield,
             'market_cap': q.market_cap,  # 亿元
             'price': q.price,
             
