@@ -231,6 +231,9 @@ class PaperBroker(BrokerBase):
 
         # Market reference price (before slippage)
         ref_price = price if price > 0 else self._fetch_market_price(symbol)
+        logger.debug('[PaperBroker] _simulate_fill: %s %s | input_price=%.4f | ref_price=%.4f | _fetch_market_price=%.4f',
+                     direction, symbol, price, ref_price,
+                     self._fetch_market_price(symbol) if price > 0 else ref_price)
         # Use signal_price if provided, else use ref_price
         slip_ref = signal_price if signal_price > 0 else ref_price
 

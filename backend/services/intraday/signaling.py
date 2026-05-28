@@ -296,7 +296,7 @@ class SignalingMixin:
                 continue
 
             quote = fetch_realtime(sym)
-            price = quote.get('close', 0) if quote else pos.get('current_price', 0)
+            price = quote.get('price', 0) if quote else pos.get('latest_price', 0)
             pct = quote.get('pct', 0) if quote else 0.0
             day_chg = quote.get('day_chg', 0) if quote else 0.0
             reason = f'Pipeline score={score:.4f} > {BUY_THRESHOLD_ADD}，持仓加仓信号'
