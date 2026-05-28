@@ -114,6 +114,12 @@ def _symbol_to_bs(code: str) -> str:
 
     baostock 使用 'sh.600519' / 'sz.000001' 格式。
     支持 A股（sh/sz），不支持港股/美股/指数。
+
+    输入格式示例:
+      'sh.600519' → 'sh.600519'
+      'sh600519'  → 'sh.600519'
+      '600519.SH' → 'sh.600519'
+      '600519'    → 'sh.600519'
     """
     code = code.strip().lower()
     # 已带 sh./sz. 前缀，直接返回
@@ -125,6 +131,11 @@ def _symbol_to_bs(code: str) -> str:
         return f"sh.{code[2:]}"
     if code.startswith("sz"):
         return f"sz.{code[2:]}"
+    # 剥离 .sh/.sz 后缀（标准化格式如 600900.SH / 000001.SZ）
+    if code.endswith(".sh"):
+        code = code[:-3]
+    elif code.endswith(".sz"):
+        code = code[:-3]
     if code.startswith("60") or code.startswith("68"):
         return f"sh.{code}"
     if code.startswith("00") or code.startswith("30"):
