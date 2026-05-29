@@ -252,8 +252,18 @@ class TestStrategyRunnerSignalTrigger:
         results = runner.run_once()
         assert results[0].action == 'NONE'
 
-    def test_sell_signal_triggers_sell(self):
+    def test_sell_signal_skipped_without_position(self):
+        """SELL 信号在无持仓时应被跳过（持仓感知安全网）。"""
         runner = _make_runner(score=1.5, direction='SELL', threshold=0.5)
+        results = runner.run_once()
+        assert results[0].action == 'SKIPPED'
+        assert results[0].reason == 'no_position_to_sell'
+
+    def test_sell_signal_triggers_sell_with_position(self):
+        """SELL 信号在有持仓时应正常触发。"""
+        runner = _make_runner(score=1.5, direction='SELL', threshold=0.5)
+        # 模拟有持仓
+        runner._collect_positions = lambda: [{'symbol': 'TEST', 'shares': 1000, 'current_price': 10.0}]
         results = runner.run_once()
         assert results[0].action == 'SELL'
 

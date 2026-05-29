@@ -135,11 +135,10 @@ class RunnerConfig:
       BULL / CALM → 不做调整
     """
 
-    # P0-1: 可选 ExitEngine 钩子（默认 False）
-    # 注意：生产 IntradayMonitor 已经在 _run_exit_engine() 中调用 ExitEngine，
-    # 此处再开会导致同标的同周期触发两次 SELL。仅在 IntradayMonitor 不参与的
-    # 场景下（如纯 dry_run 信号预览、离线回测脚本）开启。
+    # P0-1: 可选 ExitEngine 钩子（已废弃 — ExitEngine 统一由 IntradayMonitor 调用）
+    # 保留参数以向后兼容，但不再使用。
     use_exit_engine: bool = False
+    """.. deprecated:: ExitEngine 统一由 IntradayMonitor._generate_exit_signals() 调用。"""
     exit_engine_params: Optional[Dict[str, Any]] = None
 
     # P0-3: 组合再平衡（PortfolioOptimizer + Allocator）
@@ -178,14 +177,20 @@ class StrategyRunner:
         config: RunnerConfig,
         data_layer: Optional[DataLayer] = None,
         risk_engine=None,         # Optional[RiskEngine] — 避免循环 import
-        oms=None,                 # Optional[OMS]
-        event_bus=None,           # Optional[EventBus]
+        oms=None,                 # Deprecated: 信号不再直接提交 OMS
+        event_bus=None,           # Deprecated: 信号不再直接提交 EventBus
     ) -> None:
         self.config = config
         self.data_layer = data_layer or get_data_layer()
         self.risk_engine = risk_engine
-        self.oms = oms
-        self.event_bus = event_bus
+        # oms / event_bus 已废弃 — 信号通过 _pending_signals 缓冲，
+        # 由 IntradayMonitor.consume_signals() 取出后统一交给 OrderGate 执行。
+        if oms is not None:
+            logger.warning("[StrategyRunner] oms parameter is deprecated, signals are buffered to _pending_signals")
+        if event_bus is not None:
+            logger.warning("[StrategyRunner] event_bus parameter is deprecated, signals are buffered to _pending_signals")
+        self.oms = None
+        self.event_bus = None
 
         self._stop_event = threading.Event()
         self._running = False
@@ -452,6 +457,24 @@ class StrategyRunner:
                 symbol=symbol, timestamp=ts,
                 pipeline_result=pr,
                 action='SKIPPED', reason=f'risk_rejected: {risk_reason}',
+                metadata={'combined_score': score},
+            )
+
+        # 6.5 持仓感知安全网（双保险：OrderGate 也会检查，此处提前拦截减少无效信号）
+        positions = self._collect_positions()
+        held_symbols = {p['symbol'] for p in positions if p.get('shares', 0) > 0}
+        if dominant == 'BUY' and symbol in held_symbols:
+            return RunResult(
+                symbol=symbol, timestamp=ts,
+                pipeline_result=pr,
+                action='SKIPPED', reason='already_held',
+                metadata={'combined_score': score},
+            )
+        if dominant == 'SELL' and symbol not in held_symbols:
+            return RunResult(
+                symbol=symbol, timestamp=ts,
+                pipeline_result=pr,
+                action='SKIPPED', reason='no_position_to_sell',
                 metadata={'combined_score': score},
             )
 
@@ -842,7 +865,7 @@ class StrategyRunner:
         return pd.DataFrame(cols).dropna()
 
     def _collect_positions(self) -> List[Dict[str, Any]]:
-        """优先从 RiskEngine.book 读取持仓快照；否则尝试 OMS；都没有返回空。"""
+        """从 RiskEngine.book 读取持仓快照；无 RiskEngine 时返回空。"""
         if self.risk_engine is not None:
             try:
                 positions = []
@@ -861,30 +884,9 @@ class StrategyRunner:
                 if positions:
                     return positions
             except Exception as exc:
-                # R0-4: 不再静默吞错。RiskEngine.book 读取失败若不出声，
-                # 后续再平衡会被当作"没历史数据"静默跳过，无人察觉。
                 logger.warning(
                     '[StrategyRunner] read positions from RiskEngine failed: %s',
                     exc,
-                )
-
-        if self.oms is not None:
-            try:
-                return [
-                    {
-                        'symbol': p.symbol,
-                        'shares': p.shares,
-                        'avg_price': p.avg_price,
-                        'entry_price': p.avg_price,
-                        'current_price': p.current_price,
-                    }
-                    for p in self.oms.broker.get_positions()
-                    if p.shares > 0
-                ]
-            except Exception as exc:
-                # R0-4: 同上——OMS 持仓读取失败必须留痕，不能假装"无持仓"。
-                logger.warning(
-                    '[StrategyRunner] read positions from OMS failed: %s', exc,
                 )
 
         return []
