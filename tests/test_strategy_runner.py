@@ -280,18 +280,15 @@ class TestStrategyRunnerSignalTrigger:
         runner.run_once()
         assert len(oms_calls) == 0   # dry_run → OMS 未被调用
 
-    def test_non_dry_run_calls_oms(self):
-        oms_calls = []
-
-        class FakeOMS:
-            def submit_from_signal(self, signal):
-                oms_calls.append(signal)
-                return None
-
+    def test_non_dry_run_buffers_signal(self):
+        """dry_run=False 时信号应缓冲到 _pending_signals，不再直接调 OMS。"""
         runner = _make_runner(score=1.5, dry_run=False)
-        runner.oms = FakeOMS()
         runner.run_once()
-        assert len(oms_calls) == 1
+        signals = runner.consume_signals()
+        assert len(signals) == 1
+        assert signals[0].symbol == 'TEST'
+        assert signals[0].direction == 'BUY'
+        assert signals[0].source == 'pipeline'
 
 
 class TestStrategyRunnerHooks:
