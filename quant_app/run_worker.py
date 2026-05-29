@@ -633,18 +633,13 @@ def start_strategy_runner_thread(api_port: int, monitor, broker, logger) -> Opti
             dry_run=False,
             interval=300,
             signal_threshold=0.5,
-            oms=broker,
         )
         if monitor is not None:
             monitor.set_strategy_runner(runner)
-        # AsyncStrategyRunner.run_loop 是协程,需通过 run_sync 调起
-        target_fn = getattr(runner, 'run_sync', None) or runner.run_loop
-        runner_t = threading.Thread(
-            target=target_fn, daemon=True, name='StrategyRunner')
-        runner_t.start()
-        logger.info('StrategyRunner started (%s, DynamicWeightPipeline, dry_run=False — LIVE)',
-                    type(runner).__name__)
-        return runner_t
+        # StrategyRunner 不再有独立线程 — 由 IntradayMonitor._check_and_push()
+        # 每 5 分钟调用 runner.run_once() + consume_signals() 驱动。
+        logger.info('StrategyRunner created (no independent loop, driven by IntradayMonitor)')
+        return None
     except Exception as exc:
         logger.warning('StrategyRunner start failed (non-fatal): %s', exc)
         return None

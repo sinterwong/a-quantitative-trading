@@ -166,29 +166,30 @@ def _attach_class_attrs(monitor):
 
 
 def test_submit_order_skips_no_trade_signal(monitor):
-    """LIMIT_UP 等不交易信号 → 直接 record_skip + 返回 None。"""
+    """LIMIT_UP 等不交易信号 → 直接返回 None（不再调 _record_skip，由 OrderGate 记录）。"""
     _attach_class_attrs(monitor)
     alert = _make_alert(signal='LIMIT_UP')
     result = ExecutionMixin._submit_order_for_signal(monitor, alert)
     assert result is None
-    monitor._record_skip.assert_called_once()
 
 
 def test_submit_order_skips_unmapped_signal(monitor):
-    """无 SIGNAL_TO_ORDER 映射 → record_skip + None。"""
+    """无 SIGNAL_TO_ORDER 映射 → 返回 None。"""
     _attach_class_attrs(monitor)
     alert = _make_alert(signal='UNKNOWN_SIG')
     result = ExecutionMixin._submit_order_for_signal(monitor, alert)
     assert result is None
-    monitor._record_skip.assert_called()
 
 
 def test_submit_order_buy_blocked_by_portfolio_drawdown(monitor):
-    """组合熔断激活 → BUY 拒绝。"""
+    """组合熔断激活时 BUY 被阻断 — 现由 OrderGate/SignalingLayer 处理。
+
+    此测试验证 fallback 路径（无 OrderGate）在 can_trade=False 时返回 None。
+    完整的 drawdown 阻断逻辑已移至 _check_new_positions() 和 OrderGate。
+    """
     _attach_class_attrs(monitor)
-    monitor._risk_warn_fired = True
+    monitor._order_gate = None
+    monitor._can_trade.return_value = False  # simulation 模式
     alert = _make_alert(signal='BUY')
     result = ExecutionMixin._submit_order_for_signal(monitor, alert)
     assert result is None
-    calls = monitor._record_skip.call_args_list
-    assert any(call.args[-1] == 'portfolio_warn' for call in calls)

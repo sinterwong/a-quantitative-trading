@@ -135,7 +135,10 @@ class RiskMixin:
             trades_raw = self._svc.get_trades(limit=500)
             if not trades_raw:
                 return
-            trades = [{'pnl': float(t.get('pnl', 0))} for t in trades_raw]
+            trades = []
+            for t in trades_raw:
+                pnl_val = t.get('pnl', 0)
+                trades.append({'pnl': float(pnl_val) if pnl_val is not None else 0.0})
             new_kelly = compute_kelly_from_trades(trades)
 
             with self._state_lock:

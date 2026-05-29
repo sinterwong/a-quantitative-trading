@@ -252,8 +252,18 @@ class TestStrategyRunnerSignalTrigger:
         results = runner.run_once()
         assert results[0].action == 'NONE'
 
-    def test_sell_signal_triggers_sell(self):
+    def test_sell_signal_skipped_without_position(self):
+        """SELL 信号在无持仓时应被跳过（持仓感知安全网）。"""
         runner = _make_runner(score=1.5, direction='SELL', threshold=0.5)
+        results = runner.run_once()
+        assert results[0].action == 'SKIPPED'
+        assert results[0].reason == 'no_position_to_sell'
+
+    def test_sell_signal_triggers_sell_with_position(self):
+        """SELL 信号在有持仓时应正常触发。"""
+        runner = _make_runner(score=1.5, direction='SELL', threshold=0.5)
+        # 模拟有持仓
+        runner._collect_positions = lambda: [{'symbol': 'TEST', 'shares': 1000, 'current_price': 10.0}]
         results = runner.run_once()
         assert results[0].action == 'SELL'
 
@@ -280,18 +290,15 @@ class TestStrategyRunnerSignalTrigger:
         runner.run_once()
         assert len(oms_calls) == 0   # dry_run → OMS 未被调用
 
-    def test_non_dry_run_calls_oms(self):
-        oms_calls = []
-
-        class FakeOMS:
-            def submit_from_signal(self, signal):
-                oms_calls.append(signal)
-                return None
-
+    def test_non_dry_run_buffers_signal(self):
+        """dry_run=False 时信号应缓冲到 _pending_signals，不再直接调 OMS。"""
         runner = _make_runner(score=1.5, dry_run=False)
-        runner.oms = FakeOMS()
         runner.run_once()
-        assert len(oms_calls) == 1
+        signals = runner.consume_signals()
+        assert len(signals) == 1
+        assert signals[0].symbol == 'TEST'
+        assert signals[0].direction == 'BUY'
+        assert signals[0].source == 'pipeline'
 
 
 class TestStrategyRunnerHooks:

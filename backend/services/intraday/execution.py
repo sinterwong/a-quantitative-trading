@@ -336,20 +336,28 @@ class ExecutionMixin:
             logger.info('LLM approved %s %s: %s (conf=%.0f%%)',
                        direction, alert.symbol, llm_reason, llm_conf * 100)
 
-        shares = self._calc_shares(alert.symbol, alert.price)
+        # 优先使用 alert 携带的股数（如 _submit_market_sell 传入），
+        # 否则通过 Kelly 计算
+        explicit_shares = getattr(alert, 'shares', 0) or 0
+        shares = explicit_shares if explicit_shares > 0 else self._calc_shares(alert.symbol, alert.price)
         if shares < 100:
             self._record_skip(alert.symbol, f'insufficient cash (calculated {shares} shares)', 'kelly_insufficient')
             logger.warning('Insufficient cash for %s: calculated %d shares (min 100)',
                            alert.symbol, shares)
             return None
 
-        # 卖出时用全部持仓
+        # 卖出时用全部持仓（若无显式股数）
         if direction == 'SELL':
             pos = self._svc.get_position(alert.symbol)
             if not pos or pos.get('shares', 0) == 0:
                 logger.debug('No position to sell for %s', alert.symbol)
                 return None
-            shares = (pos['shares'] // 100) * 100
+            held = (pos['shares'] // 100) * 100
+            if explicit_shares > 0:
+                # 显式股数：取 min(请求, 持仓)，再取整到 100 的倍数
+                shares = (min(explicit_shares, held) // 100) * 100
+            else:
+                shares = held
             if size_rec == 'hold':
                 logger.info('LLM SELL hold recommended for %s', alert.symbol)
                 return None

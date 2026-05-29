@@ -258,7 +258,7 @@ def build_runner(
     interval: int = 300,
     signal_threshold: float = 0.5,
     runtime: str = 'sync',
-    oms=None,                 # Optional[OMS] — 传入 PaperBroker 等实现以实盘下单
+    oms=None,                 # Deprecated: 信号不再直接提交 OMS
 ):
     """
     快速创建生产用 Runner。

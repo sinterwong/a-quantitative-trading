@@ -74,6 +74,26 @@ class RunResult:
 
 
 # ---------------------------------------------------------------------------
+# SignalRecord — 待执行信号（由 StrategyRunner 生成，由 OrderGate 消费）
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SignalRecord:
+    """StrategyRunner 生成的待执行信号。IntradayMonitor 通过 consume_signals()
+    取出后交给 OrderGate 统一过滤和执行。"""
+    symbol: str
+    direction: str             # 'BUY' | 'SELL'
+    price: float
+    timestamp: datetime
+    source: str = 'pipeline'   # 'pipeline' | 'exit_engine' | 'rebalance'
+    factor_name: str = ''
+    strength: float = 0.0
+    shares: int = 0            # 0 = 由 OrderGate 计算
+    reason: str = ''
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
 # RunnerConfig
 # ---------------------------------------------------------------------------
 
@@ -115,11 +135,10 @@ class RunnerConfig:
       BULL / CALM → 不做调整
     """
 
-    # P0-1: 可选 ExitEngine 钩子（默认 False）
-    # 注意：生产 IntradayMonitor 已经在 _run_exit_engine() 中调用 ExitEngine，
-    # 此处再开会导致同标的同周期触发两次 SELL。仅在 IntradayMonitor 不参与的
-    # 场景下（如纯 dry_run 信号预览、离线回测脚本）开启。
+    # P0-1: 可选 ExitEngine 钩子（已废弃 — ExitEngine 统一由 IntradayMonitor 调用）
+    # 保留参数以向后兼容，但不再使用。
     use_exit_engine: bool = False
+    """.. deprecated:: ExitEngine 统一由 IntradayMonitor._generate_exit_signals() 调用。"""
     exit_engine_params: Optional[Dict[str, Any]] = None
 
     # P0-3: 组合再平衡（PortfolioOptimizer + Allocator）
@@ -158,14 +177,20 @@ class StrategyRunner:
         config: RunnerConfig,
         data_layer: Optional[DataLayer] = None,
         risk_engine=None,         # Optional[RiskEngine] — 避免循环 import
-        oms=None,                 # Optional[OMS]
-        event_bus=None,           # Optional[EventBus]
+        oms=None,                 # Deprecated: 信号不再直接提交 OMS
+        event_bus=None,           # Deprecated: 信号不再直接提交 EventBus
     ) -> None:
         self.config = config
         self.data_layer = data_layer or get_data_layer()
         self.risk_engine = risk_engine
-        self.oms = oms
-        self.event_bus = event_bus
+        # oms / event_bus 已废弃 — 信号通过 _pending_signals 缓冲，
+        # 由 IntradayMonitor.consume_signals() 取出后统一交给 OrderGate 执行。
+        if oms is not None:
+            logger.warning("[StrategyRunner] oms parameter is deprecated, signals are buffered to _pending_signals")
+        if event_bus is not None:
+            logger.warning("[StrategyRunner] event_bus parameter is deprecated, signals are buffered to _pending_signals")
+        self.oms = None
+        self.event_bus = None
 
         self._stop_event = threading.Event()
         self._running = False
@@ -173,6 +198,10 @@ class StrategyRunner:
         self._last_run_results: List[RunResult] = []
         self._results_lock = threading.Lock()     # 保护跨线程读写
         self._current_regime: Optional[RegimeInfo] = None
+
+        # 待执行信号缓冲（由 _emit_signal 写入，由 IntradayMonitor.consume_signals 消费）
+        self._pending_signals: List[SignalRecord] = []
+        self._signals_lock = threading.Lock()
 
         # P0-1: ExitEngine（可选）
         self._exit_engine = None
@@ -307,6 +336,23 @@ class StrategyRunner:
                 if r.pipeline_result is not None
             }
 
+    @property
+    def pending_signals(self) -> List[SignalRecord]:
+        """返回当前待执行信号列表（只读副本，不消费）。"""
+        with self._signals_lock:
+            return list(self._pending_signals)
+
+    def consume_signals(self) -> List[SignalRecord]:
+        """读取并清空待执行信号缓冲（原子操作）。
+
+        IntradayMonitor 每轮 _check_and_push() 调用一次，
+        取出所有信号后交给 OrderGate 统一执行。
+        """
+        with self._signals_lock:
+            signals = list(self._pending_signals)
+            self._pending_signals.clear()
+            return signals
+
     # ------------------------------------------------------------------
     # Internal: per-symbol processing
     # ------------------------------------------------------------------
@@ -414,6 +460,24 @@ class StrategyRunner:
                 metadata={'combined_score': score},
             )
 
+        # 6.5 持仓感知安全网（双保险：OrderGate 也会检查，此处提前拦截减少无效信号）
+        positions = self._collect_positions()
+        held_symbols = {p['symbol'] for p in positions if p.get('shares', 0) > 0}
+        if dominant == 'BUY' and symbol in held_symbols:
+            return RunResult(
+                symbol=symbol, timestamp=ts,
+                pipeline_result=pr,
+                action='SKIPPED', reason='already_held',
+                metadata={'combined_score': score},
+            )
+        if dominant == 'SELL' and symbol not in held_symbols:
+            return RunResult(
+                symbol=symbol, timestamp=ts,
+                pipeline_result=pr,
+                action='SKIPPED', reason='no_position_to_sell',
+                metadata={'combined_score': score},
+            )
+
         # 7. 执行（dry_run / live）
         action = dominant  # 'BUY' or 'SELL'
         if self.config.dry_run:
@@ -478,34 +542,46 @@ class StrategyRunner:
         direction: str,
         price: float,
     ) -> None:
-        """向 EventBus 发射 SignalEvent 或直接调用 OMS。"""
+        """将信号记录到 _pending_signals 缓冲，由 IntradayMonitor 通过
+        consume_signals() 取出后统一交给 OrderGate 执行。
+
+        不再直接调用 OMS / EventBus — 信号生成与执行完全分离。
+        """
         # 取强度最高的对应方向信号
         candidates = [s for s in pr.signals if s.direction == direction]
         if not candidates:
             return
         top_signal = max(candidates, key=lambda s: s.strength)
-        # 空 symbol 信号防御：追溯源头
-        if not top_signal.symbol:
+        # 空 symbol 防御：参数和 factor 输出都检查
+        if not symbol or not symbol.strip():
             logger.warning(
-                "[_emit_signal] EMPTY symbol signal from factor=%s direction=%s",
+                "[_emit_signal] EMPTY symbol param from factor=%s direction=%s",
                 top_signal.factor_name, direction,
             )
-        if self.event_bus is not None:
-            try:
-                from core.event_bus import SignalEvent
-                self.event_bus.emit(SignalEvent(signal=top_signal))
-            except Exception as exc:
-                logger.error("[StrategyRunner] emit SignalEvent failed: %s", exc)
-        elif self.oms is not None:
-            try:
-                self.oms.submit_from_signal(top_signal)
-            except Exception as exc:
-                logger.error("[StrategyRunner] OMS submit failed: %s", exc)
-        else:
+            return
+        if not top_signal.symbol:
             logger.warning(
-                "[StrategyRunner] No EventBus/OMS configured, signal dropped: %s %s",
-                direction, symbol,
+                "[_emit_signal] EMPTY symbol in factor signal (factor=%s direction=%s), "
+                "using caller symbol=%s as fallback",
+                top_signal.factor_name, direction, symbol,
             )
+
+        record = SignalRecord(
+            symbol=symbol,
+            direction=direction,
+            price=price,
+            timestamp=datetime.now(),
+            source='pipeline',
+            factor_name=top_signal.factor_name,
+            strength=top_signal.strength,
+            reason=f'{top_signal.factor_name} strength={top_signal.strength:.3f}',
+        )
+        with self._signals_lock:
+            self._pending_signals.append(record)
+        logger.debug(
+            "[StrategyRunner] signal buffered: %s %s score=%.3f price=%.2f",
+            direction, symbol, top_signal.strength, price,
+        )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -577,41 +653,37 @@ class StrategyRunner:
                 )
                 continue
 
-            # 真实下单：构造 SELL Signal
-            try:
-                from core.factors.base import Signal as FactorSignal
-                target_shares = next(
-                    (int(p.get('shares', 0)) for p in positions
-                     if p.get('symbol') == esig.symbol),
-                    0,
-                )
-                shares_to_sell = int(target_shares * esig.exit_pct) // 100 * 100
-                if shares_to_sell <= 0:
-                    shares_to_sell = target_shares
-                sig = FactorSignal(
-                    timestamp=ts,
-                    symbol=esig.symbol,
-                    direction='SELL',
-                    strength=1.0,
-                    factor_name=f'ExitEngine.{esig.priority.name}',
-                    price=esig.current_price,
-                    metadata={
-                        'shares': shares_to_sell,
-                        'exit_pct': esig.exit_pct,
-                        'exit_priority': esig.priority.name,
-                        'exit_reason': esig.reason,
-                    },
-                )
-                if self.event_bus is not None:
-                    from core.event_bus import SignalEvent
-                    self.event_bus.emit(SignalEvent(signal=sig))
-                elif self.oms is not None:
-                    self.oms.submit_from_signal(sig)
-            except Exception as exc:
-                logger.error(
-                    "[StrategyRunner] failed to emit exit signal for %s: %s",
-                    esig.symbol, exc,
-                )
+            # 计算卖出股数
+            target_shares = next(
+                (int(p.get('shares', 0)) for p in positions
+                 if p.get('symbol') == esig.symbol),
+                0,
+            )
+            shares_to_sell = int(target_shares * esig.exit_pct) // 100 * 100
+            if shares_to_sell <= 0:
+                shares_to_sell = target_shares
+
+            record = SignalRecord(
+                symbol=esig.symbol,
+                direction='SELL',
+                price=esig.current_price,
+                timestamp=ts,
+                source='exit_engine',
+                factor_name=f'ExitEngine.{esig.priority.name}',
+                strength=1.0,
+                shares=shares_to_sell,
+                reason=esig.reason,
+                metadata={
+                    'exit_pct': esig.exit_pct,
+                    'exit_priority': esig.priority.name,
+                },
+            )
+            with self._signals_lock:
+                self._pending_signals.append(record)
+            logger.debug(
+                "[StrategyRunner] exit signal buffered: SELL %s %d shares pri=%s",
+                esig.symbol, shares_to_sell, esig.priority.name,
+            )
 
     # ------------------------------------------------------------------
     # P0-3: 组合再平衡钩子
@@ -759,21 +831,24 @@ class StrategyRunner:
             if shares <= 0:
                 continue
             direction = 'BUY' if dw > 0 else 'SELL'
-            sig = FactorSignal(
-                timestamp=ts, symbol=sym, direction=direction,
-                strength=1.0, factor_name='PortfolioRebalance', price=price,
-                metadata={'shares': shares, 'rebalance_diff': dw},
+            record = SignalRecord(
+                symbol=sym,
+                direction=direction,
+                price=price,
+                timestamp=ts,
+                source='rebalance',
+                factor_name='PortfolioRebalance',
+                strength=1.0,
+                shares=shares,
+                reason=f'rebalance diff={dw:.4f}',
+                metadata={'rebalance_diff': dw},
             )
-            self._emit_signal(sym, None, direction, price)  # None pr — emit_signal 会跳过 candidates
-            # 直接调用 OMS（_emit_signal 需要 PipelineResult 选信号；rebalance 没有 pipeline）
-            try:
-                if self.event_bus is not None:
-                    from core.event_bus import SignalEvent
-                    self.event_bus.emit(SignalEvent(signal=sig))
-                elif self.oms is not None:
-                    self.oms.submit_from_signal(sig)
-            except Exception as exc:
-                logger.error('[StrategyRunner] rebalance emit %s failed: %s', sym, exc)
+            with self._signals_lock:
+                self._pending_signals.append(record)
+            logger.debug(
+                '[StrategyRunner] rebalance signal buffered: %s %s %d shares',
+                direction, sym, shares,
+            )
 
     def _fetch_returns_matrix(self, symbols: List[str]) -> Optional[Any]:
         """从 DataLayer 拉取 symbols 的历史日收益率矩阵。"""
@@ -796,7 +871,7 @@ class StrategyRunner:
         return pd.DataFrame(cols).dropna()
 
     def _collect_positions(self) -> List[Dict[str, Any]]:
-        """优先从 RiskEngine.book 读取持仓快照；否则尝试 OMS；都没有返回空。"""
+        """从 RiskEngine.book 读取持仓快照；无 RiskEngine 时返回空。"""
         if self.risk_engine is not None:
             try:
                 positions = []
@@ -815,30 +890,9 @@ class StrategyRunner:
                 if positions:
                     return positions
             except Exception as exc:
-                # R0-4: 不再静默吞错。RiskEngine.book 读取失败若不出声，
-                # 后续再平衡会被当作"没历史数据"静默跳过，无人察觉。
                 logger.warning(
                     '[StrategyRunner] read positions from RiskEngine failed: %s',
                     exc,
-                )
-
-        if self.oms is not None:
-            try:
-                return [
-                    {
-                        'symbol': p.symbol,
-                        'shares': p.shares,
-                        'avg_price': p.avg_price,
-                        'entry_price': p.avg_price,
-                        'current_price': p.current_price,
-                    }
-                    for p in self.oms.broker.get_positions()
-                    if p.shares > 0
-                ]
-            except Exception as exc:
-                # R0-4: 同上——OMS 持仓读取失败必须留痕，不能假装"无持仓"。
-                logger.warning(
-                    '[StrategyRunner] read positions from OMS failed: %s', exc,
                 )
 
         return []
