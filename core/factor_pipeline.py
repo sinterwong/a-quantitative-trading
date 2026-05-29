@@ -297,8 +297,10 @@ class FactorPipeline:
         price: float,
     ) -> FactorResult:
         factor = entry.factor
-        # 确保 signal 里有正确的 symbol
-        if hasattr(factor, 'symbol') and not factor.symbol:
+        # 确保 signal 里有正确的 symbol（必须每次都更新，
+        # 否则处理多标的时 factor.symbol 会残留上一个标的的值，
+        # 导致 Signal.symbol 和 Signal.price 错配）
+        if hasattr(factor, 'symbol'):
             factor.symbol = symbol
 
         try:

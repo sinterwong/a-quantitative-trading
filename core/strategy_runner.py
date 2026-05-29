@@ -336,11 +336,11 @@ class StrategyRunner:
         price: Optional[float] = None
         try:
             quote = self.data_layer.get_realtime(symbol)
-            if quote:
-                # quote 可能是 dict (DataLayer) 或 Quote dataclass (DataGateway)
-                price = quote.get('price') or quote.get('close')
+            if quote is not None:
+                # Quote 是 dataclass，直接用属性访问
+                price = getattr(quote, 'price', None) or getattr(quote, 'close', None)
         except (OSError, ValueError, KeyError, AttributeError) as exc:
-            # 实时报价失败 / quote 不是 dict → 让 pipeline 用 DataFrame 末行 close 兜底
+            # 实时报价失败 → 让 pipeline 用 DataFrame 末行 close 兜底
             logger.debug("[StrategyRunner] get_realtime(%s) failed (using bar fallback): %s",
                          symbol, exc)
 
@@ -422,6 +422,10 @@ class StrategyRunner:
                 action, symbol, score, price, len(pr.signals),
             )
         else:
+            logger.info(
+                "[LIVE] %s %s | score=%.4f | price=%.4f | signals=%d",
+                action, symbol, score, price or 0.0, len(pr.signals),
+            )
             self._emit_signal(symbol, pr, dominant, price or 0.0)
 
         return RunResult(
@@ -741,7 +745,7 @@ class StrategyRunner:
                 continue   # 偏差太小，节省手续费
             try:
                 quote = self.data_layer.get_realtime(sym)
-                price = float(quote.get('price') or quote.get('close') or 0)
+                price = float(getattr(quote, 'price', 0) or 0) if quote else 0.0
             except (OSError, ValueError, KeyError, AttributeError) as exc:
                 # 实时报价失败 → 跳过本 symbol 的 rebalance
                 logger.debug("[StrategyRunner] rebalance get_realtime(%s) failed: %s",

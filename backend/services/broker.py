@@ -51,18 +51,7 @@ sys.path.insert(0, os.path.join(PROJ_DIR, 'scripts'))
 from .portfolio import PortfolioService
 from .intraday import is_hk_market_open
 
-import json as _json
 logger = logging.getLogger('broker')
-
-
-def _read_trading_mode() -> str:
-    """读取 trading_mode.json，返回 'live' 或 'simulation'。"""
-    mode_file = os.path.join(BACKEND_DIR, 'trading_mode.json')
-    try:
-        with open(mode_file, 'r', encoding='utf-8') as f:
-            return _json.load(f).get('mode', 'simulation')
-    except Exception:
-        return 'simulation'
 
 
 # ============================================================
@@ -242,6 +231,9 @@ class PaperBroker(BrokerBase):
 
         # Market reference price (before slippage)
         ref_price = price if price > 0 else self._fetch_market_price(symbol)
+        logger.debug('[PaperBroker] _simulate_fill: %s %s | input_price=%.4f | ref_price=%.4f | _fetch_market_price=%.4f',
+                     direction, symbol, price, ref_price,
+                     self._fetch_market_price(symbol) if price > 0 else ref_price)
         # Use signal_price if provided, else use ref_price
         slip_ref = signal_price if signal_price > 0 else ref_price
 
@@ -328,20 +320,6 @@ class PaperBroker(BrokerBase):
         实现 OMS 接口：从 Signal 对象生成订单并提交。
         StrategyRunner 通过此接口与 PaperBroker 对接。
         """
-        # ── 防御层：simulation 模式下拒绝一切 Entry 信号 ──
-        # dry_run 联动已在 run_worker.py 实现（Layer 1），
-        # 此处为 Layer 2 兜底：即使 dry_run 被绕过，也不会污染 state.db。
-        if _read_trading_mode() != 'live':
-            logger.info('[PaperBroker] submit_from_signal skipped: simulation mode (%s %s)',
-                        getattr(signal, 'direction', '?'), getattr(signal, 'symbol', '?'))
-            return OrderResult(
-                order_id=self._next_order_id(),
-                status='rejected', symbol=getattr(signal, 'symbol', ''),
-                direction=getattr(signal, 'direction', ''),
-                submitted_shares=0, filled_shares=0,
-                reason='simulation mode (trading_mode != live)',
-            )
-
         symbol = signal.symbol
         direction = signal.direction
         # 防御性校验：拒绝空 symbol 或无效 direction
