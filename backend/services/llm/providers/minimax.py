@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # MiniMax Anthropic 兼容端点
 MINIMAX_ANTHROPIC_BASE = "https://api.minimaxi.com/anthropic"
-MINIMAX_MODEL = "MiniMax-M2.7"
+MINIMAX_MODEL = "MiniMax-M3"  # fallback，优先从 .env MINIMAX_MODEL 读取
 
 
 class MiniMaxProvider(LLMProvider):
@@ -42,7 +42,7 @@ class MiniMaxProvider(LLMProvider):
         """
         Args:
             api_key: MiniMax API Key，留空则从环境变量 MINIMAX_API_KEY 读取
-            model: 模型名，默认 MiniMax-M2.7
+            model: 模型名，默认 MiniMax-M3
             timeout: 请求超时（秒）
             max_retries: API 错误时最大重试次数
         """
@@ -70,11 +70,11 @@ class MiniMaxProvider(LLMProvider):
         """
         通过 Anthropic SDK 发送请求。
 
-        注意：Minimax-M2.7 是推理模型，会先生成 thinking block 再输出 text。
+        注意：MiniMax 模型是推理模型，会先生成 thinking block 再输出 text。
         max_tokens 需要足够大（建议 ≥ 2000）才能在 thinking 之后留出 text token 空间。
         """
         temperature = kwargs.get('temperature')
-        # M2.7 是推理模型，需要更大 budget
+        # MiniMax 是推理模型，需要更大 budget
         max_tokens = kwargs.get('max_tokens', 64000)
         model = kwargs.get('model', self.model)
 
