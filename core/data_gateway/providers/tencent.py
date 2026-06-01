@@ -238,7 +238,14 @@ class TencentProvider(Provider):
             "pe_ttm": 1.3, "pb": 1.3, "market_cap": 1.3, "float_cap": 1.3,
             "high_52w": 1.3, "low_52w": 1.3, "turnover_rate": 1.2,
             "amplitude": 1.2, "limit_up": 1.2, "limit_down": 1.2,
-            "volume_ratio": 1.2, "dividend_yield": 1.2,
+            "volume_ratio": 1.2,
+            # W1-6 修复 (Layer 2): 腾讯 88-field 字段 56 是"动态股息率"
+            # (腾讯自算口径), 与 A 股 TTM 真实股息率(=近12月分红/股价) 不一致。
+            # 案例: 600809.SH 山西汾酒 — 腾讯 0.60 vs 真实 ~5.1%
+            # 权威从 1.2 降到 0.5, 低于 akshare 0.8, 避免在 MERGE_FIELDS 中
+            # 覆盖真实值。即使 backend.services.fundamentals 已不再回退,
+            # 也防 quote 端被误用。
+            "dividend_yield": 0.5,
             # bid1/ask1 由 88-field 同样返回，但声明权威低于 Sina(1.2)，
             # 让 Sina 主、腾讯备：Sina 不可用时 MERGE_FIELDS 能自动降级。
             "bid1_price": 0.9, "bid1_vol": 0.9,
