@@ -56,6 +56,8 @@ class TestFundamentalsExpansion:
         mock_fundamentals.ocf_to_profit = 1.73
         mock_fundamentals.industry = "电力"
         mock_fundamentals.sector = "公用事业"
+        # W1-6 修复后：Fundamentals 必须显式提供 dividend_yield（不再回退到腾讯）
+        mock_fundamentals.dividend_yield = 0.15  # 与 mock_quote 一致，表示 fundamentals 拿到了真实值
 
         mock_gateway = MagicMock()
         mock_gateway.quote.return_value = mock_quote
@@ -74,6 +76,7 @@ class TestFundamentalsExpansion:
         assert data['pe'] == 18.47
         assert data['pb'] == 2.92
         assert data['dividend_yield'] == 0.15
+        assert data['dividend_yield_unavailable'] is False
         assert data['market_cap'] == 6665.14
         assert data['price'] == 27.24
 
@@ -116,6 +119,10 @@ class TestFundamentalsExpansion:
         assert data['ocf_to_profit'] == 0.0
         assert data['industry'] == ''
         assert data['sector'] == ''
+        # W1-6: Fundamentals 不可用时，dividend_yield 应为 0 + unavailable=True
+        # （不应无声回退到腾讯 0.02）
+        assert data['dividend_yield'] == 0.0
+        assert data['dividend_yield_unavailable'] is True
 
     def test_fundamentals_handles_invalid_quote(self, client):
         """当 Quote 无效时，应返回 404"""
