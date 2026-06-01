@@ -184,12 +184,22 @@ def test_submit_order_skips_unmapped_signal(monitor):
 def test_submit_order_buy_blocked_by_portfolio_drawdown(monitor):
     """组合熔断激活时 BUY 被阻断 — 现由 OrderGate/SignalingLayer 处理。
 
-    此测试验证 fallback 路径（无 OrderGate）在 can_trade=False 时返回 None。
+    此测试验证 fallback 路径（无 OrderGate）在组合回撤熔断时返回 None。
     完整的 drawdown 阻断逻辑已移至 _check_new_positions() 和 OrderGate。
+
+    修复 (CI 2026-06): 之前用 `monitor._can_trade.return_value = False` 是错误的契约:
+    - 现行代码 (execution.py:289) 的组合熔断检查用 `self._risk_warn_fired`,
+      不是 `self._can_trade()`。
+    - `_can_trade()` 检查在 line 369, 位于 LLM 审核之后, 不影响 BUY 早退。
+    - 同时显式 mock `_llm_review_signal` 返回 4-tuple, 防 MagicMock 默认返回
+      MagicMock 触发 "not enough values to unpack" (ValueError)。
     """
     _attach_class_attrs(monitor)
     monitor._order_gate = None
-    monitor._can_trade.return_value = False  # simulation 模式
+    # 触发 _submit_order_for_signal line 289 早退分支
+    monitor._risk_warn_fired = True
+    # 防御性: 若未来代码改动让路径走到 LLM 审核, 避免 MagicMock 解包失败
+    monitor._llm_review_signal.return_value = (True, "test approved", 1.0, "full")
     alert = _make_alert(signal='BUY')
     result = ExecutionMixin._submit_order_for_signal(monitor, alert)
     assert result is None
