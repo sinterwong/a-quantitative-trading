@@ -939,14 +939,28 @@ class DataGateway:
             # 股息率补充：当合并结果为 0 时，从分红记录计算 TTM 股息率
             if merged.dividend_yield <= 0:
                 try:
+                    # 预热 dividend() 缓存: 后续分析可能复用（且能在本次提前发现 baostock 问题）
+                    records = self.dividend(symbol)
                     price = self._resolve_price(symbol, merged)
-                    if price > 0:
+                    if price > 0 and records:
                         ttm_div = self._calc_ttm_dividend_yield(symbol, price)
                         if ttm_div > 0:
                             merged.dividend_yield = ttm_div
                             prov["dividend_yield"] = "dividend_records"
-                except Exception:
-                    pass  # 计算失败不影响主流程
+                    elif price > 0 and not records:
+                        # dividend() 返回空: 可能是 baostock 不可用, 或该股从未分红
+                        logger.warning(
+                            "dividend_yield 兜底失败: %s 无分红记录"
+                            "(可能是 baostock 未安装, 或该股票从未分红)",
+                            symbol,
+                        )
+                except Exception as exc:
+                    # 不再静默 pass, 显式 warning 便于运维定位
+                    logger.warning(
+                        "dividend_yield 兜底失败: %s, exc=%s "
+                        "(检查 baostock 库是否安装: pip install baostock)",
+                        symbol, exc,
+                    )
             self._cache.set(cache_key, merged, _DEFAULT_TTL[Capability.FUNDAMENTALS])
             self._last_provenance[cache_key] = prov
         return merged
