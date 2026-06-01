@@ -48,13 +48,20 @@ def fetch_fundamentals(symbol: str) -> Optional[dict]:
         # 获取详细基本面数据
         f = gw.fundamentals(symbol)
         
-        # 股息率：优先 Fundamentals（含 TTM 兜底计算），回退 Quote（腾讯实时）
+        # 股息率(W1-6 修复)：合并优先级反转 + 不可用标记
+        #   优先 Fundamentals (TTM 真实) > 永不回退到腾讯
+        #   腾讯 88-field 字段 56 是"动态股息率"(腾讯自算口径)，与 A 股 TTM 标准
+        #   (=近12月分红/股价)不一致，回退会被误导。
+        #   例如山西汾酒 600809.SH: 腾讯 0.60 vs 真实 ~5.1%。
         f_dy = 0.0
         if f is not None:
             _raw = getattr(f, 'dividend_yield', 0.0)
             if isinstance(_raw, (int, float)):
                 f_dy = float(_raw)
-        
+
+        # 若 Fundamentals 没拿到，标记 unavailable；不无声回退到腾讯
+        dividend_yield_unavailable = (f is None) or (f_dy <= 0)
+
         # 构建返回数据
         result = {
             # 基础字段
@@ -62,10 +69,11 @@ def fetch_fundamentals(symbol: str) -> Optional[dict]:
             'name': q.name,
             'pe': q.pe_ttm,
             'pb': q.pb,
-            'dividend_yield': f_dy if f_dy else q.dividend_yield,
+            'dividend_yield': f_dy,
+            'dividend_yield_unavailable': dividend_yield_unavailable,
             'market_cap': q.market_cap,  # 亿元
             'price': q.price,
-            
+
             # 扩展财务指标
             'revenue_yoy': f.revenue_yoy if f else 0.0,
             'profit_yoy': f.profit_yoy if f else 0.0,
