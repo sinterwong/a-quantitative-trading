@@ -272,6 +272,30 @@ class AkshareProvider(Provider):
         if eps_ttm <= 0 and roe_ttm <= 0:
             return None
 
+        # W1-1: 补全 dividend_yield 字段 (从 stock_zh_a_spot_em 全 A 股快照)
+        def get_dividend_yield_from_spot(code: str) -> float:
+            """从 stock_zh_a_spot_em 全 A 股快照取股息率(%)。失败返回 0.0。
+
+            背景: stock_financial_abstract 不含股息率字段, 原实现写死 0.0。
+            东财的 stock_zh_a_spot_em 是全 A 股 5000+ 行实时快照, 含股息率列。
+            单次调用 ~1-2s, 用模糊匹配兼容列名("股息率"/"股息率(%)"等版本)。
+            """
+            try:
+                spot = ak.stock_zh_a_spot_em()
+                if spot is None or spot.empty:
+                    return 0.0
+                col = next((c for c in spot.columns if "股息率" in c), None)
+                if col is None:
+                    return 0.0
+                row = spot[spot["代码"].astype(str) == code]
+                if row.empty:
+                    return 0.0
+                val = row.iloc[0][col]
+                f = float(val)
+                return f if f == f else 0.0  # NaN check
+            except Exception:
+                return 0.0
+
         return Fundamentals(
             symbol=symbol,
             name="",
@@ -287,7 +311,7 @@ class AkshareProvider(Provider):
             pe_static=0.0,
             ps_ttm=0.0,
             bps=0.0,
-            dividend_yield=0.0,
+            dividend_yield=get_dividend_yield_from_spot(code),
             market_cap=0.0,
             float_cap=0.0,
             industry="",
