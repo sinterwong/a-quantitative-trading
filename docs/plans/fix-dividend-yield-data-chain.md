@@ -4,9 +4,25 @@
 
 **Goal:** 修复 A 股股息率(dividend_yield)在 5 个数据链路层级的失效问题，使 `backend.services.fundamentals.fetch_fundamentals("600809.SH")` 能返回与"2024 年报分红 ÷ 实时股价"一致的 TTM 股息率（汾酒实测 ~5.1%，而非腾讯失真的 0.60%）。
 
-**Architecture:** 不引入新数据源；按"合并优先级反转"→"Provider 字段补全"→"端口回退"三层递进修复。Layer 4（合并优先级）独立最小改动；Layer 1/3 增强 Provider 字段覆盖；Layer 2 降权威防误导。AKShare 已是运行时可用依赖（v1.18.60），Baostock 在当前环境未安装 → 补全 akshare 的全 A 股快照 + 分红历史兜底。
+**Architecture:** 不引入新数据源；按"合并优先级反转"→"Provider 字段补全"→"权威重整"三层递进修复。Layer 4（合并优先级）独立最小改动；Layer 1 增强 Provider 字段覆盖；Layer 2 降权威防误导。Layer 3 在项目专用 conda 环境下已正常工作（原诊断误判）→ 改为"添加缓存预热 + 离线降级注释"。
 
-**Tech Stack:** Python 3.10+ · pandas · akshare 1.18.60 · pytest · dataclass(MERGE_FIELDS 路由)
+**Tech Stack:** Python 3.11.15 · pandas 3.0.2 · akshare 1.18.60 · baostock 0.0.99 · pytest · dataclass(MERGE_FIELDS 路由)
+
+---
+
+## ⚠️ 重要环境澄清（2026-06-01 复测）
+
+| 环境 | Python | akshare | baostock | 600809 股息率 |
+|---|---|---|---|---|
+| `~/.hermes/hermes-agent/venv/`（初始诊断时） | 3.11.15 | ✅ 1.18.60 | ❌ **未装** | 0.6（Layer 3 失败）|
+| `~/softwares/miniconda3/envs/quant-trading/`（**项目专用环境**）| 3.11.15 | ✅ 1.18.60 | ✅ **0.0.99** | **4.75%（正确）** |
+
+**结论:**
+- 项目部署环境是 `quant-trading` conda env（有 baostock），Layer 3 实际**没问题**
+- 原诊断误用 hermes-agent venv，导致 Layer 3 误判
+- **删除 Task 3 中"新增 akshare 分红 provider"**（不必要，baostock 已是更权威源）
+- **保留 Task 3 改造为"缓存预热"**（提升冷启动性能）
+- Layer 4 合并优先级反转 **仍然是核心 bug 修复**（即使有 baostock，腾讯失真值仍有被并入的隐患）
 
 ---
 
@@ -16,7 +32,7 @@
 |---|---|---|---|
 | 1. A 股 akshare `_fetch_a_share_fundamentals` | `core/data_gateway/providers/akshare.py:290` | `dividend_yield=0.0` 写死 | 系统 0.0 / 真实 ~5.1% |
 | 2. 腾讯 88-field 字段 56 | `core/data_gateway/providers/tencent.py:149,241` | 返回 0.60（"动态股息率"）权威 1.2 | 系统 0.60 / 失真 |
-| 3. Baostock TTM 补算 | `core/data_gateway/gateway.py:966-992` | session 初始化失败（环境无 baostock 库） | 补算 0.0 / 走不到 |
+| 3. Baostock TTM 补算 | `core/data_gateway/gateway.py:966-992` | quant-trading 环境下 **正常**（4.75%）；其他环境缺 baostock 时失败 | 4.75% / ✅ 实际可用 |
 | 4. 后端合并优先级 | `backend/services/fundamentals.py:65` | `f_dy if f_dy else q.dividend_yield`，前者为 0 时回退到腾讯失真值 | **致命 bug** |
 | 5. analyze_stock 层 | `core/use_cases/analyze_stock/*` | 有 TTM 估算但没回填 | 估算 ~1.3% / 不覆盖 |
 
@@ -38,7 +54,7 @@ Backend svc:   dividend_yield = 0.6     ← 回退到腾讯
 |---|---|---|---|---|
 | 1 | 反转后端合并优先级 + 加 0 标记 | Layer 4 | 立即生效 | 10 min |
 | 2 | 补 akshare `_fetch_a_share_fundamentals` 从 `stock_zh_a_spot_em` 取股息率 | Layer 1 | 补齐 A 股字段 | 20 min |
-| 3 | 新增 akshare 分红 provider 兜底 | Layer 3 | 启用 TTM 补算 | 30 min |
+| 3 | 缓存预热：分析时按需调 dividend() 避免冷启动 | Layer 3 增强 | 性能优化 | 20 min |
 | 4 | 降低腾讯 `dividend_yield` 字段权威 | Layer 2 | 防再次误导 | 5 min |
 | 5 | 回归测试：验证 600809.SH dividend_yield | 全链路 | 防回归 | 20 min |
 
@@ -362,198 +378,165 @@ git commit -m "fix(akshare): A 股路径从 stock_zh_a_spot_em 补全 dividend_y
 
 ---
 
-## Task 3: 新增 Layer 3 akshare 分红 provider 兜底
+## Task 3: Layer 3 缓存预热（替换原 akshare 分红兜底方案）
 
-**Objective:** 当前 `gw.dividend("600809.SH")` 走 baostock → 在未装 baostock 的环境返回 0 条 → `_calc_ttm_dividend_yield` 走不到。修复方案：给 akshare 增加 `fetch_dividend` 实现，并注册为 `Capability.DIVIDEND` 的 A 股 provider 之一（baostock 仍是首选，akshare 兜底）。
+**Objective:** 原计划"新增 akshare 分红 provider 兜底"在确认 quant-trading 环境下 baostock 工作正常后已**不必要**。改为：① 在 `gw.fundamentals()` 触发 dividend_yield 兜底时，自动预热 `gw.dividend()` 缓存；② 增强错误日志，baostock 不可用时给出明确提示。
 
 **Files:**
-- Modify: `core/data_gateway/providers/akshare.py`（新增 `fetch_dividend` + `capabilities` 注册）
-- Modify: `core/data_gateway/providers/akshare.py`（add Capability.DIVIDEND 到 capabilities frozenset）
-- Test: `tests/test_data_gateway/test_provider_akshare_dividend_history.py` (新建)
+- Modify: `core/data_gateway/gateway.py:940-952`（在 dividend_yield 兜底分支加缓存预热）
+- Test: `tests/test_data_gateway/test_gateway_dividend_cache.py` (新建)
 
 ### Step 3.1: 写失败测试
 
-**文件:** `tests/test_data_gateway/test_provider_akshare_dividend_history.py`
+**文件:** `tests/test_data_gateway/test_gateway_dividend_cache.py`
 
 ```python
-"""验证 akshare 提供 fetch_dividend 实现，能从 stock_zh_a_dividend() 取分红记录。"""
-from unittest.mock import MagicMock
-import pandas as pd
+"""验证 gw.fundamentals() 触发 dividend_yield 兜底时，自动预热 dividend() 缓存，
+避免分析时冷启动延迟。"""
+from unittest.mock import MagicMock, patch
 import pytest
-from datetime import datetime
 
 
-@pytest.fixture
-def mock_dividend_history():
-    """模拟 akshare.stock_zh_a_dividend() 返回值。"""
-    return pd.DataFrame({
-        "代码": ["600809"] * 3,
-        "分红年度": [2024, 2023, 2022],
-        "股权登记日": ["2024-06-25", "2023-06-30", "2022-07-15"],
-        "除权除息日": ["2024-06-26", "2023-07-03", "2022-07-18"],
-        "派息": [28.7, 27.0, 18.0],  # 元/股(10 派 X.X 元的 X.X)
-    })
+def test_fundamentals_warms_dividend_cache_on_fallback():
+    """当 fundamentals.dividend_yield<=0 触发兜底时，应先调一次 dividend() 预热缓存。"""
+    from core.data_gateway import get_gateway
+
+    gw = get_gateway()
+
+    # 强制走兜底路径：f.dividend_yield=0
+    f = MagicMock()
+    f.dividend_yield = 0.0
+    f.pe_ttm = 14.0
+    f.eps_ttm = 4.0
+    f.roe_ttm = 12.0
+    f.revenue_yoy = -9.0
+    f.profit_yoy = -19.0
+    f.ocf_to_profit = 1.5
+    f.industry = ""
+    f.sector = ""
+
+    with patch.object(gw, "_route", return_value=(f, {})):
+        with patch.object(gw, "quote", return_value=MagicMock(price=127.0)):
+            with patch.object(gw, "dividend") as mock_div:
+                mock_div.return_value = []
+                with patch.object(gw, "_calc_ttm_dividend_yield", return_value=0.0):
+                    try:
+                        gw.fundamentals("600809.SH")
+                    except Exception:
+                        pass
+
+                # 关键: 即便 _calc_ttm_dividend_yield 失败，dividend() 也被调用过（即预热了缓存）
+                assert mock_div.called, "dividend() 应被调用以预热缓存"
 
 
-def test_akshare_fetch_dividend_returns_records(mock_dividend_history):
-    from core.data_gateway.providers.akshare import AkshareProvider
+def test_fundamentals_logs_warning_when_baostock_missing():
+    """baostock 不可用导致兜底失败时，应 logger.warning 而非静默 pass。"""
+    from core.data_gateway import get_gateway
+    import logging
 
-    provider = AkshareProvider()
-    mock_ak = MagicMock()
-    mock_ak.stock_zh_a_dividend.return_value = mock_dividend_history
+    gw = get_gateway()
+    f = MagicMock()
+    f.dividend_yield = 0.0
+    f.pe_ttm = 14.0
+    f.eps_ttm = 4.0
 
-    records = provider.fetch_dividend("600809.SH", mock_ak)
+    with patch.object(gw, "_route", return_value=(f, {})):
+        with patch.object(gw, "quote", return_value=MagicMock(price=127.0)):
+            with patch.object(gw, "dividend", side_effect=Exception("No module named 'baostock'")):
+                with patch("core.data_gateway.gateway.logger") as mock_log:
+                    try:
+                        gw.fundamentals("600809.SH")
+                    except Exception:
+                        pass
 
-    assert len(records) == 3
-    assert records[0].cash_per_share == 28.7  # 最新一年
-    assert records[0].operate_date.year == 2024
-
-
-def test_akshare_fetch_dividend_handles_failure():
-    from core.data_gateway.providers.akshare import AkshareProvider
-
-    provider = AkshareProvider()
-    mock_ak = MagicMock()
-    mock_ak.stock_zh_a_dividend.side_effect = Exception("network")
-
-    records = provider.fetch_dividend("600809.SH", mock_ak)
-
-    assert records == []  # 降级为空列表
+                    # 应有 warning 记录 baostock 不可用
+                    warning_calls = [
+                        call for call in mock_log.warning.call_args_list
+                        if "baostock" in str(call).lower() or "dividend" in str(call).lower()
+                    ]
+                    assert len(warning_calls) > 0, (
+                        "应 logger.warning 提示 baostock 不可用，便于运维定位"
+                    )
 ```
 
 ### Step 3.2: 跑测试确认失败
 
 ```bash
 cd /home/sinter/workspace/a-quantitative-trading
-pytest tests/test_data_gateway/test_provider_akshare_dividend_history.py -v
+pytest tests/test_data_gateway/test_gateway_dividend_cache.py -v
 ```
 
-**预期:** FAIL（`AttributeError: 'AkshareProvider' object has no attribute 'fetch_dividend'`）
+**预期:** 第一个测试可能 PASS（因为现状下调 dividend() 的逻辑已存在），第二个测试 FAIL（因为现状用 `pass` 静默吞掉异常）。
 
 ### Step 3.3: 改实现
 
-**文件:** `core/data_gateway/providers/akshare.py`
-
-**Step 3.3.1:** 在 `capabilities` frozenset 中加 `Capability.DIVIDEND`：
+**文件:** `core/data_gateway/gateway.py:940-952`，替换兜底分支：
 
 ```python
-        return ProviderCapability(
-            capabilities=frozenset({
-                Capability.MACRO,
-                Capability.FUNDAMENTALS,
-                Capability.FUNDAMENTALS_HISTORY,
-                Capability.DIVIDEND,          # ← 新增: W1-3 akshare 兜底分红
-                Capability.MARGIN_FLOW,
-                Capability.FUND_FLOW,
-                Capability.NORTH_FLOW,
-                ...
-            }),
-            ...
-        )
-```
-
-**Step 3.3.2:** 新增 `fetch_dividend` 方法（紧接 `fetch_fundamentals_history` 之后）：
-
-```python
-    def fetch_dividend(self, symbol: str, year: int | None = None) -> List[DividendRecord]:
-        """从 akshare.stock_zh_a_dividend 获取 A 股分红记录。
-
-        兜底源(优先级低于 baostock)，适用于未装 baostock 库的环境。
-
-        Returns
-        -------
-        List[DividendRecord]，按除权除息日倒序。空列表表示失败。
-        """
-        from ..schemas import DividendRecord
-        try:
-            import akshare as _ak
-        except ImportError:
-            return []
-        try:
-            code = symbol.replace(".SH", "").replace(".SZ", "").replace(".", "")
-            raw = _ak.stock_zh_a_dividend(symbol=code)
-            if raw is None or raw.empty:
-                return []
-            records: List[DividendRecord] = []
-            for _, row in raw.iterrows():
+            # 股息率补充：当合并结果为 0 时，从分红记录计算 TTM 股息率
+            if merged.dividend_yield <= 0:
                 try:
-                    op_str = str(row.get("除权除息日", "")).strip()
-                    op_date = pd.Timestamp(op_str) if op_str else None
-                except Exception:
-                    op_date = None
-                try:
-                    cps = float(row.get("派息", 0)) / 10.0  # "派息"单位是"每 10 股 X 元" → 转"每股"
-                except (TypeError, ValueError):
-                    cps = 0.0
-                if op_date is None or cps <= 0:
-                    continue
-                records.append(
-                    DividendRecord(
-                        symbol=symbol,
-                        plan_announce_date=None,
-                        operate_date=op_date.to_pydatetime() if hasattr(op_date, "to_pydatetime") else op_date,
-                        pay_date=None,
-                        cash_per_share=cps,
-                        stock_per_share=0.0,
+                    # 预热 dividend() 缓存: 后续分析可能复用
+                    records = self.dividend(symbol)
+                    price = self._resolve_price(symbol, merged)
+                    if price > 0 and records:
+                        ttm_div = self._calc_ttm_dividend_yield(symbol, price)
+                        if ttm_div > 0:
+                            merged.dividend_yield = ttm_div
+                            prov["dividend_yield"] = "dividend_records"
+                    elif price > 0 and not records:
+                        # dividend() 返回空，说明 baostock 不可用或该股无分红
+                        logger.warning(
+                            "dividend_yield 兜底失败: %s 无分红记录"
+                            "(可能是 baostock 未安装，或该股票从未分红)",
+                            symbol,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "dividend_yield 兜底失败: %s, exc=%s "
+                        "(检查 baostock 库是否安装: pip install baostock)",
+                        symbol, exc,
                     )
-                )
-            records.sort(key=lambda r: r.operate_date, reverse=True)
-            if year is not None:
-                records = [r for r in records if r.operate_date.year == year]
-            return records
-        except Exception as exc:
-            logger.debug("akshare.fetch_dividend(%s) failed: %s", symbol, exc)
-            return []
 ```
 
-并在文件顶部 import 区添加：
-
-```python
-from typing import TYPE_CHECKING, Dict, List, Optional
-...
-if TYPE_CHECKING:
-    from ..schemas import DividendRecord
-```
-
-（如果 `schemas` 已在 runtime 导入，可改为 `from ..schemas import DividendRecord`，按文件现状选择。）
+并确认 gateway.py 顶部有 `import logging` 和 `logger = logging.getLogger(...)`（应已有）。
 
 ### Step 3.4: 跑测试确认通过
 
 ```bash
-pytest tests/test_data_gateway/test_provider_akshare_dividend_history.py -v
+pytest tests/test_data_gateway/test_gateway_dividend_cache.py -v
 ```
 
 **预期:** 2 passed
 
-### Step 3.5: 端到端验证
+### Step 3.5: 端到端验证（确认 quant-trading 环境 Layer 3 工作正常）
 
 ```bash
-python3 -c "
-import sys
-sys.path.insert(0, '/home/sinter/workspace/a-quantitative-trading')
+export PATH="/home/sinter/softwares/miniconda3/envs/quant-trading/bin:$PATH"
+cd /home/sinter/workspace/a-quantitative-trading
+python -c "
 from core.data_gateway import get_gateway
 gw = get_gateway()
 records = gw.dividend('600809.SH')
-print(f'dividend records via gw: {len(records)}')
+print(f'dividend records: {len(records)}')
 for r in records[:3]:
-    print(f'  {r.operate_date.date()} cash={r.cash_per_share:.2f}元')
+    print(f'  {r.operate_date.date()} cash={r.cash_per_share:.4f}元')
 "
 ```
 
-**预期:** 输出 1+ 条记录（如 2024-06-26 cash=2.87），而非 0 条。
+**预期:** 4 条记录（与今天复测一致），即 Layer 3 已在项目环境下正常工作。
 
 ### Step 3.6: 提交
 
 ```bash
-git add core/data_gateway/providers/akshare.py tests/test_data_gateway/test_provider_akshare_dividend_history.py
-git commit -m "feat(akshare): 新增 fetch_dividend 实现作为 baostock 兜底
+git add core/data_gateway/gateway.py tests/test_data_gateway/test_gateway_dividend_cache.py
+git commit -m "feat(gateway): dividend_yield 兜底时预热缓存 + 失败时显式 warning
 
-原 dividend() 走 baostock 单一源，在未装 baostock 环境返回 0 条，
-导致 _calc_ttm_dividend_yield 走不到。
-
-akshare.stock_zh_a_dividend 全 A 股分红接口(无需 token)作为兜底源。
-注册为 Capability.DIVIDEND 的 A 股 provider，baostock 仍优先。
-注意: akshare '派息'单位是'每 10 股 X 元'，需 /10 转为'每股'。"
+原实现: dividend_yield<=0 触发兜底时静默 pass，baostock 不可用时无任何提示。
+修复:
+  1. 调 self.dividend() 提前预热缓存(若已存在则直接返回)
+  2. 失败时 logger.warning 提示 baostock 状态或股票无分红
+参考: 山西汾酒 600809.SH 案例，环境误诊已修正"
 ```
 
 ---
@@ -754,8 +737,8 @@ Task 5 (E2E 回归测试)              ← 必须最后做
 | 风险 | 概率 | 缓解 |
 |---|---|---|
 | akshare `stock_zh_a_spot_em` 列名版本差异 | 中 | `get_dividend_yield_from_spot` 已用 `next((c for c in spot.columns if "股息率" in c))` 模糊匹配 |
-| akshare `stock_zh_a_dividend` 接口限流 | 中 | 已有 5+ 分钟缓存，加 try/except 降级到空列表 |
-| Task 2/3 改变 akshare Provider 接口契约 | 低 | 跑现有 `test_provider_yfinance_akshare.py` 防回归 |
+| baostock 不可用（其他 conda env 或部署机）| 低 | Task 3 加 logger.warning 显式提示；baostock 是常规依赖，安装简单 |
+| Task 2 改变 akshare Provider 接口契约 | 低 | 跑现有 `test_provider_yfinance_akshare.py` 防回归 |
 | 腾讯 dividend_yield 降权威影响 quote 端 | 极低 | 该字段在 quote 端单独使用，不参与 Fundamentals 合并 |
 
 **回滚:** 每 Task 独立 commit，`git revert <commit-hash>` 即可单点回退。
@@ -764,28 +747,30 @@ Task 5 (E2E 回归测试)              ← 必须最后做
 
 ## 完成后预期效果
 
+**前置条件:** 在 `~/softwares/miniconda3/envs/quant-trading/` 环境下运行。
+
 ```python
 from backend.services.fundamentals import fetch_fundamentals
 result = fetch_fundamentals("600809.SH")
-# 修复前: dividend_yield=0.60 (腾讯失真)
-# 修复后: dividend_yield=5.12 (akshare 真实全 A 股快照)
-#         dividend_yield_unavailable=False
-#         dividend_yield_tencent_raw=0.60  (保留作调试)
+# 当前(在 quant-trading 环境):  dividend_yield = 4.75  (已正确，baostock 算的 TTM)
+# 修复后(在任意环境):          dividend_yield = 4.75 / 5.12 (任一源算出即可)
+#                               dividend_yield_unavailable = False
+# 永远不再回退到腾讯失真的 0.60%
 ```
 
 ```python
 from core.data_gateway import get_gateway
 gw = get_gateway()
 gw.dividend("600809.SH")
-# 修复前: 0 records (baostock 未装)
-# 修复后: 1+ records (akshare 兜底)
+# quant-trading 环境:  4 records (baostock 正常)
+# 修复后(任意环境):     0+ records + logger.warning(若不可用)，便于定位
 ```
 
 ---
 
 ## 后续可优化项(本计划不包含)
 
-- Task 3 之后: 在 `gw.dividend()` 加缓存预热，避免分析时冷启动
+- Task 3 已包含缓存预热: `gw.fundamentals()` 触发兜底时预热 `gw.dividend()` 缓存
 - Task 4 之后: 在 analyze_stock 层把 `dividend_yield_unavailable=True` 标红
 - 数据源: 接入 Wind/iFinD 等专业数据源（需要付费，量力而行）
 - 加监控: `dividend_yield` 跨源差异 > 2% 时发告警
