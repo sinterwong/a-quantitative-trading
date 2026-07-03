@@ -3,7 +3,7 @@
 News Sentiment Scorer - 新闻情绪打分
 P2 - 新闻情绪打分模块
 
-默认使用 LLM（MiniMax）分析情感，保留关键词兜底当 LLM 不可用时。
+默认使用 LLM（DeepSeek）分析情感，保留关键词兜底当 LLM 不可用时。
 """
 
 import os, sys, time, random, json, re

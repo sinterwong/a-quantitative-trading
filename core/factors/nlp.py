@@ -1,14 +1,14 @@
 """
 core/factors/nlp.py — 新闻情感 LLM 因子
 
-使用 MiniMax API 对股票相关新闻标题进行情感打分，转换为 Factor 接口。
+使用 DeepSeek API 对股票相关新闻标题进行情感打分，转换为 Factor 接口。
 
 数据来源：
   - 东方财富新闻（AKShare stock_news_em()）
   - 同花顺财经新闻（AKShare stock_news_ths()，可选）
 
 情感打分：
-  - 调用 MiniMax API（MiniMax-M2 模型）
+  - 调用 DeepSeek API（deepseek-flash 模型）
   - Prompt：返回 JSON {"score": <-1到1>, "reason": "..."}
   - 多条新闻打分取加权平均（近期新闻权重更高）
 
@@ -34,7 +34,7 @@ core/factors/nlp.py — 新闻情感 LLM 因子
     f = NewsSentimentFactor(sentiment_data=sentiment_series)
     z = f.evaluate(price_df)
 
-    # 方式三：实时获取（需 ANTHROPIC_API_KEY）
+    # 方式三：实时获取（需 DEEPSEEK_API_KEY）
     f = NewsSentimentFactor(symbol='000001.SZ', use_api=True)
     z = f.evaluate(price_df)
 """
@@ -96,19 +96,19 @@ def _fetch_news_eastmoney(symbol: str, n: int = 20) -> List[str]:
 # LLM 情感打分层
 # ---------------------------------------------------------------------------
 
-def _score_with_claude(
+def _score_with_deepseek(
     headlines: List[str],
     api_key: Optional[str] = None,
 ) -> float:
     """
-    调用 MiniMax API 对新闻标题列表进行情感打分。
+    调用 LLM API 对新闻标题列表进行情感打分。
 
     Parameters
     ----------
     headlines : List[str]
         新闻标题列表
     api_key : str or None
-        MiniMax API Key（None 时从环境变量 MINIMAX_API_KEY 读取）
+        API Key（None 时从环境变量 DEEPSEEK_API_KEY 读取）
 
     Returns
     -------
@@ -117,9 +117,9 @@ def _score_with_claude(
     if not headlines:
         return 0.0
 
-    key = api_key or os.environ.get('MINIMAX_API_KEY', '')
+    key = api_key or os.environ.get('DEEPSEEK_API_KEY', '')
     if not key:
-        logger.debug('[NewsSentimentFactor] 未设置 MINIMAX_API_KEY，跳过 LLM 打分')
+        logger.debug('[NewsSentimentFactor] 未设置 DEEPSEEK_API_KEY，跳过 LLM 打分')
         return 0.0
 
     try:
@@ -221,14 +221,14 @@ class NewsSentimentFactor(Factor):
         外部注入的日频情感得分（index=日期，值=[-1,1]）。
         若提供，跳过 API 获取直接使用。
     use_api : bool
-        是否调用 MiniMax API 实时获取（需 MINIMAX_API_KEY）。
+        是否调用 DeepSeek API 实时获取（需 DEEPSEEK_API_KEY）。
         False = 仅使用 sentiment_data（无数据则全零）。
     window : int
         滚动均值平滑窗口（默认 5 天，减少单日噪声）
     n_news : int
         每次获取最多条数（默认 20）
     api_key : str or None
-        Anthropic API Key（None 时从环境变量读取）
+        DeepSeek API Key（None 时从环境变量读取）
     threshold : float
         信号触发 z-score 阈值（默认 1.0）
     """
@@ -347,7 +347,7 @@ class NewsSentimentFactor(Factor):
 
         # 获取新闻 + 打分
         headlines = self._fetch_headlines(date_str)
-        score = _score_with_claude(headlines, api_key=self.api_key) if headlines else 0.0
+        score = _score_with_deepseek(headlines, api_key=self.api_key) if headlines else 0.0
 
         # 写缓存
         self._score_cache[date_str] = score

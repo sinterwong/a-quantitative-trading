@@ -30,7 +30,7 @@ def create_provider(provider_name: Optional[str] = None, **kwargs) -> LLMProvide
     Raises:
         ValueError: provider_name 不合法或 Provider 不可用（未配置 API key）
     """
-    name = (provider_name or os.environ.get('LLM_PROVIDER', 'minimax')).lower()
+    name = (provider_name or os.environ.get('LLM_PROVIDER', 'deepseek')).lower()
 
     if name == 'deepseek':
         prov = DeepSeekProvider(**kwargs)

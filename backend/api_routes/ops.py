@@ -104,8 +104,8 @@ def metrics_endpoint():
 def _probe_llm_provider():
     """尝试初始化 LLM provider；不可用返回 None。"""
     try:
-        from services.llm.providers import MiniMaxProvider
-        provider = MiniMaxProvider()
+        from services.llm.factory import create_provider
+        provider = create_provider()
         provider.chat([{"role": "user", "content": "hi"}], max_tokens=5)
         return provider
     except Exception:  # noqa: BLE001 — provider 任意子层异常都视作"不可用"

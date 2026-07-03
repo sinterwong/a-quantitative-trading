@@ -13,7 +13,7 @@ core/pipeline_factory.py — 生产用因子流水线工厂
                     EarningsSurprise 0.04 / CashFlowQuality 0.04 /
                     FinancialHealth 0.04 / DividendYield 0.02 / AssetGrowth 0.02
   宏观层 (0.05)     PMI 0.025 / M2Growth 0.025  ← 无行情数据时自动降级为零权重
-  情绪层 (0.05)     NewsSentiment(可选,需 MINIMAX_API_KEY)
+  情绪层 (0.05)     NewsSentiment(可选,需 DEEPSEEK_API_KEY)
   保留 (0.05)       未来板块因子(SectorFlow/SectorBreadth,需 sector_code 配置)
 
 数据质量感知 (W5-2):
@@ -216,10 +216,10 @@ def build_pipeline(symbol: str = '', strict: bool = True):
     except ImportError as exc:
         logger.warning('宏观因子模块导入失败（整层跳过）: %s', exc)
 
-    # ── 情绪层(W2-3): NewsSentimentFactor,需 MINIMAX_API_KEY 才启用 ─────
+    # ── 情绪层(W2-3): NewsSentimentFactor,需 DEEPSEEK_API_KEY 才启用 ─────
     # 关键风险:LLM 调用 cost + 延迟 + 单点失败,小权重(0.05)+ 衰减保护
     try:
-        if symbol and os.environ.get('MINIMAX_API_KEY'):
+        if symbol and os.environ.get('DEEPSEEK_API_KEY'):
             from core.factors.nlp import NewsSentimentFactor
             if _safe_add(
                 pipeline, NewsSentimentFactor, weight=0.05,
