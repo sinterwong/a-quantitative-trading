@@ -90,7 +90,7 @@ jobs:
           # R3-1 / R3-2: 对 R0-R2 新写模块 + 关键领域基类 (factor base /
           # broker base) + use_cases 子模块开 strict。具体规则见
           # pyproject.toml [[tool.mypy.overrides]]。存量代码持续整改后逐步纳入。
-          pip install mypy
+          pip install "mypy<2"
           mypy core/singleton.py core/lifecycle.py core/idempotency.py \
                core/errors.py core/config_defaults.py \
                core/use_cases/__init__.py core/use_cases/submit_order.py \
@@ -136,7 +136,7 @@ jobs:
       - name: Install tools
         run: |
           pip install --upgrade pip
-          pip install pytest pytest-cov pandas numpy requests flask werkzeug pyyaml pyarrow freezegun
+          pip install pytest pytest-cov pandas numpy requests flask werkzeug pyyaml pyarrow freezegun "mypy<2"
           pip install scipy lightgbm "xgboost<2.1" joblib reportlab matplotlib
 
       - name: Mypy type check (core 重点模块)
