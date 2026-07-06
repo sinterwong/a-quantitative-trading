@@ -58,7 +58,7 @@ indent-style = "space"
 # 用法：mypy（依据 pyproject.toml 自动找配置）
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 follow_imports = "silent"        # 不下钻历史代码
 ignore_missing_imports = true    # 第三方库（pandas / akshare / flask 等）无 stubs
 # 全局松：仓库存量代码类型注解不齐，R3-2 持续整改。CI 只检查 strict 模块。
